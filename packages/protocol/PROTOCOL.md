@@ -1,9 +1,9 @@
-# vsremote protocol v4
+# Code Remote protocol v4
 
 The agent listens on `127.0.0.1` and is reachable remotely only through a Dev Tunnel
 (`https://<tunnel>-<port>.<region>.devtunnels.ms`). The agent's bearer token is always
 required. By default the tunnel is also private: the relay admits only the dev tunnels account
-that owns it (see [Tunnel sign-in](#tunnel-sign-in)). `vsremote up --allow-anonymous` drops
+that owns it (see [Tunnel sign-in](#tunnel-sign-in)). `coderemote up --allow-anonymous` drops
 that second layer and leaves the token as the only boundary.
 
 Every request carries:
@@ -16,7 +16,7 @@ Every request carries:
 ## Pairing
 
 The agent prints a QR code for `vsremote://pair?url=<https base url>&token=<token>`.
-`vsremote rotate-token` invalidates every paired device.
+`coderemote rotate-token` invalidates every paired device.
 
 ## Tunnel sign-in
 
@@ -46,7 +46,7 @@ remain. Anonymous tunnels answer both routes with 404.
 
 ## Shared folder
 
-The agent shares one folder, the directory `vsremote up` runs in (or `--root DIR`).
+The agent shares one folder, the directory `coderemote up` runs in (or `--root DIR`).
 Every file path must resolve inside it, symlinks included: `..`, absolute paths elsewhere and
 links pointing outside get 403, and so do missing paths outside, so their existence can't be probed.
 Paths may be absolute or relative to the root. The root itself can't be deleted or renamed.

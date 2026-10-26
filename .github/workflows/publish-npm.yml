@@ -1,0 +1,65 @@
+# Publishes the `coderemote` CLI to npm when a version tag is pushed. The tag is the version:
+#
+#   git tag v1.1.2 && git push origin v1.1.2     # publishes coderemote@1.1.2
+#   git tag v1.2.0-beta.1 && git push origin v1.2.0-beta.1   # prerelease, npm tag "next"
+#
+# Nothing in the repository needs bumping; apps/agent/package.json's version is ignored.
+#
+# Authenticates with npm Trusted Publishing (OIDC), so no npm token is stored in GitHub.
+# One-time setup on npmjs.com: package coderemote → Settings → Trusted Publisher → GitHub Actions,
+# repository Tranthanh98/vscoderemote, workflow file publish-npm.yml, environment npm.
+name: Publish to npm
+
+on:
+  push:
+    tags: ['v[0-9]*.[0-9]*.[0-9]*']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # node-pty ships macOS prebuilds, and macOS is the platform the agent is tested on.
+    runs-on: macos-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # OIDC token for npm Trusted Publishing and provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted Publishing needs npm 11.5.1 or newer.
+      - run: npm install -g npm@latest
+
+      - run: npm ci
+
+      - name: Version from the tag
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME isn't a version like v1.2.3 or v1.2.3-beta.1"
+            exit 1
+          fi
+          npm version "$version" -w coderemote --no-git-tag-version --allow-same-version
+          # Prereleases go to the "next" dist-tag so `npm install coderemote` keeps the stable one.
+          if [[ "$version" == *-* ]]; then echo "DIST_TAG=next" >> "$GITHUB_ENV"; else echo "DIST_TAG=latest" >> "$GITHUB_ENV"; fi
+
+      - name: Agent tests
+        run: npm test
+
+      - name: Publish
+        # Provenance links the package to this commit and workflow; npm only records it for
+        # public repositories, so it's added once the repository is public.
+        run: |
+          if [ "$(gh api repos/$GITHUB_REPOSITORY --jq .private)" = "false" ]; then
+            npm publish -w coderemote --tag "$DIST_TAG" --provenance --access public
+          else
+            npm publish -w coderemote --tag "$DIST_TAG" --access public
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}

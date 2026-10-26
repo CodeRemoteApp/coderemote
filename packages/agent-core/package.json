@@ -6,7 +6,6 @@
   "type": "module",
   "exports": "./src/index.js",
   "scripts": {
-    "postinstall": "node scripts/fix-node-pty.js",
     "test": "node --test 'test/*.test.js'"
   },
   "dependencies": {

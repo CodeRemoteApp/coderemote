@@ -36,23 +36,23 @@ In scope, and worth reporting if broken:
 
 - **Access control.** Every request needs the agent's bearer token (from the pairing link or
   QR code). By default the dev tunnel is also private: only the dev tunnels account that runs
-  `vsremote up` gets through the relay, using the sign-in handoff described in
+  `coderemote up` gets through the relay, using the sign-in handoff described in
   `packages/protocol/PROTOCOL.md`.
 - **The shared folder.** File, git and terminal requests must stay inside the folder
-  `vsremote up` was started in, including through symlinks, `..`, encoded paths and git
+  `coderemote up` was started in, including through symlinks, `..`, encoded paths and git
   arguments.
 - **No local exposure.** The agent listens on `127.0.0.1` only.
-- **Secrets at rest.** The agent token lives in `~/.vsremote/` (mode 0600); the app keeps
+- **Secrets at rest.** The agent token lives in `~/.coderemote/` (mode 0600); the app keeps
   pairings and tunnel tokens in the iOS Keychain.
 
 Out of scope, by design:
 
 - A terminal is a real shell with your user's permissions. Someone who is legitimately
   paired can run any command, including ones that read files outside the shared folder.
-- `vsremote up --allow-anonymous` drops the tunnel sign-in on purpose; the pairing token is
+- `coderemote up --allow-anonymous` drops the tunnel sign-in on purpose; the pairing token is
   then the only protection.
 - Anyone who has your pairing link or token, and (for private tunnels) your GitHub or
-  Microsoft account, is you as far as the agent can tell. Run `vsremote rotate-token` to
+  Microsoft account, is you as far as the agent can tell. Run `coderemote rotate-token` to
   revoke every paired device.
 - Vulnerabilities in Microsoft Dev Tunnels itself; report those to
   [Microsoft](https://msrc.microsoft.com/).

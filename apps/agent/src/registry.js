@@ -1,5 +1,5 @@
-// Running agents announce themselves in ~/.vsremote/agents/<port>.json so other
-// `vsremote` invocations can find, inspect and stop them.
+// Running agents announce themselves in ~/.coderemote/agents/<port>.json so other
+// `coderemote` invocations can find, inspect and stop them.
 import fs from 'node:fs';
 import path from 'node:path';
 

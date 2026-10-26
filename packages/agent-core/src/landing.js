@@ -9,7 +9,7 @@ export const LANDING_HTML = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>vsremote</title>
+<title>Code Remote</title>
 <style>
   :root { color-scheme: light dark; --bg: #f5f5f7; --card: #fff; --text: #1d1d1f; --muted: #6e6e73; --accent: #0071e3; }
   @media (prefers-color-scheme: dark) { :root { --bg: #000; --card: #1c1c1e; --text: #f5f5f7; --muted: #98989d; --accent: #2997ff; } }
@@ -28,13 +28,13 @@ export const LANDING_HTML = `<!doctype html>
 </head>
 <body>
 <main>
-  <h1>vsremote</h1>
+  <h1>Code Remote</h1>
   <div id="ready" class="hidden">
     <p>Open this machine in the Code Remote app on your iPhone.</p>
     <a id="open" class="button" href="#">Open in Code Remote</a>
     <button id="copy" type="button">Copy pairing link</button>
   </div>
-  <p id="missing" class="hidden">This link is missing its access token. Copy the full link printed by <code>vsremote up</code>.</p>
+  <p id="missing" class="hidden">This link is missing its access token. Copy the full link printed by <code>coderemote up</code>.</p>
 </main>
 <script>
   const token = new URLSearchParams(location.hash.slice(1)).get('token');

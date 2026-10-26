@@ -19,3 +19,7 @@ apps/ios/build/
 # SwiftPM
 .build/
 .swiftpm/
+
+# Built CLI bundle and the LICENSE copied in for npm pack
+apps/agent/dist/
+apps/agent/LICENSE

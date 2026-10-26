@@ -12,7 +12,10 @@ import { Spinner } from '../src/spinner.js';
 import { pairingUrl, webUrl } from '@vsremote/protocol';
 
 const run = promisify(execFile);
-const CONFIG_DIR = path.join(os.homedir(), '.vsremote');
+const CONFIG_DIR = path.join(os.homedir(), '.coderemote');
+// Releases before the rename kept their token and tunnel here; moving them keeps every pairing.
+const LEGACY_CONFIG_DIR = path.join(os.homedir(), '.vsremote');
+if (!fs.existsSync(CONFIG_DIR) && fs.existsSync(LEGACY_CONFIG_DIR)) fs.renameSync(LEGACY_CONFIG_DIR, CONFIG_DIR);
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const DEFAULT_PORT = 31580;
 const spinner = new Spinner();
@@ -117,7 +120,7 @@ async function ensureTunnel(cfg, port, anonymous) {
 	}
 
 	// Every request needs the agent's bearer token either way; a private tunnel also needs a sign-in.
-	const createArgs = ['create', '--expiration', '30d', '-d', `vsremote ${os.hostname()}`, '--json'];
+	const createArgs = ['create', '--expiration', '30d', '-d', `coderemote ${os.hostname()}`, '--json'];
 	if (anonymous) createArgs.push('--allow-anonymous');
 	const created = await devtunnel(...createArgs);
 	if (!created.ok) throw new Error(`devtunnel create failed:\n${created.out}`);
@@ -170,10 +173,10 @@ function printPairing(url, token, access) {
 			? '\n  The links contain your access token. Anyone with them can use this machine.'
 			: '\n  The links contain your access token; the phone or browser must also sign in as you.',
 	);
-	console.log('  Run `vsremote rotate-token` to revoke every paired device.\n');
+	console.log('  Run `coderemote rotate-token` to revoke every paired device.\n');
 }
 
-const USAGE = `Usage: vsremote <command> [options]
+const USAGE = `Usage: coderemote <command> [options]
 
   up                   share this folder through a dev tunnel and print the pairing QR;
                        the phone or browser must sign in with your dev tunnels account
@@ -191,7 +194,7 @@ Options:
 
 const HELP_FLAGS = ['help', '--help', '-help', '-h'];
 const argv = process.argv.slice(2);
-// Bare `vsremote` or `--help` anywhere shows usage rather than sharing a folder by accident.
+// Bare `coderemote` or `--help` anywhere shows usage rather than sharing a folder by accident.
 const [cmd, ...rest] = argv.length === 0 || argv.some((a) => HELP_FLAGS.includes(a)) ? ['help'] : argv;
 const flag = (name) => {
 	const i = rest.indexOf(name);
@@ -208,7 +211,7 @@ async function start({ tunnel }) {
 	const running = registry.list().find((a) => a.port === port);
 	if (running) {
 		console.error(`An agent already runs on port ${port} for ${running.root} (pid ${running.pid}).`);
-		console.error('Stop it with `vsremote stop --all`, or pick another port with --port.');
+		console.error('Stop it with `coderemote stop --all`, or pick another port with --port.');
 		process.exit(1);
 	}
 	let server;
@@ -221,7 +224,7 @@ async function start({ tunnel }) {
 	} catch (e) {
 		spinner.fail();
 		if (e.code !== 'EADDRINUSE') throw e;
-		// Not in the registry: an agent from an older vsremote, or an unrelated program.
+		// Not in the registry: an agent from an older coderemote, or an unrelated program.
 		console.error(`Port ${port} is already in use by another process.`);
 		console.error(`See what holds it with: lsof -nP -iTCP:${port} -sTCP:LISTEN`);
 		console.error('Stop that process, or pick another port with --port.');
@@ -294,7 +297,7 @@ function ago(ms) {
 switch (cmd) {
 	case 'serve': {
 		await start({ tunnel: false });
-		console.log(`vsremote agent on http://127.0.0.1:${port}\nSharing: ${root}\nToken: ${cfg.token}`);
+		console.log(`coderemote agent on http://127.0.0.1:${port}\nSharing: ${root}\nToken: ${cfg.token}`);
 		break;
 	}
 	case 'up': {
@@ -314,7 +317,7 @@ switch (cmd) {
 	case 'ps': {
 		const agents = registry.list();
 		if (!agents.length) {
-			console.log('No agent is running. Start one with `vsremote up`.');
+			console.log('No agent is running. Start one with `coderemote up`.');
 			break;
 		}
 		for (const agent of agents) {
@@ -333,7 +336,7 @@ switch (cmd) {
 		const all = rest.includes('--all');
 		const ids = rest.filter((a) => !a.startsWith('--'));
 		if (!all && !ids.length) {
-			console.error('Usage: vsremote kill <session-id>... | --all');
+			console.error('Usage: coderemote kill <session-id>... | --all');
 			process.exit(1);
 		}
 		let killed = 0;
@@ -357,7 +360,7 @@ switch (cmd) {
 		const agents = registry.list();
 		const targets = rest.includes('--all') ? agents : agents.filter((a) => a.root === root);
 		if (!targets.length) {
-			console.log(agents.length ? `No agent is sharing ${root}. Use \`vsremote stop --all\`.` : 'No agent is running.');
+			console.log(agents.length ? `No agent is sharing ${root}. Use \`coderemote stop --all\`.` : 'No agent is running.');
 			break;
 		}
 		for (const agent of targets) {
