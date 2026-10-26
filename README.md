@@ -30,6 +30,11 @@ cd ~/projects/my-app && coderemote up
 On your iPhone: scan the QR code it prints. That's all: the first run downloads Microsoft's
 Dev Tunnels CLI and asks you to sign in with GitHub in the browser.
 
+Want the full editor too? `coderemote up --web` also starts VS Code's own tunnel
+(`code tunnel`) and prints a vscode.dev link that opens the folder in VS Code in the browser.
+It needs VS Code's `code` command on your `PATH`, signs in with its own GitHub account and
+gives the browser the whole machine, not just the shared folder.
+
 The iOS app is coming to the App Store. This repository holds the open-source side: the CLI,
 the agent and the wire protocol, so you can audit what runs on your computer or build your own
 client.
@@ -44,6 +49,8 @@ Everything about the CLI (commands, requirements, FAQ) is in its
 - **Terminal:** a real PTY shell with a key bar for Ctrl, Tab, Esc, arrows and modifier
   combos (Mac and Windows layouts); sessions survive the phone sleeping and reattach with
   their output, so `claude`, `vim` or a long build keep going
+- **VS Code in the browser (optional):** `coderemote up --web` also starts VS Code's own
+  tunnel and prints a vscode.dev link that opens the folder in the full editor
 - **Private by default:** only your own GitHub or Microsoft account gets through the tunnel,
   plus a pairing token per device; files and git can't leave the shared folder
 
