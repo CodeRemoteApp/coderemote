@@ -16,6 +16,11 @@
   <img src="https://img.shields.io/badge/iOS-27%2B-black" alt="iOS 27+">
 </p>
 
+<p align="center">
+  <a href="https://coderemoteapp.github.io/web/"><b>Website</b></a> ·
+  <a href="https://coderemoteapp.github.io/web/docs/"><b>Docs</b></a>
+</p>
+
 ---
 
 ## Get started

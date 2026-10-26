@@ -16,6 +16,11 @@
   <img src="https://img.shields.io/node/v/coderemote" alt="node version">
 </p>
 
+<p align="center">
+  <a href="https://coderemoteapp.github.io/web/"><b>Website</b></a> ·
+  <a href="https://coderemoteapp.github.io/web/docs/"><b>Docs</b></a>
+</p>
+
 ---
 
 `coderemote` is the computer side of **Code Remote**, an iOS app for remote development.
@@ -110,8 +115,8 @@ Options: `--root DIR` shares another folder; `--port N` picks the local port (de
   run signs `code tunnel` in with GitHub.
 - On Linux, `node-pty` compiles on install (`python3`, `make`, a C++ compiler:
   `build-essential` on Debian/Ubuntu), and signing in needs `libsecret` (`libsecret-1-0`)
-- The **Code Remote** iOS app on your iPhone (App Store release coming; meanwhile build it
-  from [source](https://github.com/CodeRemoteApp/coderemote#build-the-ios-app))
+- The **Code Remote** iOS app on your iPhone (App Store release coming; see the
+  [website](https://coderemoteapp.github.io/web/))
 
 ## FAQ
 
