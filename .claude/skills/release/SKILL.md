@@ -51,32 +51,7 @@ git push <remote> <tag>
 
 Push only the tag, never `--tags` or `--follow-tags` (other local tags must not be published).
 
-## 4. Follow the workflow
-
-Find the run the tag started and wait for it (it takes a few minutes on macOS runners):
-
-```sh
-gh run list --workflow publish-npm.yml --limit 5 --json databaseId,headBranch,status,conclusion,url
-gh run watch <databaseId> --exit-status
-```
-
-Match the run by `headBranch` equal to the tag. If it fails, show the failing step's log
-(`gh run view <id> --log-failed`) and stop; don't retry or delete the tag on your own. A tag
-that never published can be removed with the user's go-ahead
-(`git push <remote> :refs/tags/<tag>` and `git tag -d <tag>`).
-
-## 5. Verify on npm
-
-The tarball can take a few minutes to reach npm's CDN after the version appears.
-
-```sh
-npm view coderemote@<version> version dist-tags --json
-```
-
-Then confirm `curl -s -o /dev/null -w '%{http_code}' https://registry.npmjs.org/coderemote/-/coderemote-<version>.tgz`
-returns 200, polling with a background `until` loop (no foreground sleep) for up to ~10 minutes.
-
-## 6. GitHub release
+## 4. GitHub release
 
 ```sh
 gh release create <tag> --verify-tag --generate-notes --title "coderemote <version>" [--prerelease]
@@ -84,8 +59,24 @@ gh release create <tag> --verify-tag --generate-notes --title "coderemote <versi
 
 Add `--prerelease` when `distTag` is `next`.
 
-## 7. Report
+## 5. Report and stop
 
-One short summary: the version, the previous one, the npm link
-(`https://www.npmjs.com/package/coderemote/v/<version>`), the GitHub release link, and the
-install command (`npm install -g coderemote`, or `coderemote@next` for a prerelease).
+Don't wait for or watch the publish workflow, and don't poll npm: the user monitors those
+and comes back if something fails. Find the run the tag started once (no waiting):
+
+```sh
+gh run list --workflow publish-npm.yml --limit 5 --json headBranch,url --jq '.[] | select(.headBranch=="<tag>") | .url'
+```
+
+(it can take a few seconds to appear; if it isn't listed yet, link the workflow's runs page
+`https://github.com/<owner>/<repo>/actions/workflows/publish-npm.yml` instead).
+
+Then one short summary: the version and the previous one, the workflow run link, the GitHub
+release link, the npm link (`https://www.npmjs.com/package/coderemote/v/<version>`, live once
+the workflow finishes and npm has processed it, usually a few minutes), and the install command
+(`npm install -g coderemote`, or `coderemote@next` for a prerelease).
+
+If the user later reports a failed run: show the failing step's log
+(`gh run view <id> --log-failed`). Don't retry or delete the tag on your own; a tag that never
+published can be removed with their go-ahead (`git push <remote> :refs/tags/<tag>` and
+`git tag -d <tag>`).
