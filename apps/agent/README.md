@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Tranthanh98/coderemote/main/apps/ios/Design/AppIcon/Icon-Default-1024x1024@1x.png" width="96" height="96" alt="Code Remote icon">
+  <img src="https://raw.githubusercontent.com/Tranthanh98/coderemote/main/docs/images/icon.png" width="96" height="96" alt="Code Remote icon">
 </p>
 
 <h1 align="center">coderemote</h1>

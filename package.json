@@ -10,7 +10,6 @@
   ],
   "scripts": {
     "agent": "node apps/agent/bin/coderemote.js",
-    "test": "npm test --workspaces --if-present",
-    "test:kit": "swift test --package-path packages/VSRemoteKit"
+    "test": "npm test --workspaces --if-present"
   }
 }

@@ -12,37 +12,27 @@ agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 | `apps/agent` | `coderemote` CLI (published to npm): starts the agent and hosts it through a dev tunnel |
 | `packages/agent-core` | the agent's HTTP + WebSocket server (files, git, terminals) |
 | `packages/protocol` | wire contract shared by the agent and clients, documented in `PROTOCOL.md` |
-| `packages/VSRemoteKit` | Swift package: API client, pairing, tunnel sign-in, terminal UI |
-| `apps/ios` | the iOS app |
 
 ## Setting up
 
-Requirements: Node.js 20+, Xcode 27+ and an iPhone for the app. `coderemote up` downloads the
+Requirements: Node.js 20+. `coderemote up` downloads the
 Dev Tunnels CLI on first use (or uses a `devtunnel` on your `PATH`).
 
 ```sh
 npm install                          # agent workspaces (also builds the CLI bundle)
 (cd apps/agent && npm link)          # puts `coderemote` on your PATH, linked to this checkout
-xcodebuild -downloadComponent MetalToolchain   # once, for SwiftTerm
-cp apps/ios/Config/Local.xcconfig.example apps/ios/Config/Local.xcconfig
-# set DEVELOPMENT_TEAM and BUNDLE_ID_PREFIX in Local.xcconfig (a free Apple ID works)
-scripts/ios-device.sh                # build, install and launch on your iPhone
 ```
 
-Never commit `Local.xcconfig`, tokens, or anything from `~/.coderemote/`.
+Never commit tokens or anything from `~/.coderemote/`.
 
 ## Tests
 
 ```sh
 npm test          # agent end-to-end tests (real HTTP, WebSocket and PTY)
-npm run test:kit  # VSRemoteKit unit tests
 ```
 
-Both must pass before a pull request is merged. Add tests with the change: the agent tests
-run against an in-process server, and the Kit tests cover parsing, encoding and auth logic.
-
-UI changes are checked by hand on a real iPhone; describe what you tried (and add a
-screenshot or recording) in the pull request. Automated tests must never drive a terminal
+They must pass before a pull request is merged. Add tests with the change: they run against
+an in-process server. Automated tests must never drive a terminal
 session or agent that someone is actually using: start a throwaway agent on another port.
 
 ## The npm package
@@ -73,9 +63,8 @@ GitHub release. See `.claude/skills/release/`.
 
 The agent and the app talk through the contract in `packages/protocol`. When you change it:
 
-1. Update `packages/protocol/index.js`, `PROTOCOL.md`, and
-   `packages/VSRemoteKit/Sources/VSRemoteKit/Protocol.swift` together.
-2. Bump `PROTOCOL_VERSION` (both sides) for any change an older client or agent can't handle.
+1. Update `packages/protocol/index.js` and `PROTOCOL.md` together.
+2. Bump `PROTOCOL_VERSION` for any change an older client can't handle.
 
 ## Security-sensitive areas
 
@@ -83,7 +72,7 @@ Changes here get extra review; please explain the reasoning in the pull request:
 
 - the shared-folder sandbox (`packages/agent-core/src/sandbox.js`): nothing outside the folder
   `coderemote up` runs in may be reachable
-- authentication: the bearer token, the tunnel sign-in handoff (`handoff.js`, `TunnelAuth.swift`)
+- authentication: the bearer token, the tunnel sign-in handoff (`handoff.js`)
   and pairing links
 - anything that runs commands (`git.js` uses `execFile` without a shell; keep it that way)
 
@@ -98,8 +87,4 @@ Changes here get extra review; please explain the reasoning in the pull request:
 ## License of contributions
 
 The project is licensed under the [GNU AGPL v3.0 or later](LICENSE). By submitting a
-contribution you agree that it is licensed under the same terms, and you additionally grant
-the project maintainer a perpetual, worldwide, non-exclusive, royalty-free license to
-distribute your contribution as part of the official app builds through app stores (such as
-the Apple App Store) whose terms may add restrictions the AGPL doesn't allow. Everyone keeps
-the full AGPL rights to the source code.
+contribution you agree that it is licensed under the same terms.

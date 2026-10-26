@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="apps/ios/Design/AppIcon/Icon-Default-1024x1024@1x.png" width="112" height="112" alt="Code Remote icon">
+  <img src="docs/images/icon.png" width="112" height="112" alt="Code Remote icon">
 </p>
 
 <h1 align="center">Code Remote</h1>
@@ -30,7 +30,9 @@ cd ~/projects/my-app && coderemote up
 On your iPhone: scan the QR code it prints. That's all: the first run downloads Microsoft's
 Dev Tunnels CLI and asks you to sign in with GitHub in the browser.
 
-The App Store release is coming; until then, [build the app yourself](#build-the-ios-app).
+The iOS app is coming to the App Store. This repository holds the open-source side: the CLI,
+the agent and the wire protocol, so you can audit what runs on your computer or build your own
+client.
 Everything about the CLI (commands, requirements, FAQ) is in its
 [npm README](apps/agent/README.md).
 
@@ -61,10 +63,8 @@ contract is in [PROTOCOL.md](packages/protocol/PROTOCOL.md); the security model 
 | Path | What it is |
 | --- | --- |
 | [`apps/agent`](apps/agent) | `coderemote` CLI, published to npm |
-| [`apps/ios`](apps/ios) | the SwiftUI iOS app |
 | [`packages/agent-core`](packages/agent-core) | the agent: HTTP + WebSocket server for files, git and PTY terminals |
 | [`packages/protocol`](packages/protocol) | wire contract shared by agent and app |
-| [`packages/VSRemoteKit`](packages/VSRemoteKit) | Swift package: API client, pairing, tunnel sign-in, terminal UI |
 | [`openspec`](openspec) | specs and change proposals |
 
 ## Develop
@@ -72,39 +72,16 @@ contract is in [PROTOCOL.md](packages/protocol/PROTOCOL.md); the security model 
 ```sh
 npm install                       # JS workspaces; also builds the CLI bundle
 npm test                          # agent end-to-end tests (real HTTP, WebSocket, PTY)
-npm run test:kit                  # VSRemoteKit tests
 (cd apps/agent && npm link)       # `coderemote` on your PATH, running this checkout
 ```
 
 After changing agent code, `npm run build -w coderemote` refreshes the linked command.
 
-To run the end-to-end suites against a live agent:
+To run the end-to-end suite against a live agent:
 
 ```sh
 VSREMOTE_URL=https://… VSREMOTE_TOKEN=… npm test
-VSREMOTE_PAIRING_URL='vsremote://pair?…' npm run test:kit
 ```
-
-### Build the iOS app
-
-Requires Xcode 27+ and an iPhone (the project doesn't use the simulator; UI is tested by hand
-on a device). Signing settings are personal, so they live in a gitignored file:
-
-```sh
-xcodebuild -downloadComponent MetalToolchain       # once, for SwiftTerm
-cp apps/ios/Config/Local.xcconfig.example apps/ios/Config/Local.xcconfig
-# set DEVELOPMENT_TEAM (Xcode → Settings → Accounts; a free Apple ID works)
-# and BUNDLE_ID_PREFIX (e.g. com.yourname)
-
-scripts/ios-device.sh                              # build, install and launch on your iPhone
-CONFIGURATION=Release scripts/ios-device.sh        # Release build
-DEVICE=<udid> scripts/ios-device.sh                # pick one of several paired iPhones
-```
-
-The iPhone needs Developer Mode on, a cable or the same Wi-Fi as the Mac, and to be
-unlocked for the launch. The first install may ask you to trust the developer in
-Settings → General → VPN & Device Management. In Xcode, click "Trust & Enable" for the
-SwiftTerm build plugin the first time (`-skipPackagePluginValidation` on the command line).
 
 ## Contributing
 

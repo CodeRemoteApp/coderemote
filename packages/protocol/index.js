@@ -1,5 +1,5 @@
-// Wire contract between the agent and its clients. Keep in sync with
-// packages/VSRemoteKit/Sources/VSRemoteKit/Protocol.swift and PROTOCOL.md.
+// Wire contract between the agent and its clients. Keep in sync with PROTOCOL.md; clients
+// mirror it (the iOS app in its own Protocol.swift).
 
 // v2: file access is confined to the folder the agent was started in (`root`).
 // v3: git routes; terminal attach announces the scrollback replay.

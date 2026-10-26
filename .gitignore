@@ -6,19 +6,7 @@ node_modules/
 .env
 .env.*
 !.env.example
-apps/ios/Config/Local.xcconfig
 .claude/settings.local.json
-
-# Xcode
-xcuserdata/
-DerivedData/
-*.xcuserstate
-*.xcresult
-apps/ios/build/
-
-# SwiftPM
-.build/
-.swiftpm/
 
 # Built CLI bundle and the LICENSE copied in for npm pack
 apps/agent/dist/
