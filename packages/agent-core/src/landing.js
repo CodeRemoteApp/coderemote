@@ -37,18 +37,23 @@ export const LANDING_HTML = `<!doctype html>
   <p id="missing" class="hidden">This link is missing its access token. Copy the full link printed by <code>coderemote up</code>.</p>
 </main>
 <script>
-  const token = new URLSearchParams(location.hash.slice(1)).get('token');
-  if (token) {
+  // Pasting the full link into a tab already showing this page (e.g. after the tunnel's sign-in
+  // dropped the fragment) only changes the hash and doesn't reload, so re-read it on hashchange.
+  function render() {
+    const token = new URLSearchParams(location.hash.slice(1)).get('token');
+    document.getElementById('ready').classList.toggle('hidden', !token);
+    document.getElementById('missing').classList.toggle('hidden', !!token);
+    if (!token) return;
     const link = '${PAIRING_SCHEME}://pair?url=' + encodeURIComponent(location.origin) + '&token=' + encodeURIComponent(token);
     document.getElementById('open').href = link;
+    document.getElementById('copy').textContent = 'Copy pairing link';
     document.getElementById('copy').onclick = async (e) => {
       try { await navigator.clipboard.writeText(link); e.target.textContent = 'Copied'; }
       catch { prompt('Pairing link', link); }
     };
-    document.getElementById('ready').classList.remove('hidden');
-  } else {
-    document.getElementById('missing').classList.remove('hidden');
   }
+  render();
+  addEventListener('hashchange', render);
 </script>
 </body>
 </html>

@@ -10,6 +10,7 @@ import { createAgentServer } from '@vsremote/agent-core';
 import { ensureDevtunnel } from '../src/devtunnel.js';
 import { AgentRegistry } from '../src/registry.js';
 import { Spinner } from '../src/spinner.js';
+import { codeTunnelLogin, codeTunnelSignedIn, findCode, hostCodeTunnel } from '../src/vscode-tunnel.js';
 import { pairingUrl, webUrl } from '@vsremote/protocol';
 
 const run = promisify(execFile);
@@ -201,6 +202,41 @@ function printPairing(url, token, access) {
 	console.log('  Run `coderemote rotate-token` to revoke every paired device.\n');
 }
 
+/**
+ * `up --web`: starts `code tunnel` and returns its vscode.dev link for this folder, or null
+ * after explaining what went wrong. The phone pairing works either way, so this never fails `up`.
+ */
+async function startVSCodeTunnel() {
+	const code = findCode();
+	if (!code) {
+		console.error("--web needs VS Code's `code` command on PATH (in VS Code: Shell Command: Install 'code' command in PATH).");
+		return null;
+	}
+	if (!(await codeTunnelSignedIn(code))) {
+		if (!process.stdin.isTTY) {
+			console.error('--web: VS Code tunnel is not signed in. Run `code tunnel user login`, then try again.');
+			return null;
+		}
+		console.error('Signing in to VS Code tunnels with GitHub...\n');
+		if ((await codeTunnelLogin(code)) !== 0) {
+			console.error('\n--web: sign-in failed. Run `code tunnel user login`, then try again.');
+			return null;
+		}
+	}
+	spinner.start('Starting VS Code tunnel');
+	try {
+		const { child, url } = await hostCodeTunnel(code, root);
+		spinner.succeed();
+		process.on('exit', () => child.kill());
+		return url;
+	} catch (e) {
+		spinner.fail();
+		console.error(`${e.message.trim()}\n`);
+		console.error('--web: run `code tunnel` once in a terminal (license, machine name), then try again.');
+		return null;
+	}
+}
+
 const USAGE = `Usage: coderemote <command> [options]
 
   up                   share this folder through a dev tunnel and print the pairing QR;
@@ -217,7 +253,9 @@ Options:
   --root DIR           folder to share (default: current folder)
   --port N             local port (default: ${DEFAULT_PORT})
   --allow-anonymous    up: skip the sign-in, the pairing token alone grants access
-                       (alias --no-auth)`;
+                       (alias --no-auth)
+  --web                up: also run \`code tunnel\` and print a vscode.dev link that opens
+                       this folder in VS Code in the browser (needs VS Code's \`code\`)`;
 
 const HELP_FLAGS = ['help', '--help', '-help', '-h'];
 const argv = process.argv.slice(2);
@@ -341,8 +379,10 @@ switch (cmd) {
 			throw e;
 		}
 		const { url, access } = started;
+		const vscodeUrl = rest.includes('--web') ? await startVSCodeTunnel() : null;
 		console.log(`\n  Sharing: ${root}`);
 		printPairing(url, cfg.token, access);
+		if (vscodeUrl) console.log(`  VS Code in the browser (sign in with the account of \`code tunnel\`):\n  ${vscodeUrl}\n`);
 		break;
 	}
 	case 'status':

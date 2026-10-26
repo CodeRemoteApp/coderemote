@@ -76,6 +76,7 @@ alone. Found a vulnerability? See the
 ```sh
 coderemote up                    # share this folder through a dev tunnel, print the pairing QR
 coderemote up --allow-anonymous  # same, without the account sign-in (alias --no-auth)
+coderemote up --web              # also run `code tunnel`: open this folder in VS Code on vscode.dev
 coderemote status                # running agents and their terminal sessions
 coderemote kill <id>...          # end terminal sessions (an id prefix from `status` is enough)
 coderemote kill --all            # end every session

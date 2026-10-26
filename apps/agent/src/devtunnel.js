@@ -31,7 +31,7 @@ function executable(file) {
 	}
 }
 
-function onPath(name) {
+export function onPath(name) {
 	for (const dir of (process.env.PATH || '').split(path.delimiter)) {
 		if (dir && executable(path.join(dir, name))) return path.join(dir, name);
 	}
