@@ -7,7 +7,7 @@
 #
 # Authenticates with npm Trusted Publishing (OIDC), so no npm token is stored in GitHub.
 # One-time setup on npmjs.com: package coderemote → Settings → Trusted Publisher → GitHub Actions,
-# repository Tranthanh98/coderemote, workflow file publish-npm.yml, environment npm.
+# repository CodeRemoteApp/coderemote, workflow file publish-npm.yml, environment npm.
 name: Publish to npm
 
 on:

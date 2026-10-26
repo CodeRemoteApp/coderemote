@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Tranthanh98/coderemote/main/docs/images/icon.png" width="96" height="96" alt="Code Remote icon">
+  <img src="https://raw.githubusercontent.com/CodeRemoteApp/coderemote/main/docs/images/icon.png" width="96" height="96" alt="Code Remote icon">
 </p>
 
 <h1 align="center">coderemote</h1>
@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/coderemote"><img src="https://img.shields.io/npm/v/coderemote" alt="npm version"></a>
-  <a href="https://github.com/Tranthanh98/coderemote/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/coderemote" alt="license: AGPL-3.0-or-later"></a>
+  <a href="https://github.com/CodeRemoteApp/coderemote/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/coderemote" alt="license: AGPL-3.0-or-later"></a>
   <img src="https://img.shields.io/node/v/coderemote" alt="node version">
 </p>
 
@@ -45,7 +45,7 @@ opens your browser to sign in with GitHub. Prefer a Microsoft account? Run
 ## How it works
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Tranthanh98/coderemote/main/docs/images/how-it-works.png" width="760" alt="How it works: the Code Remote app on the iPhone connects over HTTPS/WSS to the Microsoft Dev Tunnels relay; coderemote on your computer (127.0.0.1:31580) connects outbound to the same relay and serves files, git and terminals from the shared folder. Security at each hop: token in the iPhone Keychain, only your account through the relay, token check and one folder on the computer.">
+  <img src="https://raw.githubusercontent.com/CodeRemoteApp/coderemote/main/docs/images/how-it-works.png" width="760" alt="How it works: the Code Remote app on the iPhone connects over HTTPS/WSS to the Microsoft Dev Tunnels relay; coderemote on your computer (127.0.0.1:31580) connects outbound to the same relay and serves files, git and terminals from the shared folder. Security at each hop: token in the iPhone Keychain, only your account through the relay, token check and one folder on the computer.">
 </p>
 
 `coderemote` starts a small agent that listens on `127.0.0.1` only, and publishes it through
@@ -69,7 +69,7 @@ Remote shell access is serious, so access is locked down by default:
 
 `coderemote up --allow-anonymous` skips the account sign-in when you want the pairing token
 alone. Found a vulnerability? See the
-[security policy](https://github.com/Tranthanh98/coderemote/blob/main/SECURITY.md).
+[security policy](https://github.com/CodeRemoteApp/coderemote/blob/main/SECURITY.md).
 
 ## Commands
 
@@ -99,7 +99,7 @@ Options: `--root DIR` shares another folder; `--port N` picks the local port (de
 - On Linux, `node-pty` compiles on install (`python3`, `make`, a C++ compiler:
   `build-essential` on Debian/Ubuntu), and signing in needs `libsecret` (`libsecret-1-0`)
 - The **Code Remote** iOS app on your iPhone (App Store release coming; meanwhile build it
-  from [source](https://github.com/Tranthanh98/coderemote#build-the-ios-app))
+  from [source](https://github.com/CodeRemoteApp/coderemote#build-the-ios-app))
 
 ## FAQ
 
@@ -120,6 +120,6 @@ repository inside it.
 
 ## License
 
-[AGPL-3.0-or-later](https://github.com/Tranthanh98/coderemote/blob/main/LICENSE).
+[AGPL-3.0-or-later](https://github.com/CodeRemoteApp/coderemote/blob/main/LICENSE).
 "Code Remote" and its icon are trademarks of the project; see
-[TRADEMARKS.md](https://github.com/Tranthanh98/coderemote/blob/main/TRADEMARKS.md).
+[TRADEMARKS.md](https://github.com/CodeRemoteApp/coderemote/blob/main/TRADEMARKS.md).

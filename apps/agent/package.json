@@ -21,13 +21,13 @@
     "vscode",
     "code-remote"
   ],
-  "homepage": "https://github.com/Tranthanh98/coderemote#readme",
+  "homepage": "https://github.com/CodeRemoteApp/coderemote#readme",
   "bugs": {
-    "url": "https://github.com/Tranthanh98/coderemote/issues"
+    "url": "https://github.com/CodeRemoteApp/coderemote/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Tranthanh98/coderemote.git",
+    "url": "git+https://github.com/CodeRemoteApp/coderemote.git",
     "directory": "apps/agent"
   },
   "license": "AGPL-3.0-or-later",

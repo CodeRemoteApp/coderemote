@@ -9,7 +9,7 @@ seriously and handled before anything else.
 
 Report it privately, either way:
 
-- GitHub: [report a vulnerability](https://github.com/Tranthanh98/coderemote/security/advisories/new)
+- GitHub: [report a vulnerability](https://github.com/CodeRemoteApp/coderemote/security/advisories/new)
   (Security tab → "Report a vulnerability")
 - Email: trantienthanh2412@gmail.com
 
