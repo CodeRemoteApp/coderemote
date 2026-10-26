@@ -132,8 +132,10 @@ export class PreviewTunnel {
 		if (this.#tunnelId) return this.#tunnelId;
 		// Start clean: ports left on an old preview tunnel would be forwarded again.
 		if (this.leftover) await this.devtunnel('delete', this.leftover, '-f');
+		// Nothing renews it while the agent runs, so it gets as long as the main tunnel does; the
+		// next run deletes it anyway, so a long expiry leaves nothing behind.
 		const created = await this.devtunnel(
-			'create', '--expiration', '1d', '-d', this.description, '--labels', 'coderemote-preview', '--json',
+			'create', '--expiration', '30d', '-d', this.description, '--labels', 'coderemote-preview', '--json',
 		);
 		if (!created.ok) throw new Error(`devtunnel create failed: ${created.out.trim()}`);
 		const id = JSON.parse(created.out.slice(created.out.indexOf('{'))).tunnel?.tunnelId;
