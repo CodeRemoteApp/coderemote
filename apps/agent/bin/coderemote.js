@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import qrcode from 'qrcode-terminal';
 import { createAgentServer } from '@vsremote/agent-core';
 import { ensureDevtunnel } from '../src/devtunnel.js';
+import { PreviewTunnel } from '../src/preview.js';
 import { AgentRegistry } from '../src/registry.js';
 import { Spinner } from '../src/spinner.js';
 import { codeTunnelLogin, codeTunnelSignedIn, findCode, hostCodeTunnel } from '../src/vscode-tunnel.js';
@@ -39,8 +40,8 @@ function saveConfig(cfg) {
 	fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
 }
 
-function listen(token, port, root, tunnelToken) {
-	const server = createAgentServer({ token, root, tunnelToken });
+function listen(token, port, root, tunnelToken, preview) {
+	const server = createAgentServer({ token, root, tunnelToken, preview });
 	return new Promise((resolve, reject) => {
 		server.once('error', reject);
 		// Loopback only: remote access goes exclusively through the tunnel.
@@ -288,9 +289,23 @@ async function start({ tunnel }) {
 	// Set once the tunnel exists; anonymous tunnels hand out nothing.
 	let tunnelId;
 	const tunnelToken = async () => (tunnel && !anonymous && tunnelId ? connectToken(tunnelId) : null);
+	// Created on the first preview; keyed by port so agents for different folders don't share one.
+	const preview = tunnel
+		? new PreviewTunnel({
+				devtunnel,
+				command: () => DEVTUNNEL,
+				description: `coderemote preview ${os.hostname()}`,
+				leftover: cfg.previewTunnels?.[port],
+				remember: (id) => {
+					cfg.previewTunnels = { ...cfg.previewTunnels, [port]: id };
+					saveConfig(cfg);
+				},
+				mintToken: connectToken,
+			})
+		: null;
 	spinner.start('Starting agent');
 	try {
-		server = await listen(cfg.token, port, root, tunnelToken);
+		server = await listen(cfg.token, port, root, tunnelToken, preview);
 	} catch (e) {
 		spinner.fail();
 		if (e.code !== 'EADDRINUSE') throw e;
@@ -329,6 +344,7 @@ async function start({ tunnel }) {
 	registry.register({ port, root, url });
 	const shutdown = () => {
 		child?.kill();
+		preview?.stop();
 		server.killAllSessions();
 		server.close();
 		process.exit(0);
@@ -338,7 +354,10 @@ async function start({ tunnel }) {
 	// Closing the terminal window sends SIGHUP; without this the tunnel host would outlive us.
 	process.on('SIGHUP', shutdown);
 	// Last resort for any other way out (an uncaught error): never leave the tunnel host behind.
-	process.on('exit', () => child?.kill());
+	process.on('exit', () => {
+		child?.kill();
+		preview?.stop();
+	});
 	return { url, access };
 }
 

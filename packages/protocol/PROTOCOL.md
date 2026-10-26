@@ -139,3 +139,22 @@ clients can warn before stopping one.
 
 Only a process listening right now can be stopped: any other pid gets 404, and the agent
 refuses to stop itself (403).
+
+## Preview
+
+Opens a local port (a dev server) on the phone. The agent forwards it through a second, private
+dev tunnel of its own, so changing which ports are forwarded never touches the agent's tunnel.
+Agents running without a tunnel, and agents from before these routes, answer 404.
+
+| Route | Request | Response |
+| --- | --- | --- |
+| `GET /api/preview` | | `{ ports: [{ port, url }], token, expiresAt }` |
+| `POST /api/preview` | `{ port }` | same; forwards the port (502 when the tunnel can't) |
+| `DELETE /api/preview?port=` | | same; stops forwarding it |
+
+`url` is the port's public address (`https://<tunnel>-<port>.<region>.devtunnels.ms`). Adding or
+removing a port restarts the preview tunnel's host, which takes a few seconds and briefly drops
+the other previews. `token` is a connect token for the preview tunnel (null until a port has been
+forwarded) and `expiresAt` its expiry in milliseconds since the epoch. Load a preview by sending
+`X-Tunnel-Authorization: tunnel <token>` with the first request; the relay answers with a
+session cookie for that port's host, which carries the page's own requests after that.

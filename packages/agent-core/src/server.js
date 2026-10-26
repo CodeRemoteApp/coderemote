@@ -57,8 +57,10 @@ async function readJson(req) {
  * @param {string} opts.root   folder the agent shares; file access never leaves it
  * @param {() => Promise<{token: string, expiresAt: number} | null>} [opts.tunnelToken]
  *        mints a dev tunnels connect token; resolves null (or is absent) for anonymous tunnels
+ * @param {object | null} [opts.preview]  forwards local ports to a tunnel for previews
+ *        (`list()`, `forward(port)`, `unforward(port)`, `token()`); absent without a tunnel
  */
-export function createAgentServer({ token, root, tunnelToken = async () => null }) {
+export function createAgentServer({ token, root, tunnelToken = async () => null, preview = null }) {
 	const handoff = new TunnelHandoff({ token, mint: tunnelToken });
 	const sandbox = new Sandbox(root);
 	const sessions = new SessionManager();
@@ -67,6 +69,20 @@ export function createAgentServer({ token, root, tunnelToken = async () => null 
 	function authorized(req) {
 		const got = Buffer.from(req.headers.authorization || '');
 		return got.length === expected.length && timingSafeEqual(got, expected);
+	}
+
+	function previewPort(value, ownPort) {
+		if (!preview) throw new HttpError(404, 'previews need a tunnel');
+		const port = Number(value);
+		if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(400, 'port must be 1-65535');
+		if (port === ownPort) throw new HttpError(400, "the agent's own port is already on its tunnel");
+		return port;
+	}
+
+	/** Forwarded ports plus the connect token that opens them (null before the first one). */
+	async function previews() {
+		const issued = await preview.token();
+		return { ports: preview.list(), token: issued?.token ?? null, expiresAt: issued?.expiresAt ?? null };
 	}
 
 	/** Shell pid -> terminal session id, to tell which listeners were started from the app. */
@@ -219,6 +235,27 @@ export function createAgentServer({ token, root, tunnelToken = async () => null 
 			const { pid, force } = await readJson(req);
 			await killListener(pid, { force: force === true, shells: shellPids() });
 			return {};
+		},
+
+		[Routes.previewList]: async () => {
+			if (!preview) throw new HttpError(404, 'previews need a tunnel');
+			return previews();
+		},
+
+		[Routes.previewOpen]: async (url, req) => {
+			const port = previewPort((await readJson(req)).port, server.address()?.port);
+			try {
+				await preview.forward(port);
+			} catch (e) {
+				throw new HttpError(502, e.message);
+			}
+			return previews();
+		},
+
+		[Routes.previewClose]: async (url) => {
+			const port = previewPort(url.searchParams.get('port'), server.address()?.port);
+			await preview.unforward(port);
+			return previews();
 		},
 
 		[Routes.tunnelToken]: async () => {

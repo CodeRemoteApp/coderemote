@@ -32,6 +32,9 @@ export const Routes = Object.freeze({
 	gitPush: 'POST /api/git/push',
 	portsList: 'GET /api/ports',
 	portsKill: 'POST /api/ports/kill',
+	previewList: 'GET /api/preview',
+	previewOpen: 'POST /api/preview',
+	previewClose: 'DELETE /api/preview',
 	tunnelToken: 'POST /api/tunnel/token',
 });
 
