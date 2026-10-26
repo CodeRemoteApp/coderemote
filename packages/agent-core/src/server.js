@@ -10,6 +10,7 @@ import { WebSocketServer } from 'ws';
 import * as Git from './git.js';
 import { TunnelHandoff } from './handoff.js';
 import { LANDING_HTML } from './landing.js';
+import { killListener, listPorts } from './ports.js';
 import { HttpError, Sandbox } from './sandbox.js';
 import { SessionManager } from './sessions.js';
 
@@ -66,6 +67,11 @@ export function createAgentServer({ token, root, tunnelToken = async () => null 
 	function authorized(req) {
 		const got = Buffer.from(req.headers.authorization || '');
 		return got.length === expected.length && timingSafeEqual(got, expected);
+	}
+
+	/** Shell pid -> terminal session id, to tell which listeners were started from the app. */
+	function shellPids() {
+		return new Map(sessions.list().map((s) => [s.pid, s.id]));
 	}
 
 	/** A repository inside the shared folder. */
@@ -206,6 +212,14 @@ export function createAgentServer({ token, root, tunnelToken = async () => null 
 		[Routes.gitPush]: async (url, req) => ({ output: await Git.push(await repoOf((await readJson(req)).repo)) }),
 
 		[Routes.termList]: async () => ({ sessions: sessions.list() }),
+
+		[Routes.portsList]: async () => ({ ports: await listPorts(shellPids()) }),
+
+		[Routes.portsKill]: async (url, req) => {
+			const { pid, force } = await readJson(req);
+			await killListener(pid, { force: force === true, shells: shellPids() });
+			return {};
+		},
 
 		[Routes.tunnelToken]: async () => {
 			const issued = await handoff.issue();

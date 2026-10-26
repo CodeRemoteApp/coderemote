@@ -118,3 +118,24 @@ Client to server:
 - binary: raw keyboard input
 - text `{ "type": "input", "data": string }`, an alternative to binary
 - text `{ "type": "resize", "cols", "rows" }`
+
+## Ports
+
+TCP ports the agent's user is listening on (via `lsof`, or `ss` on Linux without it), so a
+client can see which dev servers are up and stop one. Other users' processes are never listed.
+Added without a protocol bump: older agents answer these routes with 404.
+
+| Route | Request | Response |
+| --- | --- | --- |
+| `GET /api/ports` | | `{ ports: [{ port, addresses, pid, name, command, cwd, session, self, agent }] }` |
+| `POST /api/ports/kill` | `{ pid, force? }` | `{}`; `SIGTERM`, or `SIGKILL` when `force` is true |
+
+One entry per process and port, sorted by port. `addresses` are the bound addresses
+(`127.0.0.1`, `::1`, `*` for all interfaces). `command` is the full command line and `cwd` the
+process's working directory (null when unreadable). `session` is the id of the terminal session
+the process was started from (it descends from that session's shell), or null. `self` marks the
+agent's own port; `agent` marks any coderemote agent (`coderemote up`), this one included, so
+clients can warn before stopping one.
+
+Only a process listening right now can be stopped: any other pid gets 404, and the agent
+refuses to stop itself (403).
