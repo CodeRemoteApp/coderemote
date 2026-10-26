@@ -36,7 +36,7 @@ All of these must hold; otherwise stop and report what to fix:
 - The working tree is clean (`git status --porcelain` prints nothing).
 - The current branch is `main`, and it matches the remote: `git fetch <remote> main` then
   `git rev-parse HEAD` equals `git rev-parse <remote>/main`. The remote is the one `main`
-  tracks (`git rev-parse --abbrev-ref main@{upstream}`, e.g. `vscoderemote/main`); with no
+  tracks (`git rev-parse --abbrev-ref main@{upstream}`, e.g. `origin/main`); with no
   upstream, use the only entry of `git remote`, and ask if there are several. A release is
   always of a commit that's already pushed.
 - The tag doesn't exist on the remote either: `git ls-remote --tags <remote> <tag>` is empty.

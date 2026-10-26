@@ -1,4 +1,4 @@
-# Contributing to vscoderemote
+# Contributing to Code Remote
 
 Thanks for helping. Bug reports, fixes, docs and features are all welcome. By taking part you
 agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).

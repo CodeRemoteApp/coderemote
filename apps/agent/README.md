@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Tranthanh98/vscoderemote/main/apps/ios/Design/AppIcon/Icon-Default-1024x1024@1x.png" width="96" height="96" alt="Code Remote icon">
+  <img src="https://raw.githubusercontent.com/Tranthanh98/coderemote/main/apps/ios/Design/AppIcon/Icon-Default-1024x1024@1x.png" width="96" height="96" alt="Code Remote icon">
 </p>
 
 <h1 align="center">coderemote</h1>
@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/coderemote"><img src="https://img.shields.io/npm/v/coderemote" alt="npm version"></a>
-  <a href="https://github.com/Tranthanh98/vscoderemote/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/coderemote" alt="license: AGPL-3.0-or-later"></a>
+  <a href="https://github.com/Tranthanh98/coderemote/blob/main/LICENSE"><img src="https://img.shields.io/npm/l/coderemote" alt="license: AGPL-3.0-or-later"></a>
   <img src="https://img.shields.io/node/v/coderemote" alt="node version">
 </p>
 
@@ -70,7 +70,7 @@ Remote shell access is serious, so access is locked down by default:
 
 `coderemote up --allow-anonymous` skips the account sign-in when you want the pairing token
 alone. Found a vulnerability? See the
-[security policy](https://github.com/Tranthanh98/vscoderemote/blob/main/SECURITY.md).
+[security policy](https://github.com/Tranthanh98/coderemote/blob/main/SECURITY.md).
 
 ## Commands
 
@@ -100,7 +100,7 @@ Options: `--root DIR` shares another folder; `--port N` picks the local port (de
 - On Linux, `node-pty` compiles on install: have `python3`, `make` and a C++ compiler
   (`build-essential` on Debian/Ubuntu)
 - The **Code Remote** iOS app on your iPhone (App Store release coming; meanwhile build it
-  from [source](https://github.com/Tranthanh98/vscoderemote#build-the-ios-app))
+  from [source](https://github.com/Tranthanh98/coderemote#build-the-ios-app))
 
 ## FAQ
 
@@ -121,6 +121,6 @@ repository inside it.
 
 ## License
 
-[AGPL-3.0-or-later](https://github.com/Tranthanh98/vscoderemote/blob/main/LICENSE).
+[AGPL-3.0-or-later](https://github.com/Tranthanh98/coderemote/blob/main/LICENSE).
 "Code Remote" and its icon are trademarks of the project; see
-[TRADEMARKS.md](https://github.com/Tranthanh98/vscoderemote/blob/main/TRADEMARKS.md).
+[TRADEMARKS.md](https://github.com/Tranthanh98/coderemote/blob/main/TRADEMARKS.md).
