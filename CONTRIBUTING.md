@@ -64,6 +64,11 @@ git tag v1.2.0-beta.1 && git push origin v1.2.0-beta.1   # prerelease ("next")
 
 `.github/workflows/publish-npm.yml` runs the tests and publishes with npm Trusted Publishing.
 
+In Claude Code, `/release` does all of it: picks the next patch version (or the one you pass,
+`/release v1.2.0`, `/release v1.2.0-beta.1`, `/release beta`), checks that `main` is clean and
+pushed and that tests pass, pushes the tag, follows the workflow, verifies npm and creates the
+GitHub release. See `.claude/skills/release/`.
+
 ## Changing the protocol
 
 The agent and the app talk through the contract in `packages/protocol`. When you change it:
