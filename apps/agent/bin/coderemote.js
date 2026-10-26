@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import qrcode from 'qrcode-terminal';
 import { createAgentServer } from '@vsremote/agent-core';
@@ -11,6 +12,8 @@ import { ensureDevtunnel } from '../src/devtunnel.js';
 import { PreviewTunnel } from '../src/preview.js';
 import { AgentRegistry } from '../src/registry.js';
 import { MACHINE_LABEL, tunnelStatus } from '../src/tunnel-status.js';
+import { availableUpdate, fetchLatest, installCommand, isNewer } from '../src/update.js';
+import pkg from '../package.json' with { type: 'json' };
 import { Spinner } from '../src/spinner.js';
 import { codeTunnelLogin, codeTunnelSignedIn, findCode, hostCodeTunnel } from '../src/vscode-tunnel.js';
 import { pairingUrl, webUrl } from '@vsremote/protocol';
@@ -22,6 +25,10 @@ const LEGACY_CONFIG_DIR = path.join(os.homedir(), '.vsremote');
 if (!fs.existsSync(CONFIG_DIR) && fs.existsSync(LEGACY_CONFIG_DIR)) fs.renameSync(LEGACY_CONFIG_DIR, CONFIG_DIR);
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const DEFAULT_PORT = 31580;
+// Bundled into the published dist/coderemote.js, whose package.json the release workflow stamps
+// with the tag's version. A source checkout has no real version, so it never checks for updates.
+const VERSION = pkg.version;
+const PACKAGED = path.basename(path.dirname(fileURLToPath(import.meta.url))) === 'dist';
 const spinner = new Spinner();
 
 function loadConfig() {
@@ -254,6 +261,8 @@ const USAGE = `Usage: coderemote <command> [options]
   kill <id>... | --all kill terminal sessions (an id prefix is enough)
   stop [--all]         stop the agent for this folder (or every agent)
   rotate-token         revoke every paired device
+  update               install the latest coderemote (up says when there's one)
+  version              print this coderemote's version (also --version, -v)
   login                sign in to Microsoft Dev Tunnels with GitHub (up does this when needed);
                        --microsoft for a Microsoft account, --device-code without a browser
 
@@ -268,7 +277,12 @@ Options:
 const HELP_FLAGS = ['help', '--help', '-help', '-h'];
 const argv = process.argv.slice(2);
 // Bare `coderemote` or `--help` anywhere shows usage rather than sharing a folder by accident.
-const [cmd, ...rest] = argv.length === 0 || argv.some((a) => HELP_FLAGS.includes(a)) ? ['help'] : argv;
+const [cmd, ...rest] =
+	argv.length === 0 || argv.some((a) => HELP_FLAGS.includes(a))
+		? ['help']
+		: argv.some((a) => a === '--version' || a === '-v')
+			? ['version']
+			: argv;
 const flag = (name) => {
 	const i = rest.indexOf(name);
 	return i >= 0 ? rest[i + 1] : undefined;
@@ -402,6 +416,11 @@ switch (cmd) {
 		break;
 	}
 	case 'up': {
+		// Asked alongside the tunnel setup, which takes longer, so it never delays the QR code.
+		const update =
+			PACKAGED && !process.env.CODEREMOTE_NO_UPDATE_CHECK
+				? availableUpdate({ current: VERSION, dir: CONFIG_DIR }).catch(() => null)
+				: null;
 		let started;
 		try {
 			started = await start({ tunnel: true });
@@ -413,6 +432,8 @@ switch (cmd) {
 		const vscodeUrl = rest.includes('--web') ? await startVSCodeTunnel() : null;
 		console.log(`\n  Sharing: ${root}`);
 		printPairing(url, cfg.token, access, vscodeUrl);
+		const newer = await update;
+		if (newer) console.log(`  Update available: ${VERSION} → ${newer}. Run \`coderemote update\` to install it.\n`);
 		break;
 	}
 	case 'status':
@@ -481,6 +502,43 @@ switch (cmd) {
 		await resolveDevtunnel();
 		process.exit(await interactiveLogin(loginArgs()));
 	}
+	case 'update': {
+		if (!PACKAGED) {
+			console.log('This coderemote runs from a source checkout: update it with `git pull`.');
+			break;
+		}
+		const latest = await fetchLatest({ timeoutMs: 10_000 });
+		if (!latest) {
+			console.error("Couldn't reach the npm registry. Try again, or run `npm install -g coderemote@latest`.");
+			process.exit(1);
+		}
+		if (!isNewer(latest, VERSION)) {
+			console.log(`coderemote ${VERSION} is the latest version.`);
+			break;
+		}
+		const [command, args] = installCommand(fs.realpathSync(process.argv[1]));
+		console.log(`Updating coderemote ${VERSION} → ${latest}: ${command} ${args.join(' ')}\n`);
+		const code = await new Promise((resolve) => {
+			spawn(command, args, { stdio: 'inherit' })
+				.on('exit', resolve)
+				.on('error', () => resolve(127));
+		});
+		if (code !== 0) {
+			console.error(`\nThe update failed (${command} exited with ${code}).`);
+			console.error(`If it was a permission error (EACCES), run it with sudo: sudo ${command} ${args.join(' ')}`);
+			process.exit(code || 1);
+		}
+		const running = registry.list();
+		console.log(`\nUpdated to coderemote ${latest}.`);
+		if (running.length) {
+			console.log(`${running.length === 1 ? 'An agent is' : `${running.length} agents are`} still running the previous version.`);
+			console.log('Restart: `coderemote stop --all`, then `coderemote up` in each shared folder.');
+		}
+		break;
+	}
+	case 'version':
+		console.log(VERSION);
+		break;
 	case 'help':
 		console.log(USAGE);
 		break;
