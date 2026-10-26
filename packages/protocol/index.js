@@ -35,6 +35,8 @@ export const Routes = Object.freeze({
 	previewList: 'GET /api/preview',
 	previewOpen: 'POST /api/preview',
 	previewClose: 'DELETE /api/preview',
+	previewShare: 'POST /api/preview/share',
+	previewUnshare: 'DELETE /api/preview/share',
 	tunnelToken: 'POST /api/tunnel/token',
 });
 

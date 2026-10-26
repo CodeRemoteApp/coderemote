@@ -58,7 +58,8 @@ async function readJson(req) {
  * @param {() => Promise<{token: string, expiresAt: number} | null>} [opts.tunnelToken]
  *        mints a dev tunnels connect token; resolves null (or is absent) for anonymous tunnels
  * @param {object | null} [opts.preview]  forwards local ports to a tunnel for previews
- *        (`list()`, `forward(port)`, `unforward(port)`, `token()`); absent without a tunnel
+ *        (`list()`, `forward(port)`, `unforward(port)`, `share(port, hours)`, `unshare(port)`,
+ *        `token()`); absent without a tunnel
  */
 export function createAgentServer({ token, root, tunnelToken = async () => null, preview = null }) {
 	const handoff = new TunnelHandoff({ token, mint: tunnelToken });
@@ -76,6 +77,11 @@ export function createAgentServer({ token, root, tunnelToken = async () => null,
 		const port = Number(value);
 		if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(400, 'port must be 1-65535');
 		if (port === ownPort) throw new HttpError(400, "the agent's own port is already on its tunnel");
+		return port;
+	}
+
+	function previewed(port) {
+		if (!preview.list().some((p) => p.port === port)) throw new HttpError(404, 'that port is not being previewed');
 		return port;
 	}
 
@@ -255,6 +261,29 @@ export function createAgentServer({ token, root, tunnelToken = async () => null,
 		[Routes.previewClose]: async (url) => {
 			const port = previewPort(url.searchParams.get('port'), server.address()?.port);
 			await preview.unforward(port);
+			return previews();
+		},
+
+		[Routes.previewShare]: async (url, req) => {
+			const { port: value, hours } = await readJson(req);
+			const port = previewed(previewPort(value, server.address()?.port));
+			// Dev tunnels access entries last 1 hour to 30 days.
+			if (!Number.isInteger(hours) || hours < 1 || hours > 720) throw new HttpError(400, 'hours must be 1-720');
+			try {
+				await preview.share(port, hours);
+			} catch (e) {
+				throw new HttpError(502, e.message);
+			}
+			return previews();
+		},
+
+		[Routes.previewUnshare]: async (url) => {
+			const port = previewPort(url.searchParams.get('port'), server.address()?.port);
+			try {
+				await preview.unshare(port);
+			} catch (e) {
+				throw new HttpError(502, e.message);
+			}
 			return previews();
 		},
 

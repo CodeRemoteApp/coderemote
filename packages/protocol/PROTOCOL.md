@@ -148,9 +148,11 @@ Agents running without a tunnel, and agents from before these routes, answer 404
 
 | Route | Request | Response |
 | --- | --- | --- |
-| `GET /api/preview` | | `{ ports: [{ port, url }], token, expiresAt }` |
+| `GET /api/preview` | | `{ ports: [{ port, url, sharedUntil }], token, expiresAt }` |
 | `POST /api/preview` | `{ port }` | same; forwards the port (502 when the tunnel can't) |
-| `DELETE /api/preview?port=` | | same; stops forwarding it |
+| `DELETE /api/preview?port=` | | same; stops forwarding it, and sharing it |
+| `POST /api/preview/share` | `{ port, hours }` | same; anyone with the port's `url` can open it, without signing in, for 1-720 hours (404 when the port isn't forwarded) |
+| `DELETE /api/preview/share?port=` | | same; the port is private again |
 
 `url` is the port's public address (`https://<tunnel>-<port>.<region>.devtunnels.ms`). Adding or
 removing a port restarts the preview tunnel's host, which takes a few seconds and briefly drops
@@ -158,3 +160,8 @@ the other previews. `token` is a connect token for the preview tunnel (null unti
 forwarded) and `expiresAt` its expiry in milliseconds since the epoch. Load a preview by sending
 `X-Tunnel-Authorization: tunnel <token>` with the first request; the relay answers with a
 session cookie for that port's host, which carries the page's own requests after that.
+
+`sharedUntil` is when a public share of that port ends (milliseconds since the epoch), or null
+when only the owner can open it. A share covers that one port of the preview tunnel, never the
+agent's own tunnel; the relay ends it on time by itself. Shares end with the agent: its next
+run starts a fresh preview tunnel.

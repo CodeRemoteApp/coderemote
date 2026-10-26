@@ -15,6 +15,8 @@ export class PreviewTunnel {
 	/** @type {{ child: import('node:child_process').ChildProcess, urls: Map<number, string> } | null} */
 	#host = null;
 	#ports = new Set();
+	/** port -> ms since the epoch when its public access ends */
+	#shares = new Map();
 	#token = null;
 
 	/**
@@ -43,7 +45,41 @@ export class PreviewTunnel {
 	}
 
 	list() {
-		return [...(this.#host?.urls ?? [])].map(([port, url]) => ({ port, url })).sort((a, b) => a.port - b.port);
+		const now = Date.now();
+		return [...(this.#host?.urls ?? [])]
+			.map(([port, url]) => {
+				const until = this.#shares.get(port);
+				return { port, url, sharedUntil: until > now ? until : null };
+			})
+			.sort((a, b) => a.port - b.port);
+	}
+
+	/**
+	 * Lets anyone with the port's link open it, without signing in, for `hours`. Only that port of
+	 * the preview tunnel: the agent's own tunnel, and its shell, stay private. The relay ends it
+	 * on time by itself; `unshare` ends it sooner.
+	 */
+	share(port, hours) {
+		return this.#serial(async () => {
+			if (!this.#host?.urls.has(port)) throw new Error(`port ${port} is not being previewed`);
+			// Replace any earlier share of this port rather than stacking entries.
+			await this.devtunnel('access', 'reset', this.#tunnelId, '-p', String(port));
+			const res = await this.devtunnel(
+				'access', 'create', this.#tunnelId, '-p', String(port), '--anonymous', '--expiration', `${hours}h`, '--json',
+			);
+			if (!res.ok) throw new Error(`devtunnel access create failed: ${res.out.trim()}`);
+			const entries = JSON.parse(res.out.slice(res.out.indexOf('{'))).accessControlEntries ?? [];
+			const until = Date.parse(entries.find((e) => e.type === 'Anonymous')?.expiration);
+			this.#shares.set(port, Number.isFinite(until) ? until : Date.now() + hours * 3_600_000);
+		});
+	}
+
+	unshare(port) {
+		return this.#serial(async () => {
+			if (!this.#shares.delete(port) || !this.#tunnelId) return;
+			const res = await this.devtunnel('access', 'reset', this.#tunnelId, '-p', String(port));
+			if (!res.ok) throw new Error(`devtunnel access reset failed: ${res.out.trim()}`);
+		});
 	}
 
 	/** @returns {Promise<{port: number, url: string}>} */
@@ -70,6 +106,8 @@ export class PreviewTunnel {
 	unforward(port) {
 		return this.#serial(async () => {
 			if (!this.#ports.delete(port) || !this.#tunnelId) return;
+			// Deleting the port deletes its access entries too, a public share included.
+			this.#shares.delete(port);
 			await this.devtunnel('port', 'delete', this.#tunnelId, '-p', String(port));
 			if (this.#ports.size) await this.#restartHost();
 			else this.#stopHost();
