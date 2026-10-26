@@ -1,0 +1,16 @@
+{
+  "name": "vsremote",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/protocol",
+    "packages/agent-core",
+    "apps/agent"
+  ],
+  "scripts": {
+    "agent": "node apps/agent/bin/vsremote.js",
+    "test": "npm test --workspaces --if-present",
+    "test:kit": "swift test --package-path packages/VSRemoteKit"
+  }
+}

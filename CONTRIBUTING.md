@@ -1,0 +1,81 @@
+# Contributing to vscoderemote
+
+Thanks for helping. Bug reports, fixes, docs and features are all welcome. By taking part you
+agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+**Security issues are not filed as public issues.** See [SECURITY.md](SECURITY.md).
+
+## Layout
+
+| Path | What it is |
+| --- | --- |
+| `apps/agent` | `vsremote` CLI: starts the agent and hosts it through a dev tunnel |
+| `packages/agent-core` | the agent's HTTP + WebSocket server (files, git, terminals) |
+| `packages/protocol` | wire contract shared by the agent and clients, documented in `PROTOCOL.md` |
+| `packages/VSRemoteKit` | Swift package: API client, pairing, tunnel sign-in, terminal UI |
+| `apps/ios` | the iOS app |
+
+## Setting up
+
+Requirements: Node.js 20+, Xcode 27+, the [devtunnel CLI](https://learn.microsoft.com/azure/developer/dev-tunnels/get-started)
+(`brew install --cask devtunnel`), and an iPhone for the app.
+
+```sh
+npm install                          # agent workspaces
+(cd apps/agent && npm link)          # puts `vsremote` on your PATH
+xcodebuild -downloadComponent MetalToolchain   # once, for SwiftTerm
+cp apps/ios/Config/Local.xcconfig.example apps/ios/Config/Local.xcconfig
+# set DEVELOPMENT_TEAM and BUNDLE_ID_PREFIX in Local.xcconfig (a free Apple ID works)
+scripts/ios-device.sh                # build, install and launch on your iPhone
+```
+
+Never commit `Local.xcconfig`, tokens, or anything from `~/.vsremote/`.
+
+## Tests
+
+```sh
+npm test          # agent end-to-end tests (real HTTP, WebSocket and PTY)
+npm run test:kit  # VSRemoteKit unit tests
+```
+
+Both must pass before a pull request is merged. Add tests with the change: the agent tests
+run against an in-process server, and the Kit tests cover parsing, encoding and auth logic.
+
+UI changes are checked by hand on a real iPhone; describe what you tried (and add a
+screenshot or recording) in the pull request. Automated tests must never drive a terminal
+session or agent that someone is actually using: start a throwaway agent on another port.
+
+## Changing the protocol
+
+The agent and the app talk through the contract in `packages/protocol`. When you change it:
+
+1. Update `packages/protocol/index.js`, `PROTOCOL.md`, and
+   `packages/VSRemoteKit/Sources/VSRemoteKit/Protocol.swift` together.
+2. Bump `PROTOCOL_VERSION` (both sides) for any change an older client or agent can't handle.
+
+## Security-sensitive areas
+
+Changes here get extra review; please explain the reasoning in the pull request:
+
+- the shared-folder sandbox (`packages/agent-core/src/sandbox.js`): nothing outside the folder
+  `vsremote up` runs in may be reachable
+- authentication: the bearer token, the tunnel sign-in handoff (`handoff.js`, `TunnelAuth.swift`)
+  and pairing links
+- anything that runs commands (`git.js` uses `execFile` without a shell; keep it that way)
+
+## Pull requests
+
+- Keep each pull request to one change, and match the style of the surrounding code.
+- Write commit messages that say what changed and why.
+- Sign off every commit (`git commit -s`) to certify the
+  [Developer Certificate of Origin](https://developercertificate.org/): that you wrote the
+  change or have the right to submit it under this project's license.
+
+## License of contributions
+
+The project is licensed under the [GNU AGPL v3.0 or later](LICENSE). By submitting a
+contribution you agree that it is licensed under the same terms, and you additionally grant
+the project maintainer a perpetual, worldwide, non-exclusive, royalty-free license to
+distribute your contribution as part of the official app builds through app stores (such as
+the Apple App Store) whose terms may add restrictions the AGPL doesn't allow. Everyone keeps
+the full AGPL rights to the source code.

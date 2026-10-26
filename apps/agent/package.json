@@ -1,0 +1,16 @@
+{
+  "name": "@vsremote/agent",
+  "version": "0.1.0",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "description": "vsremote CLI: hosts the agent on the dev machine and exposes it through Dev Tunnels",
+  "type": "module",
+  "bin": {
+    "vsremote": "./bin/vsremote.js"
+  },
+  "dependencies": {
+    "@vsremote/agent-core": "*",
+    "@vsremote/protocol": "*",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
