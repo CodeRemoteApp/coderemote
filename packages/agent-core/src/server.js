@@ -61,8 +61,10 @@ async function readJson(req) {
  * @param {object | null} [opts.preview]  forwards local ports to a tunnel for previews
  *        (`list()`, `forward(port)`, `unforward(port)`, `share(port, hours)`, `unshare(port)`,
  *        `token()`); absent without a tunnel
+ * @param {() => Promise<object | null>} [opts.tunnelStatus]  the tunnel and the account's other
+ *        machines, for `GET /api/tunnel`; absent without a tunnel
  */
-export function createAgentServer({ token, root, tunnelToken = async () => null, preview = null }) {
+export function createAgentServer({ token, root, tunnelToken = async () => null, preview = null, tunnelStatus = null }) {
 	const handoff = new TunnelHandoff({ token, mint: tunnelToken });
 	const sandbox = new Sandbox(root);
 	const sessions = new SessionManager();
@@ -332,6 +334,12 @@ export function createAgentServer({ token, root, tunnelToken = async () => null,
 		[Routes.previewRequestsClear]: async (url) => {
 			inspected(url.searchParams.get('port')).clear();
 			return {};
+		},
+
+		[Routes.tunnelStatus]: async () => {
+			const status = await tunnelStatus?.();
+			if (!status) throw new HttpError(404, 'this agent runs without a tunnel');
+			return status;
 		},
 
 		[Routes.tunnelToken]: async () => {

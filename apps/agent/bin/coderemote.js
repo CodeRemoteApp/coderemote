@@ -10,6 +10,7 @@ import { createAgentServer } from '@vsremote/agent-core';
 import { ensureDevtunnel } from '../src/devtunnel.js';
 import { PreviewTunnel } from '../src/preview.js';
 import { AgentRegistry } from '../src/registry.js';
+import { MACHINE_LABEL, tunnelStatus } from '../src/tunnel-status.js';
 import { Spinner } from '../src/spinner.js';
 import { codeTunnelLogin, codeTunnelSignedIn, findCode, hostCodeTunnel } from '../src/vscode-tunnel.js';
 import { pairingUrl, webUrl } from '@vsremote/protocol';
@@ -40,8 +41,8 @@ function saveConfig(cfg) {
 	fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
 }
 
-function listen(token, port, root, tunnelToken, preview) {
-	const server = createAgentServer({ token, root, tunnelToken, preview });
+function listen(token, port, root, tunnelToken, preview, status) {
+	const server = createAgentServer({ token, root, tunnelToken, preview, tunnelStatus: status });
 	return new Promise((resolve, reject) => {
 		server.once('error', reject);
 		// Loopback only: remote access goes exclusively through the tunnel.
@@ -133,9 +134,10 @@ function applyAccess(tunnelId, anonymous) {
 async function ensureTunnel(cfg, port, anonymous) {
 	if (cfg.tunnelId) {
 		// Each devtunnel call takes 1-2s, so run them together. Tunnels expire 30 days after the
-		// last update; pushing that back keeps the URL (and every pairing) for good.
+		// last update; pushing that back keeps the URL (and every pairing) for good. The label
+		// lets the account's other agents list this machine (tunnels from older releases lack it).
 		const [updated, access] = await Promise.all([
-			devtunnel('update', cfg.tunnelId, '--expiration', '30d'),
+			devtunnel('update', cfg.tunnelId, '--expiration', '30d', '--add-labels', MACHINE_LABEL),
 			applyAccess(cfg.tunnelId, anonymous),
 		]);
 		if (updated.ok) {
@@ -147,7 +149,7 @@ async function ensureTunnel(cfg, port, anonymous) {
 	}
 
 	// Every request needs the agent's bearer token either way; a private tunnel also needs a sign-in.
-	const createArgs = ['create', '--expiration', '30d', '-d', `coderemote ${os.hostname()}`, '--json'];
+	const createArgs = ['create', '--expiration', '30d', '-d', `coderemote ${os.hostname()}`, '--labels', MACHINE_LABEL, '--json'];
 	if (anonymous) createArgs.push('--allow-anonymous');
 	const created = await devtunnel(...createArgs);
 	if (!created.ok) throw new Error(`devtunnel create failed:\n${created.out}`);
@@ -303,9 +305,13 @@ async function start({ tunnel }) {
 				mintToken: connectToken,
 			})
 		: null;
+	let account;
+	const status = tunnel
+		? tunnelStatus({ devtunnel, tunnelId: () => tunnelId, account: () => account, anonymous, preview })
+		: null;
 	spinner.start('Starting agent');
 	try {
-		server = await listen(cfg.token, port, root, tunnelToken, preview);
+		server = await listen(cfg.token, port, root, tunnelToken, preview, status);
 	} catch (e) {
 		spinner.fail();
 		if (e.code !== 'EADDRINUSE') throw e;
@@ -323,6 +329,7 @@ async function start({ tunnel }) {
 		await resolveDevtunnel();
 		spinner.start('Checking dev tunnels sign-in');
 		const user = await tunnelUser();
+		account = user;
 		spinner.succeed();
 		// Connecting to the relay is the slow part; update the tunnel's settings meanwhile.
 		spinner.start('Connecting to the relay');

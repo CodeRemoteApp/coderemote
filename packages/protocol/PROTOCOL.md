@@ -44,6 +44,25 @@ Connect tokens last 24 hours. While one still works, `POST /api/tunnel/token` (b
 required) returns `{ token, expiresAt }`, a fresh one; clients renew when less than 12 hours
 remain. Anonymous tunnels answer both routes with 404.
 
+### Tunnel status
+
+`GET /api/tunnel` (bearer token required) describes the agent's tunnel and the other machines on
+the same dev tunnels account. Agents without a tunnel, and agents from before this route, answer 404.
+
+```
+{ account, previewPorts,
+  tunnel: { id, url, access: "private" | "anonymous", expiration, connections, uploaded, downloaded },
+  machines: [{ id, name, url, online, current }] }
+```
+
+`account` is the signed-in dev tunnels user, e.g. `"thanh (GitHub)"`. `expiration`, `uploaded` and
+`downloaded` are the service's own wording (`"30 days"`, `"1188 KB"`); the expiration is pushed
+back every time `coderemote up` starts. `connections` counts clients connected to the tunnel now.
+`machines` are the account's tunnels labelled `coderemote` (every agent labels its own; tunnels from
+older releases are missing until their agent restarts), this one first with `current: true`.
+`url` is a machine's agent address, the same as in its pairing link, so clients can tell which
+ones they've paired; `online` is whether an agent hosts it now. The answer is cached for 15 seconds.
+
 ## Shared folder
 
 The agent shares one folder, the directory `coderemote up` runs in (or `--root DIR`).

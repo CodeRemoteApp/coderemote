@@ -52,7 +52,8 @@
     "prepare": "node scripts/build.js",
     "prepack": "node scripts/build.js && cp ../../LICENSE LICENSE",
     "postpack": "rm -f LICENSE",
-    "postinstall": "node scripts/fix-node-pty.js"
+    "postinstall": "node scripts/fix-node-pty.js",
+    "test": "node --test 'test/*.test.js'"
   },
   "dependencies": {
     "node-pty": "^1.1.0",

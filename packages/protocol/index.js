@@ -41,6 +41,7 @@ export const Routes = Object.freeze({
 	previewRequest: 'GET /api/preview/request',
 	previewRequestsClear: 'DELETE /api/preview/requests',
 	tunnelToken: 'POST /api/tunnel/token',
+	tunnelStatus: 'GET /api/tunnel',
 });
 
 // Opened in the system browser (no bearer token); answers with a redirect to

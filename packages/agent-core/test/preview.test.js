@@ -177,6 +177,14 @@ test('refuses bad ports, the agent itself, and reports tunnel failures', async (
 	assert.match(failed.json.error, /relay unreachable/);
 });
 
+test('reports the tunnel status it is given, and 404 without a tunnel', async () => {
+	const status = { account: 'me', tunnel: { id: 't' }, machines: [], previewPorts: 0 };
+	const server = await listen(createAgentServer({ token, root: tmpRoot, tunnelStatus: async () => status }));
+	assert.deepEqual((await api(server, 'GET', '/api/tunnel')).json, status);
+	const bare = await listen(createAgentServer({ token, root: tmpRoot }));
+	assert.equal((await api(bare, 'GET', '/api/tunnel')).status, 404);
+});
+
 test('agents without a tunnel have no previews', async () => {
 	const server = await listen(createAgentServer({ token, root: tmpRoot }));
 	assert.equal((await api(server, 'GET', '/api/preview')).status, 404);
