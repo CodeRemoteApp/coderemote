@@ -20,6 +20,7 @@ export class Spinner {
 	start(text) {
 		this.stop();
 		this.text = text;
+		this.detail = '';
 		this.startedAt = Date.now();
 		if (!this.tty) {
 			this.stream.write(`  ${text}...\n`);
@@ -35,6 +36,11 @@ export class Spinner {
 		let frame = 0;
 		this.render(FRAMES[0]);
 		this.timer = setInterval(() => this.render(FRAMES[++frame % FRAMES.length]), 80);
+	}
+
+	/** Extra status shown after the step's text while it runs, e.g. a download percentage. */
+	update(detail) {
+		this.detail = detail;
 	}
 
 	succeed() {
@@ -56,7 +62,8 @@ export class Spinner {
 	}
 
 	render(frame) {
-		this.stream.write(`\r\x1b[2K  ${cyan(frame)} ${this.text} ${dim(this.elapsed())}`);
+		const detail = this.detail ? ` ${this.detail}` : '';
+		this.stream.write(`\r\x1b[2K  ${cyan(frame)} ${this.text}${detail} ${dim(this.elapsed())}`);
 	}
 
 	finish(mark) {

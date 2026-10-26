@@ -33,21 +33,20 @@ in your pocket:
 
 ```sh
 npm install -g coderemote
-brew install --cask devtunnel     # Microsoft Dev Tunnels CLI (Linux: see below)
-devtunnel user login -g           # once, sign in with GitHub (-d for a Microsoft account)
-
-cd ~/projects/my-app
-coderemote up
+cd ~/projects/my-app && coderemote up
 ```
 
-`coderemote up` prints a QR code. Scan it with the iPhone Camera (or the **+** button in the
-app) to pair. Done.
+Scan the QR code it prints with your iPhone Camera (or the **+** button in the app). Done.
+
+The first run sets itself up: it downloads Microsoft's Dev Tunnels CLI (once, verified) and
+opens your browser to sign in with GitHub. Prefer a Microsoft account? Run
+`coderemote login --microsoft` first.
 
 ## How it works
 
-```
-iPhone app ──HTTPS / WSS──► Microsoft Dev Tunnels relay ◄── coderemote (your computer)
-```
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Tranthanh98/coderemote/main/docs/images/how-it-works.png" width="760" alt="How it works: the Code Remote app on the iPhone connects over HTTPS/WSS to the Microsoft Dev Tunnels relay; coderemote on your computer (127.0.0.1:31580) connects outbound to the same relay and serves files, git and terminals from the shared folder. Security at each hop: token in the iPhone Keychain, only your account through the relay, token check and one folder on the computer.">
+</p>
 
 `coderemote` starts a small agent that listens on `127.0.0.1` only, and publishes it through
 a [Microsoft Dev Tunnel](https://learn.microsoft.com/azure/developer/dev-tunnels/overview).
@@ -83,6 +82,7 @@ coderemote kill --all            # end every session
 coderemote stop                  # stop the agent for this folder (--all: every agent)
 coderemote serve                 # share on 127.0.0.1 only, no tunnel (local testing)
 coderemote rotate-token          # revoke every paired device
+coderemote login                 # sign in again (--microsoft, or --device-code without a browser)
 coderemote help                  # all options
 ```
 
@@ -92,13 +92,12 @@ Options: `--root DIR` shares another folder; `--port N` picks the local port (de
 ## Requirements
 
 - **Node.js 20** or newer on **macOS** (Linux is expected to work but not yet tested)
-- The **devtunnel CLI**:
-  - macOS: `brew install --cask devtunnel`
-  - Linux: `curl -sL https://aka.ms/DevTunnelCliInstall | bash`
-  - more options in [Microsoft's guide](https://learn.microsoft.com/azure/developer/dev-tunnels/get-started)
-- A GitHub or Microsoft account for `devtunnel user login`
-- On Linux, `node-pty` compiles on install: have `python3`, `make` and a C++ compiler
-  (`build-essential` on Debian/Ubuntu)
+- A **GitHub or Microsoft account** to sign in to Dev Tunnels
+- The **Dev Tunnels CLI** is downloaded on first run into `~/.coderemote/bin` (the macOS build
+  must carry Microsoft's code signature). A `devtunnel` already on your `PATH` is used instead,
+  or point `CODEREMOTE_DEVTUNNEL` at one.
+- On Linux, `node-pty` compiles on install (`python3`, `make`, a C++ compiler:
+  `build-essential` on Debian/Ubuntu), and signing in needs `libsecret` (`libsecret-1-0`)
 - The **Code Remote** iOS app on your iPhone (App Store release coming; meanwhile build it
   from [source](https://github.com/Tranthanh98/coderemote#build-the-ios-app))
 

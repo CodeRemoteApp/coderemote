@@ -17,8 +17,8 @@ agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Setting up
 
-Requirements: Node.js 20+, Xcode 27+, the [devtunnel CLI](https://learn.microsoft.com/azure/developer/dev-tunnels/get-started)
-(`brew install --cask devtunnel`), and an iPhone for the app.
+Requirements: Node.js 20+, Xcode 27+ and an iPhone for the app. `coderemote up` downloads the
+Dev Tunnels CLI on first use (or uses a `devtunnel` on your `PATH`).
 
 ```sh
 npm install                          # agent workspaces (also builds the CLI bundle)

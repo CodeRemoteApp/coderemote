@@ -7,6 +7,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import qrcode from 'qrcode-terminal';
 import { createAgentServer } from '@vsremote/agent-core';
+import { ensureDevtunnel } from '../src/devtunnel.js';
 import { AgentRegistry } from '../src/registry.js';
 import { Spinner } from '../src/spinner.js';
 import { pairingUrl, webUrl } from '@vsremote/protocol';
@@ -46,18 +47,45 @@ function listen(token, port, root, tunnelToken) {
 	});
 }
 
+// The Dev Tunnels CLI: the one on PATH, or a copy downloaded into ~/.coderemote/bin on first use.
+let DEVTUNNEL = 'devtunnel';
+
+async function resolveDevtunnel() {
+	let installing = false;
+	DEVTUNNEL = await ensureDevtunnel({
+		dir: path.join(CONFIG_DIR, 'bin'),
+		progress: (detail) => {
+			if (!installing) {
+				installing = true;
+				spinner.start('Installing devtunnel (Microsoft Dev Tunnels CLI, one time)');
+			}
+			spinner.update(detail);
+		},
+	});
+	if (installing) spinner.succeed();
+}
+
 async function devtunnel(...args) {
 	try {
-		const { stdout } = await run('devtunnel', args);
+		const { stdout } = await run(DEVTUNNEL, args);
 		return { ok: true, out: stdout };
 	} catch (e) {
-		if (e.code === 'ENOENT') {
-			spinner.stop();
-			console.error('devtunnel CLI not found. Install it: brew install --cask devtunnel');
-			process.exit(1);
-		}
-		return { ok: false, out: `${e.stdout || ''}${e.stderr || ''}` };
+		return { ok: false, out: `${e.stdout || ''}${e.stderr || ''}` || e.message };
 	}
+}
+
+/** `devtunnel user login` arguments: GitHub by default, as `coderemote login` documents. */
+function loginArgs(opts = rest) {
+	const args = ['user', 'login'];
+	if (!opts.includes('--microsoft')) args.push('-g');
+	if (opts.includes('--device-code')) args.push('-d');
+	return args;
+}
+
+function interactiveLogin(args) {
+	return new Promise((resolve) => {
+		spawn(DEVTUNNEL, args, { stdio: 'inherit' }).on('exit', resolve);
+	});
 }
 
 // `devtunnel user show` exits 0 even when the login has expired, so match the text.
@@ -68,15 +96,12 @@ async function login(reason) {
 	spinner.stop();
 	console.error(`Dev tunnels: ${reason.trim()}`);
 	if (!process.stdin.isTTY) {
-		console.error('Run: devtunnel user login -g   (or -d for a Microsoft account), then try again.');
+		console.error('Run `coderemote login` (--microsoft for a Microsoft account), then try again.');
 		process.exit(1);
 	}
-	console.error('Signing in again with GitHub (devtunnel user login -g)...\n');
-	const code = await new Promise((resolve) => {
-		spawn('devtunnel', ['user', 'login', '-g'], { stdio: 'inherit' }).on('exit', resolve);
-	});
-	if (code !== 0) {
-		console.error('\nLogin failed. Run `devtunnel user login -g` (or -d) yourself, then try again.');
+	console.error('Signing in with GitHub (use `coderemote login --microsoft` for a Microsoft account)...\n');
+	if ((await interactiveLogin(loginArgs([]))) !== 0) {
+		console.error('\nLogin failed. Run `coderemote login` (--microsoft, --device-code), then try again.');
 		process.exit(1);
 	}
 }
@@ -148,7 +173,7 @@ async function connectToken(tunnelId) {
 
 function hostTunnel(tunnelId, port) {
 	return new Promise((resolve, reject) => {
-		const child = spawn('devtunnel', ['host', tunnelId], { stdio: ['ignore', 'pipe', 'pipe'] });
+		const child = spawn(DEVTUNNEL, ['host', tunnelId], { stdio: ['ignore', 'pipe', 'pipe'] });
 		let log = '';
 		const onData = (d) => {
 			log += d;
@@ -185,6 +210,8 @@ const USAGE = `Usage: coderemote <command> [options]
   kill <id>... | --all kill terminal sessions (an id prefix is enough)
   stop [--all]         stop the agent for this folder (or every agent)
   rotate-token         revoke every paired device
+  login                sign in to Microsoft Dev Tunnels with GitHub (up does this when needed);
+                       --microsoft for a Microsoft account, --device-code without a browser
 
 Options:
   --root DIR           folder to share (default: current folder)
@@ -235,6 +262,7 @@ async function start({ tunnel }) {
 	let url = `http://127.0.0.1:${port}`;
 	if (tunnel) {
 		spinner.succeed();
+		await resolveDevtunnel();
 		spinner.start('Checking dev tunnels sign-in');
 		const user = await tunnelUser();
 		spinner.succeed();
@@ -264,6 +292,10 @@ async function start({ tunnel }) {
 	};
 	process.on('SIGINT', shutdown);
 	process.on('SIGTERM', shutdown);
+	// Closing the terminal window sends SIGHUP; without this the tunnel host would outlive us.
+	process.on('SIGHUP', shutdown);
+	// Last resort for any other way out (an uncaught error): never leave the tunnel host behind.
+	process.on('exit', () => child?.kill());
 	return { url, access };
 }
 
@@ -374,6 +406,10 @@ switch (cmd) {
 		saveConfig(cfg);
 		console.log('Token rotated. Re-pair your devices, and restart running agents.');
 		break;
+	}
+	case 'login': {
+		await resolveDevtunnel();
+		process.exit(await interactiveLogin(loginArgs()));
 	}
 	case 'help':
 		console.log(USAGE);

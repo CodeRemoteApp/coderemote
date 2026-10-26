@@ -24,11 +24,11 @@ On your computer:
 
 ```sh
 npm install -g coderemote
-brew install --cask devtunnel && devtunnel user login -g   # once
 cd ~/projects/my-app && coderemote up
 ```
 
-On your iPhone: scan the QR code that `coderemote up` prints. The app opens and pairs.
+On your iPhone: scan the QR code it prints. That's all: the first run downloads Microsoft's
+Dev Tunnels CLI and asks you to sign in with GitHub in the browser.
 
 The App Store release is coming; until then, [build the app yourself](#build-the-ios-app).
 Everything about the CLI (commands, requirements, FAQ) is in its
@@ -47,9 +47,9 @@ Everything about the CLI (commands, requirements, FAQ) is in its
 
 ## How it works
 
-```
-iPhone app ──HTTPS / WSS──► Microsoft Dev Tunnels relay ◄── coderemote agent (your computer)
-```
+<p align="center">
+  <img src="docs/images/how-it-works.png" width="760" alt="How it works: the Code Remote app on the iPhone connects over HTTPS/WSS to the Microsoft Dev Tunnels relay; coderemote on your computer (127.0.0.1:31580) connects outbound to the same relay and serves files, git and terminals from the shared folder. Security at each hop: token in the iPhone Keychain, only your account through the relay, token check and one folder on the computer.">
+</p>
 
 The agent listens on `127.0.0.1` and connects out to the relay, so no inbound port is ever
 opened. The phone talks to it over HTTPS (files, git) and a WebSocket (terminals). The wire
