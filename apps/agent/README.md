@@ -28,6 +28,8 @@ in your pocket:
 - **Terminal:** a real shell (PTY) with a key bar for Ctrl, Tab, Esc and arrows; sessions
   keep running when your phone sleeps and pick up where you left off, so `claude`, `vim`,
   `htop` or a long build survive switching apps
+- **VS Code in the browser (optional):** `coderemote up --web` also starts VS Code's own
+  tunnel and prints a vscode.dev link that opens the folder in the full editor
 
 ## Quick start
 
@@ -68,7 +70,13 @@ Remote shell access is serious, so access is locked down by default:
 - **Encrypted.** All traffic is HTTPS / WSS (TLS 1.2+) to the relay.
 
 `coderemote up --allow-anonymous` skips the account sign-in when you want the pairing token
-alone. Found a vulnerability? See the
+alone.
+
+`--web` runs `code tunnel`, which is VS Code's tunnel, not ours: it signs in with its own
+GitHub account and gives the browser the whole machine, not just the shared folder. It stops
+with `coderemote`, unless a `code tunnel` was already running.
+
+Found a vulnerability? See the
 [security policy](https://github.com/CodeRemoteApp/coderemote/blob/main/SECURITY.md).
 
 ## Commands
@@ -97,6 +105,9 @@ Options: `--root DIR` shares another folder; `--port N` picks the local port (de
 - The **Dev Tunnels CLI** is downloaded on first run into `~/.coderemote/bin` (the macOS build
   must carry Microsoft's code signature). A `devtunnel` already on your `PATH` is used instead,
   or point `CODEREMOTE_DEVTUNNEL` at one.
+- For `--web` only: **VS Code** with its `code` command on your `PATH` (in VS Code, run
+  *Shell Command: Install 'code' command in PATH*), or point `CODEREMOTE_CODE` at one. The first
+  run signs `code tunnel` in with GitHub.
 - On Linux, `node-pty` compiles on install (`python3`, `make`, a C++ compiler:
   `build-essential` on Debian/Ubuntu), and signing in needs `libsecret` (`libsecret-1-0`)
 - The **Code Remote** iOS app on your iPhone (App Store release coming; meanwhile build it

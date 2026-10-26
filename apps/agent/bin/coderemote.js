@@ -187,11 +187,16 @@ function hostTunnel(tunnelId, port) {
 	});
 }
 
-function printPairing(url, token, access) {
+function printPairing(url, token, access, vscodeUrl) {
 	const pair = pairingUrl({ url, token });
 	if (access) console.log(`  Access:  ${access}`);
-	console.log(`\n  Web:  ${webUrl({ url, token })}`);
-	console.log(`  App:  ${pair}\n`);
+	// Labels line up whether or not the VS Code row is there.
+	const label = (name) => `${name}:`.padEnd(vscodeUrl ? 9 : 4);
+	console.log('');
+	if (vscodeUrl) console.log(`  ${label('VS Code')}  ${vscodeUrl}`);
+	console.log(`  ${label('Web')}  ${webUrl({ url, token })}`);
+	console.log(`  ${label('App')}  ${pair}\n`);
+	if (vscodeUrl) console.log('  VS Code opens in the browser after signing in with the account of `code tunnel`.');
 	console.log('  Scan with the iPhone Camera, or open either link on the phone:\n');
 	qrcode.generate(pair, { small: true });
 	console.log(
@@ -381,8 +386,7 @@ switch (cmd) {
 		const { url, access } = started;
 		const vscodeUrl = rest.includes('--web') ? await startVSCodeTunnel() : null;
 		console.log(`\n  Sharing: ${root}`);
-		printPairing(url, cfg.token, access);
-		if (vscodeUrl) console.log(`  VS Code in the browser (sign in with the account of \`code tunnel\`):\n  ${vscodeUrl}\n`);
+		printPairing(url, cfg.token, access, vscodeUrl);
 		break;
 	}
 	case 'status':
