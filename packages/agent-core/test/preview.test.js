@@ -1,19 +1,24 @@
-// Preview routes against an in-process agent with a stand-in for the preview tunnel.
+// Preview routes against an in-process agent. A stand-in for the preview tunnel hands out the
+// proxy's local address as the "public" URL, so requests to it take the path a relay's would.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { after, before, test } from 'node:test';
+import WebSocket, { WebSocketServer } from 'ws';
 import { createAgentServer } from '../src/index.js';
 
 const token = 'test-token';
-const forwarded = new Map();
+const forwarded = new Set();
 const shared = new Map();
+let failForward = false;
 const preview = {
-	list: () => [...forwarded].map(([port, url]) => ({ port, url, sharedUntil: shared.get(port) ?? null })),
+	list: () => [...forwarded].map((port) => ({ port, url: `http://127.0.0.1:${port}`, sharedUntil: shared.get(port) ?? null })),
 	forward: async (port) => {
-		if (port === 6666) throw new Error('relay unreachable');
-		forwarded.set(port, `https://abc-${port}.usw2.devtunnels.ms`);
+		if (failForward) throw new Error('relay unreachable');
+		forwarded.add(port);
 	},
 	unforward: async (port) => forwarded.delete(port) && shared.delete(port),
 	share: async (port, hours) => shared.set(port, hours * 1000),
@@ -23,11 +28,27 @@ const preview = {
 let tmpRoot;
 const servers = [];
 
-async function start(opts) {
-	const server = createAgentServer({ token, root: tmpRoot, ...opts });
-	await new Promise((r) => server.listen(0, '127.0.0.1', r));
+async function listen(server, host = '127.0.0.1') {
+	await new Promise((r) => server.listen(0, host, r));
 	servers.push(server);
 	return server;
+}
+
+/** A dev server: echoes requests, gzips /zipped, and speaks WebSocket. */
+async function devServer(host) {
+	const server = http.createServer(async (req, res) => {
+		const chunks = [];
+		for await (const c of req) chunks.push(c);
+		if (req.url === '/zipped') {
+			res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip' });
+			return res.end(zlib.gzipSync(JSON.stringify({ zipped: true })));
+		}
+		res.writeHead(201, { 'content-type': 'application/json' });
+		res.end(JSON.stringify({ host: req.headers.host, got: Buffer.concat(chunks).toString() }));
+	});
+	const wss = new WebSocketServer({ server });
+	wss.on('connection', (ws) => ws.on('message', (m) => ws.send(`echo ${m}`)));
+	return listen(server, host);
 }
 
 before(async () => {
@@ -39,6 +60,10 @@ after(async () => {
 	await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
+async function agent() {
+	return listen(createAgentServer({ token, root: tmpRoot, preview }));
+}
+
 async function api(server, method, route, body) {
 	const res = await fetch(`http://127.0.0.1:${server.address().port}${route}`, {
 		method,
@@ -48,49 +73,114 @@ async function api(server, method, route, body) {
 	return { status: res.status, json: await res.json() };
 }
 
-test('forwards a port, lists it with a token, and stops forwarding it', async () => {
-	const server = await start({ preview });
+test('forwards a port through a proxy, lists it with a token, and stops forwarding it', async () => {
+	const server = await agent();
+	const dev = await devServer();
+	const port = dev.address().port;
 	assert.deepEqual((await api(server, 'GET', '/api/preview')).json, { ports: [], token: null, expiresAt: null });
 
-	const opened = await api(server, 'POST', '/api/preview', { port: 5173 });
+	const opened = await api(server, 'POST', '/api/preview', { port });
 	assert.equal(opened.status, 200);
-	assert.deepEqual(opened.json, {
-		ports: [{ port: 5173, url: 'https://abc-5173.usw2.devtunnels.ms', sharedUntil: null }],
-		token: 'connect',
-		expiresAt: 1,
-	});
+	const [entry] = opened.json.ports;
+	assert.equal(entry.port, port, 'clients see the dev server port, not the proxy');
+	assert.notEqual(entry.url, `http://127.0.0.1:${port}`);
+	assert.equal(entry.sharedUntil, null);
+	assert.equal(opened.json.token, 'connect');
 
-	const closed = await api(server, 'DELETE', '/api/preview?port=5173');
-	assert.deepEqual(closed.json.ports, []);
+	// The dev server answers through the proxy, addressed as itself.
+	const res = await fetch(entry.url);
+	assert.deepEqual(await res.json(), { host: `localhost:${port}`, got: '' });
+
+	assert.deepEqual((await api(server, 'DELETE', `/api/preview?port=${port}`)).json.ports, []);
+});
+
+test('records requests, bodies and failures', async () => {
+	const server = await agent();
+	const dev = await devServer('::1');
+	const port = dev.address().port;
+	const { url } = (await api(server, 'POST', '/api/preview', { port })).json.ports[0];
+
+	const posted = await fetch(`${url}/hook?x=1`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"event":"push"}' });
+	assert.equal(posted.status, 201);
+	assert.deepEqual(await (await fetch(`${url}/zipped`)).json(), { zipped: true });
+
+	const { json } = await api(server, 'GET', `/api/preview/requests?port=${port}`);
+	assert.deepEqual(
+		json.requests.map((r) => [r.method, r.path, r.status, r.contentType]),
+		[
+			['POST', '/hook?x=1', 201, 'application/json'],
+			['GET', '/zipped', 200, 'application/json'],
+		],
+	);
+	assert.ok(json.requests.every((r) => Number.isInteger(r.duration)));
+	const [hook, zipped] = json.requests;
+	assert.deepEqual((await api(server, 'GET', `/api/preview/requests?port=${port}&after=${hook.id}`)).json.requests.map((r) => r.id), [zipped.id]);
+
+	const hookDetail = (await api(server, 'GET', `/api/preview/request?port=${port}&id=${hook.id}`)).json;
+	assert.deepEqual(hookDetail.request.body, { size: 16, truncated: false, text: '{"event":"push"}' });
+	assert.equal(hookDetail.request.headers['content-type'], 'application/json');
+	assert.match(hookDetail.response.body.text, /"got":"\{\\"event\\":\\"push\\"\}"/);
+	const zippedDetail = (await api(server, 'GET', `/api/preview/request?port=${port}&id=${zipped.id}`)).json;
+	assert.equal(zippedDetail.response.body.text, '{"zipped":true}', 'gzip bodies are stored decoded');
+
+	// The dev server stops: the proxy answers 502 and says why.
+	dev.close();
+	dev.closeAllConnections();
+	const down = await fetch(`${url}/`);
+	assert.equal(down.status, 502);
+	const failed = (await api(server, 'GET', `/api/preview/requests?port=${port}&after=${zipped.id}`)).json.requests[0];
+	assert.equal(failed.status, 502);
+	assert.match(failed.error, new RegExp(`nothing is listening on port ${port}`));
+
+	assert.equal((await api(server, 'GET', `/api/preview/request?port=${port}&id=999999`)).status, 404);
+	await api(server, 'DELETE', `/api/preview/requests?port=${port}`);
+	assert.deepEqual((await api(server, 'GET', `/api/preview/requests?port=${port}`)).json.requests, []);
+	assert.equal((await api(server, 'GET', '/api/preview/requests?port=1')).status, 404);
+});
+
+test('WebSockets (hot reload) pass through the proxy', async () => {
+	const server = await agent();
+	const dev = await devServer();
+	const { url } = (await api(server, 'POST', '/api/preview', { port: dev.address().port })).json.ports[0];
+	const ws = new WebSocket(url.replace('http', 'ws'));
+	await new Promise((r) => ws.on('open', r));
+	ws.send('hi');
+	const [reply] = await new Promise((r) => ws.once('message', (...a) => r(a)));
+	assert.equal(reply.toString(), 'echo hi');
+	ws.close();
 });
 
 test('shares a previewed port for a while, and makes it private again', async () => {
-	const server = await start({ preview });
-	await api(server, 'POST', '/api/preview', { port: 3000 });
-	assert.equal((await api(server, 'POST', '/api/preview/share', { port: 3001, hours: 1 })).status, 404);
-	assert.equal((await api(server, 'POST', '/api/preview/share', { port: 3000, hours: 0 })).status, 400);
-	assert.equal((await api(server, 'POST', '/api/preview/share', { port: 3000, hours: 721 })).status, 400);
+	const server = await agent();
+	const port = (await devServer()).address().port;
+	await api(server, 'POST', '/api/preview', { port });
+	assert.equal((await api(server, 'POST', '/api/preview/share', { port: 1, hours: 1 })).status, 404);
+	assert.equal((await api(server, 'POST', '/api/preview/share', { port, hours: 0 })).status, 400);
+	assert.equal((await api(server, 'POST', '/api/preview/share', { port, hours: 721 })).status, 400);
 
-	const sharedRes = await api(server, 'POST', '/api/preview/share', { port: 3000, hours: 2 });
-	assert.equal(sharedRes.json.ports.find((p) => p.port === 3000).sharedUntil, 2000);
-	const unshared = await api(server, 'DELETE', '/api/preview/share?port=3000');
-	assert.equal(unshared.json.ports.find((p) => p.port === 3000).sharedUntil, null);
-	await api(server, 'DELETE', '/api/preview?port=3000');
+	const sharedRes = await api(server, 'POST', '/api/preview/share', { port, hours: 2 });
+	assert.equal(sharedRes.json.ports.find((p) => p.port === port).sharedUntil, 2000);
+	const unshared = await api(server, 'DELETE', `/api/preview/share?port=${port}`);
+	assert.equal(unshared.json.ports.find((p) => p.port === port).sharedUntil, null);
+	await api(server, 'DELETE', `/api/preview?port=${port}`);
 });
 
 test('refuses bad ports, the agent itself, and reports tunnel failures', async () => {
-	const server = await start({ preview });
+	const server = await agent();
 	assert.equal((await api(server, 'POST', '/api/preview', { port: 0 })).status, 400);
 	assert.equal((await api(server, 'POST', '/api/preview', { port: 'x' })).status, 400);
 	assert.equal((await api(server, 'POST', '/api/preview', { port: server.address().port })).status, 400);
+	failForward = true;
 	const failed = await api(server, 'POST', '/api/preview', { port: 6666 });
+	failForward = false;
 	assert.equal(failed.status, 502);
 	assert.match(failed.json.error, /relay unreachable/);
 });
 
 test('agents without a tunnel have no previews', async () => {
-	const server = await start({});
+	const server = await listen(createAgentServer({ token, root: tmpRoot }));
 	assert.equal((await api(server, 'GET', '/api/preview')).status, 404);
 	assert.equal((await api(server, 'POST', '/api/preview', { port: 5173 })).status, 404);
 	assert.equal((await api(server, 'DELETE', '/api/preview?port=5173')).status, 404);
+	assert.equal((await api(server, 'GET', '/api/preview/requests?port=5173')).status, 404);
 });

@@ -11,6 +11,7 @@ import * as Git from './git.js';
 import { TunnelHandoff } from './handoff.js';
 import { LANDING_HTML } from './landing.js';
 import { killListener, listPorts } from './ports.js';
+import { detail, InspectingProxy } from './inspector.js';
 import { HttpError, Sandbox } from './sandbox.js';
 import { SessionManager } from './sessions.js';
 
@@ -77,18 +78,41 @@ export function createAgentServer({ token, root, tunnelToken = async () => null,
 		const port = Number(value);
 		if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(400, 'port must be 1-65535');
 		if (port === ownPort) throw new HttpError(400, "the agent's own port is already on its tunnel");
+		if ([...proxies.values()].some((p) => p.port === port)) throw new HttpError(400, 'that port is a preview proxy');
 		return port;
 	}
 
+	// Dev server port -> the proxy that records its traffic. The preview tunnel forwards the
+	// proxy's port; clients only ever see the dev server's.
+	const proxies = new Map();
+
+	/** The proxy of a port that is being previewed right now. */
 	function previewed(port) {
-		if (!preview.list().some((p) => p.port === port)) throw new HttpError(404, 'that port is not being previewed');
-		return port;
+		const proxy = proxies.get(port);
+		if (!proxy || !preview.list().some((p) => p.port === proxy.port)) {
+			throw new HttpError(404, 'that port is not being previewed');
+		}
+		return proxy;
+	}
+
+	/** The proxy of a port previewed at some point since the agent started (its log outlives it). */
+	function inspected(value) {
+		const proxy = proxies.get(previewPort(value, server.address()?.port));
+		if (!proxy) throw new HttpError(404, 'that port has not been previewed');
+		return proxy;
 	}
 
 	/** Forwarded ports plus the connect token that opens them (null before the first one). */
 	async function previews() {
 		const issued = await preview.token();
-		return { ports: preview.list(), token: issued?.token ?? null, expiresAt: issued?.expiresAt ?? null };
+		const forwarded = new Map(preview.list().map((p) => [p.port, p]));
+		const ports = [];
+		for (const [port, proxy] of proxies) {
+			const p = forwarded.get(proxy.port);
+			if (p) ports.push({ ...p, port });
+		}
+		ports.sort((a, b) => a.port - b.port);
+		return { ports, token: issued?.token ?? null, expiresAt: issued?.expiresAt ?? null };
 	}
 
 	/** Shell pid -> terminal session id, to tell which listeners were started from the app. */
@@ -250,8 +274,14 @@ export function createAgentServer({ token, root, tunnelToken = async () => null,
 
 		[Routes.previewOpen]: async (url, req) => {
 			const port = previewPort((await readJson(req)).port, server.address()?.port);
+			let proxy = proxies.get(port);
+			if (!proxy) {
+				proxy = new InspectingProxy(port);
+				await proxy.listen();
+				proxies.set(port, proxy);
+			}
 			try {
-				await preview.forward(port);
+				await preview.forward(proxy.port);
 			} catch (e) {
 				throw new HttpError(502, e.message);
 			}
@@ -260,17 +290,19 @@ export function createAgentServer({ token, root, tunnelToken = async () => null,
 
 		[Routes.previewClose]: async (url) => {
 			const port = previewPort(url.searchParams.get('port'), server.address()?.port);
-			await preview.unforward(port);
+			const proxy = proxies.get(port);
+			// The proxy keeps running so its log can still be read; the tunnel no longer reaches it.
+			if (proxy) await preview.unforward(proxy.port);
 			return previews();
 		},
 
 		[Routes.previewShare]: async (url, req) => {
 			const { port: value, hours } = await readJson(req);
-			const port = previewed(previewPort(value, server.address()?.port));
+			const proxy = previewed(previewPort(value, server.address()?.port));
 			// Dev tunnels access entries last 1 hour to 30 days.
 			if (!Number.isInteger(hours) || hours < 1 || hours > 720) throw new HttpError(400, 'hours must be 1-720');
 			try {
-				await preview.share(port, hours);
+				await preview.share(proxy.port, hours);
 			} catch (e) {
 				throw new HttpError(502, e.message);
 			}
@@ -278,13 +310,28 @@ export function createAgentServer({ token, root, tunnelToken = async () => null,
 		},
 
 		[Routes.previewUnshare]: async (url) => {
-			const port = previewPort(url.searchParams.get('port'), server.address()?.port);
+			const proxy = proxies.get(previewPort(url.searchParams.get('port'), server.address()?.port));
 			try {
-				await preview.unshare(port);
+				if (proxy) await preview.unshare(proxy.port);
 			} catch (e) {
 				throw new HttpError(502, e.message);
 			}
 			return previews();
+		},
+
+		[Routes.previewRequests]: async (url) => ({
+			requests: inspected(url.searchParams.get('port')).list(parseInt(url.searchParams.get('after'), 10) || 0),
+		}),
+
+		[Routes.previewRequest]: async (url) => {
+			const entry = inspected(url.searchParams.get('port')).get(parseInt(url.searchParams.get('id'), 10));
+			if (!entry) throw new HttpError(404, 'no such request (only the latest 200 are kept)');
+			return detail(entry);
+		},
+
+		[Routes.previewRequestsClear]: async (url) => {
+			inspected(url.searchParams.get('port')).clear();
+			return {};
 		},
 
 		[Routes.tunnelToken]: async () => {
@@ -379,7 +426,10 @@ export function createAgentServer({ token, root, tunnelToken = async () => null,
 		wss.handleUpgrade(req, socket, head, (ws) => session.attach(ws));
 	});
 
-	server.on('close', () => sessions.killAll());
+	server.on('close', () => {
+		sessions.killAll();
+		for (const proxy of proxies.values()) proxy.close();
+	});
 	// server.close() waits for open sockets; callers shutting down kill shells right away.
 	server.killAllSessions = () => sessions.killAll();
 	return server;

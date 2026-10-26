@@ -154,7 +154,9 @@ Agents running without a tunnel, and agents from before these routes, answer 404
 | `POST /api/preview/share` | `{ port, hours }` | same; anyone with the port's `url` can open it, without signing in, for 1-720 hours (404 when the port isn't forwarded) |
 | `DELETE /api/preview/share?port=` | | same; the port is private again |
 
-`url` is the port's public address (`https://<tunnel>-<port>.<region>.devtunnels.ms`). Adding or
+`url` is the port's public address (`https://<tunnel>-<n>.<region>.devtunnels.ms`). The tunnel
+reaches the dev server through a local proxy that records its traffic (see below), so `<n>` is
+the proxy's port, not the dev server's; `port` is always the dev server's. Adding or
 removing a port restarts the preview tunnel's host, which takes a few seconds and briefly drops
 the other previews. `token` is a connect token for the preview tunnel (null until a port has been
 forwarded) and `expiresAt` its expiry in milliseconds since the epoch. Load a preview by sending
@@ -165,3 +167,22 @@ session cookie for that port's host, which carries the page's own requests after
 when only the owner can open it. A share covers that one port of the preview tunnel, never the
 agent's own tunnel; the relay ends it on time by itself. Shares end with the agent: its next
 run starts a fresh preview tunnel.
+
+### Requests
+
+The proxy keeps the latest 200 requests of each previewed port, from the agent's start, also
+after the preview is closed. Bodies up to 64 KB are kept (decompressed); WebSockets pass through
+and only their handshake is recorded.
+
+| Route | Response |
+| --- | --- |
+| `GET /api/preview/requests?port=&after=` | `{ requests: [summary] }`, oldest first; `after` skips ids up to it |
+| `GET /api/preview/request?port=&id=` | summary plus `request` and `response`: `{ headers, body }` |
+| `DELETE /api/preview/requests?port=` | `{}`; forgets the port's requests |
+
+A summary is `{ id, time, method, path, status, duration, error, contentType, requestSize,
+responseSize }`: `time` in milliseconds since the epoch, `duration` in milliseconds (null while
+the response streams), `status` null until it starts. `error` says why the proxy answered 502
+(e.g. nothing listening on the port). A `body` is `{ size, truncated }` plus `text` for textual
+content types or `base64` for the rest, both left out when it was too large. Ports never
+previewed answer 404.
