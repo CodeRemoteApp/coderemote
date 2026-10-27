@@ -282,7 +282,7 @@ const USAGE = `Usage: coderemote <command> [options]
   status               list running agents and their terminal sessions
   kill <id>... | --all kill terminal sessions (an id prefix is enough)
   stop [--all]         stop the agent for this folder (or every agent)
-  rotate-token         revoke every paired device
+  rotate-token         revoke every paired device and stop running agents
   update               install the latest coderemote (up says when there's one)
   requests [PORT]      list the requests that reached a previewed port, oldest first;
                        --grep TEXT, --failed (errors, 4xx and 5xx), --limit N (default 50)
@@ -576,7 +576,14 @@ switch (cmd) {
 	case 'rotate-token': {
 		cfg.token = randomBytes(32).toString('base64url');
 		saveConfig(cfg);
-		console.log('Token rotated. Re-pair your devices, and restart running agents.');
+		// Running agents hold the old token in memory and would keep honoring it, so stop them all.
+		const agents = registry.list();
+		for (const agent of agents) {
+			process.kill(agent.pid, 'SIGTERM');
+			console.log(`stopped agent for ${agent.root} (pid ${agent.pid})`);
+		}
+		console.log('Token rotated. Re-pair your devices.');
+		if (agents.length) console.log('Run `coderemote up` again in each folder above; each keeps its tunnel URL.');
 		break;
 	}
 	case 'login': {

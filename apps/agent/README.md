@@ -97,7 +97,7 @@ coderemote stop                  # stop the agent for this folder (--all: every 
 coderemote serve                 # share on 127.0.0.1 only, no tunnel (local testing)
 coderemote requests [PORT]       # requests that reached a previewed port (--grep, --failed, --json)
 coderemote request <ID>          # headers and bodies of one request (--show-secrets, --json)
-coderemote rotate-token          # revoke every paired device
+coderemote rotate-token          # revoke every paired device, stop running agents
 coderemote login                 # sign in again (--microsoft, or --device-code without a browser)
 coderemote update                # install the latest version (`up` says when there's one)
 coderemote help                  # all options
