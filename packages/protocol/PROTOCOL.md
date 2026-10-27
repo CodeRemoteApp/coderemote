@@ -146,13 +146,15 @@ Added without a protocol bump: older agents answer these routes with 404.
 
 | Route | Request | Response |
 | --- | --- | --- |
-| `GET /api/ports` | | `{ ports: [{ port, addresses, pid, name, command, cwd, session, self, agent }] }` |
+| `GET /api/ports` | | `{ ports: [{ port, addresses, pid, name, command, cwd, session, terminal, self, agent }] }` |
 | `POST /api/ports/kill` | `{ pid, force? }` | `{}`; `SIGTERM`, or `SIGKILL` when `force` is true |
 
 One entry per process and port, sorted by port. `addresses` are the bound addresses
 (`127.0.0.1`, `::1`, `*` for all interfaces). `command` is the full command line and `cwd` the
 process's working directory (null when unreadable). `session` is the id of the terminal session
-the process was started from (it descends from that session's shell), or null. `self` marks the
+the process was started from (it descends from that session's shell), or null. `terminal` is
+true when the process has a controlling terminal: something run in a shell (`npm run dev`), as
+opposed to apps, daemons and system services. Older agents omit it. `self` marks the
 agent's own port; `agent` marks any coderemote agent (`coderemote up`), this one included, so
 clients can warn before stopping one.
 

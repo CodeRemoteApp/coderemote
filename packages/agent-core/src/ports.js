@@ -56,13 +56,14 @@ async function listeningSockets() {
 	return sockets;
 }
 
-/** pid -> { ppid, command } for every process. */
+/** pid -> { ppid, tty, command } for every process; tty is null without a controlling terminal. */
 async function processTable() {
-	const out = await run('ps', ['-A', '-ww', '-o', 'pid=,ppid=,command=']);
+	const out = await run('ps', ['-A', '-ww', '-o', 'pid=,ppid=,tty=,command=']);
 	const table = new Map();
 	for (const line of out.split('\n')) {
-		const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
-		if (m) table.set(parseInt(m[1], 10), { ppid: parseInt(m[2], 10), command: m[3] });
+		const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
+		// ps prints "??" (macOS) or "?" (Linux) for no terminal.
+		if (m) table.set(parseInt(m[1], 10), { ppid: parseInt(m[2], 10), tty: /^\?+$/.test(m[3]) ? null : m[3], command: m[4] });
 	}
 	return table;
 }
@@ -109,6 +110,8 @@ export async function listPorts(shells = new Map()) {
 			command: table.get(s.pid)?.command ?? s.name,
 			cwd: null,
 			session: sessionOf(s.pid, table, shells),
+			// Started from a terminal (a dev server) rather than by launchd, an app or a daemon.
+			terminal: table.get(s.pid)?.tty != null,
 			self: s.pid === process.pid,
 			agent: s.pid === process.pid || AGENT_COMMAND.test(table.get(s.pid)?.command ?? ''),
 		});

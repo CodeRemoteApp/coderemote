@@ -42,7 +42,8 @@ async function api(method, route, body) {
 
 /** Starts a node process listening on a free port; resolves once it is listening. */
 async function listener() {
-	const child = spawn(process.execPath, ['-e', LISTEN], { cwd: tmpRoot });
+	// detached: its own session, so no controlling terminal whatever runs the tests.
+	const child = spawn(process.execPath, ['-e', LISTEN], { cwd: tmpRoot, detached: true });
 	children.push(child);
 	let out = '';
 	for await (const chunk of child.stdout) {
@@ -64,6 +65,7 @@ test('lists listening ports with their process, folder and the agent itself', as
 	assert.match(entry.command, /node/);
 	assert.equal(entry.cwd, tmpRoot);
 	assert.equal(entry.session, null);
+	assert.equal(entry.terminal, false);
 	assert.equal(entry.self, false);
 	assert.equal(entry.agent, false);
 	const own = json.ports.find((p) => p.port === server.address().port);
@@ -92,7 +94,9 @@ test('a listener started in a terminal names its session', async () => {
 		});
 	});
 	const { json } = await api('GET', '/api/ports');
-	assert.equal(json.ports.find((p) => p.port === port)?.session, id);
+	const entry = json.ports.find((p) => p.port === port);
+	assert.equal(entry?.session, id);
+	assert.equal(entry?.terminal, true);
 	ws.close();
 });
 
