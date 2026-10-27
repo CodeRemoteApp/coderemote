@@ -465,7 +465,10 @@ switch (cmd) {
 		console.log(`\n  Sharing: ${root}`);
 		printPairing(url, cfg.token, access, vscodeUrl);
 		const newer = await update;
-		if (newer) console.log(`  Update available: ${VERSION} → ${newer}. Run \`coderemote update\` to install it.\n`);
+		if (newer) {
+			const c = (code, s) => (process.stdout.isTTY ? `\x1b[${code}m${s}\x1b[0m` : s);
+			console.log(`  ${c('1;33', '⬆ Update available:')} ${c('2', VERSION)} → ${c('1;32', newer)}. Run ${c('36', 'coderemote update')} to install it.\n`);
+		}
 		break;
 	}
 	case 'status':
