@@ -19,13 +19,20 @@ const tunnels = {
 		hostConnections: 0,
 		ports: [{ portNumber: 31580, portUri: 'https://home1-31580.usw2.devtunnels.ms/' }],
 	},
+	// A second agent on the same machine, for another folder.
+	'other.usw2': {
+		tunnelId: 'other.usw2',
+		description: 'coderemote Work-Mac.local :31581',
+		hostConnections: 1,
+		ports: [{ portNumber: 31581, portUri: 'https://other1-31581.usw2.devtunnels.ms/' }],
+	},
 };
 
 function fakeDevtunnel() {
 	const calls = [];
 	const devtunnel = async (...args) => {
 		calls.push(args.join(' '));
-		if (args[0] === 'list') return { ok: true, out: `Found 2\n${JSON.stringify({ tunnels: Object.values(tunnels) })}` };
+		if (args[0] === 'list') return { ok: true, out: `Found 3\n${JSON.stringify({ tunnels: Object.values(tunnels) })}` };
 		if (args[0] === 'show') return { ok: true, out: JSON.stringify({ tunnel: tunnels[args[1]] }) };
 		return { ok: false, out: 'unexpected' };
 	};
@@ -56,6 +63,7 @@ test('reports the tunnel and the account’s other machines, cached for a while'
 		machines: [
 			{ id: 'own.usw2', name: 'Work-Mac', url: 'https://own1-31580.usw2.devtunnels.ms', online: true, current: true },
 			{ id: 'home.usw2', name: 'Home-Mac', url: 'https://home1-31580.usw2.devtunnels.ms', online: false, current: false },
+			{ id: 'other.usw2', name: 'Work-Mac :31581', url: 'https://other1-31581.usw2.devtunnels.ms', online: true, current: false },
 		],
 		previewPorts: 1,
 	});

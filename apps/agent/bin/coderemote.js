@@ -2,6 +2,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,12 +42,26 @@ function loadConfig() {
 		cfg.token = randomBytes(32).toString('base64url');
 		saveConfig(cfg);
 	}
+	// Older releases kept one tunnel per machine, made for the default port.
+	if (cfg.tunnelId && !cfg.tunnels) {
+		cfg.tunnels = { [DEFAULT_PORT]: cfg.tunnelId };
+		saveConfig(cfg);
+	}
 	return cfg;
 }
 
 function saveConfig(cfg) {
 	fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
 	fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+}
+
+/** Whether nothing listens on 127.0.0.1:port. */
+function portFree(port) {
+	return new Promise((resolve) => {
+		const probe = net.createServer();
+		probe.once('error', () => resolve(false));
+		probe.listen(port, '127.0.0.1', () => probe.close(() => resolve(true)));
+	});
 }
 
 function listen(token, port, root, tunnelToken, preview, status) {
@@ -139,25 +154,29 @@ function applyAccess(tunnelId, anonymous) {
 		: devtunnel('access', 'reset', tunnelId);
 }
 
+// One tunnel per local port, so agents for different folders each keep their own URL and pairings.
 async function ensureTunnel(cfg, port, anonymous) {
-	if (cfg.tunnelId) {
+	const known = cfg.tunnels?.[port];
+	if (known) {
 		// Each devtunnel call takes 1-2s, so run them together. Tunnels expire 30 days after the
 		// last update; pushing that back keeps the URL (and every pairing) for good. The label
 		// lets the account's other agents list this machine (tunnels from older releases lack it).
 		const [updated, access] = await Promise.all([
-			devtunnel('update', cfg.tunnelId, '--expiration', '30d', '--add-labels', MACHINE_LABEL),
-			applyAccess(cfg.tunnelId, anonymous),
+			devtunnel('update', known, '--expiration', '30d', '--add-labels', MACHINE_LABEL),
+			applyAccess(known, anonymous),
 		]);
 		if (updated.ok) {
 			if (!access.ok) throw new Error(`devtunnel access failed:\n${access.out}`);
-			return cfg.tunnelId;
+			return known;
 		}
 		// Only a tunnel that's really gone is replaced: a new one changes the URL and unpairs every device.
 		if (!/not found/i.test(updated.out)) throw new Error(`devtunnel update failed:\n${updated.out}`);
 	}
 
 	// Every request needs the agent's bearer token either way; a private tunnel also needs a sign-in.
-	const createArgs = ['create', '--expiration', '30d', '-d', `coderemote ${os.hostname()}`, '--labels', MACHINE_LABEL, '--json'];
+	// Agents beyond the first on this machine say which port they are, to tell them apart in the app.
+	const name = port === DEFAULT_PORT ? os.hostname() : `${os.hostname()} :${port}`;
+	const createArgs = ['create', '--expiration', '30d', '-d', `coderemote ${name}`, '--labels', MACHINE_LABEL, '--json'];
 	if (anonymous) createArgs.push('--allow-anonymous');
 	const created = await devtunnel(...createArgs);
 	if (!created.ok) throw new Error(`devtunnel create failed:\n${created.out}`);
@@ -167,7 +186,9 @@ async function ensureTunnel(cfg, port, anonymous) {
 	const portRes = await devtunnel('port', 'create', tunnelId, '-p', String(port), '--protocol', 'http');
 	if (!portRes.ok) throw new Error(`devtunnel port create failed:\n${portRes.out}`);
 
-	cfg.tunnelId = tunnelId;
+	cfg.tunnels = { ...cfg.tunnels, [port]: tunnelId };
+	// Still read by older releases, so going back to one keeps the default port's pairings.
+	if (port === DEFAULT_PORT) cfg.tunnelId = tunnelId;
 	saveConfig(cfg);
 	return tunnelId;
 }
@@ -275,7 +296,8 @@ const USAGE = `Usage: coderemote <command> [options]
 
 Options:
   --root DIR           folder to share (default: current folder)
-  --port N             local port (default: ${DEFAULT_PORT})
+  --port N             local port (default: the first free one from ${DEFAULT_PORT}; each port
+                       keeps its own tunnel URL, so a folder pairs once per port)
   --allow-anonymous    up: skip the sign-in, the pairing token alone grants access
                        (alias --no-auth)
   --web                up: also run \`code tunnel\` and print a vscode.dev link that opens
@@ -295,18 +317,42 @@ const flag = (name) => {
 	return i >= 0 ? rest[i + 1] : undefined;
 };
 const anonymous = rest.includes('--allow-anonymous') || rest.includes('--no-auth');
-const port = flag('--port') ? parseInt(flag('--port'), 10) : DEFAULT_PORT;
+// Without --port, `start` moves up from the default to the first port no agent or program holds.
+let port = flag('--port') ? parseInt(flag('--port'), 10) : DEFAULT_PORT;
 // The shared folder: files outside it are invisible to paired devices.
 const root = path.resolve(flag('--root') ?? process.cwd());
 const cfg = loadConfig();
 const registry = new AgentRegistry(path.join(CONFIG_DIR, 'agents'));
 
 async function start({ tunnel }) {
-	const running = registry.list().find((a) => a.port === port);
-	if (running) {
-		console.error(`An agent already runs on port ${port} for ${running.root} (pid ${running.pid}).`);
-		console.error('Stop it with `coderemote stop --all`, or pick another port with --port.');
-		process.exit(1);
+	const agents = registry.list();
+	if (flag('--port')) {
+		const running = agents.find((a) => a.port === port);
+		if (running) {
+			console.error(`An agent already runs on port ${port} for ${running.root} (pid ${running.pid}).`);
+			console.error('Stop it with `coderemote stop --all`, or pick another port with --port.');
+			process.exit(1);
+		}
+	} else {
+		const sharing = agents.find((a) => a.root === root);
+		if (sharing) {
+			console.error(`${root} is already shared on port ${sharing.port} (pid ${sharing.pid}).`);
+			console.error('Stop it with `coderemote stop`, or start another one with --port.');
+			process.exit(1);
+		}
+		// A folder keeps the port it had, so it comes back on the same tunnel URL its devices paired
+		// with. A new folder takes the first port no other folder has claimed.
+		const taken = async (p) => agents.some((a) => a.port === p) || !(await portFree(p));
+		const remembered = cfg.folderPorts?.[root];
+		if (remembered && !(await taken(remembered))) port = remembered;
+		else {
+			const claimed = new Set(Object.values(cfg.folderPorts ?? {}));
+			while (claimed.has(port) || (await taken(port))) port++;
+		}
+		if (port !== remembered) {
+			cfg.folderPorts = { ...cfg.folderPorts, [root]: port };
+			saveConfig(cfg);
+		}
 	}
 	let server;
 	// Set once the tunnel exists; anonymous tunnels hand out nothing.
@@ -354,7 +400,7 @@ async function start({ tunnel }) {
 		spinner.succeed();
 		// Connecting to the relay is the slow part; update the tunnel's settings meanwhile.
 		spinner.start('Connecting to the relay');
-		const known = cfg.tunnelId;
+		const known = cfg.tunnels?.[port];
 		let hosting = known ? hostTunnel(known, port) : null;
 		hosting?.catch(() => {});
 		tunnelId = await ensureTunnel(cfg, port, anonymous);

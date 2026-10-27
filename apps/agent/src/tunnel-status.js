@@ -9,9 +9,12 @@ function parse(out) {
 	return JSON.parse(out.slice(out.indexOf('{')));
 }
 
-/** "coderemote Thanhs-MacBook-Air.local" -> "Thanhs-MacBook-Air" (older agents said "vsremote"). */
+/**
+ * "coderemote Thanhs-MacBook-Air.local" -> "Thanhs-MacBook-Air" (older agents said "vsremote");
+ * a second agent on the machine adds its port: "Thanhs-MacBook-Air :31581".
+ */
 function machineName(description) {
-	return (description || '').replace(/^(coderemote|vsremote)\s+/, '').replace(/\.local$/, '') || null;
+	return (description || '').replace(/^(coderemote|vsremote)\s+/, '').replace(/\.local\b/, '') || null;
 }
 
 function machine(tunnel, current) {
