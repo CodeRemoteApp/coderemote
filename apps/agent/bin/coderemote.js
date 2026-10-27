@@ -14,6 +14,7 @@ import { AgentRegistry } from '../src/registry.js';
 import { MACHINE_LABEL, tunnelStatus } from '../src/tunnel-status.js';
 import { availableUpdate, fetchLatest, installCommand, isNewer } from '../src/update.js';
 import pkg from '../package.json' with { type: 'json' };
+import { Redactor, filterRequests, formatDetail, formatList, redactDetail } from '../src/requests.js';
 import { Spinner } from '../src/spinner.js';
 import { codeTunnelLogin, codeTunnelSignedIn, findCode, hostCodeTunnel } from '../src/vscode-tunnel.js';
 import { pairingUrl, webUrl } from '@vsremote/protocol';
@@ -262,6 +263,12 @@ const USAGE = `Usage: coderemote <command> [options]
   stop [--all]         stop the agent for this folder (or every agent)
   rotate-token         revoke every paired device
   update               install the latest coderemote (up says when there's one)
+  requests [PORT]      list the requests that reached a previewed port, oldest first;
+                       --grep TEXT, --failed (errors, 4xx and 5xx), --limit N (default 50)
+  requests clear [PORT]  forget the recorded requests
+  request <ID> [PORT]  headers and bodies of one request (bodies up to 64 KB are kept);
+                       auth headers, cookies and token-like fields are masked unless
+                       --show-secrets is given; --json on either for machine-readable output
   version              print this coderemote's version (also --version, -v)
   login                sign in to Microsoft Dev Tunnels with GitHub (up does this when needed);
                        --microsoft for a Microsoft account, --device-code without a browser
@@ -401,6 +408,31 @@ async function sessionsOf(agent) {
 	}
 }
 
+/** The agent sharing the current folder (or one above it), else the only one running. */
+function currentAgent() {
+	const agents = registry.list();
+	if (flag('--port')) return agents.find((a) => a.port === port);
+	const here = process.cwd();
+	const containing = agents
+		.filter((a) => here === a.root || here.startsWith(a.root + path.sep))
+		.sort((a, b) => b.root.length - a.root.length);
+	return containing[0] ?? (agents.length === 1 ? agents[0] : undefined);
+}
+
+/** The ports to read: the one given, else every port being previewed now. */
+async function previewPorts(agent, given) {
+	if (given) return [given];
+	let ports = [];
+	try {
+		ports = (await agentApi(agent, 'GET', '/api/preview')).ports.map((p) => p.port);
+	} catch {}
+	if (!ports.length) {
+		console.error('No port is being previewed. Open a preview from the app, or name the port (a closed preview keeps its log).');
+		process.exit(1);
+	}
+	return ports;
+}
+
 function ago(ms) {
 	const s = Math.round((Date.now() - ms) / 1000);
 	if (s < 60) return `${s}s`;
@@ -534,6 +566,84 @@ switch (cmd) {
 			console.log(`${running.length === 1 ? 'An agent is' : `${running.length} agents are`} still running the previous version.`);
 			console.log('Restart: `coderemote stop --all`, then `coderemote up` in each shared folder.');
 		}
+		break;
+	}
+	case 'requests':
+	case 'request': {
+		const agent = currentAgent();
+		if (!agent) {
+			const running = registry.list();
+			console.error(
+				flag('--port')
+					? `No agent is running on port ${port}.`
+					: running.length
+					? `Several agents are running; run this inside a shared folder or pick one with --port (${running.map((a) => a.port).join(', ')}).`
+					: 'No agent is running. Start one with `coderemote up`.',
+			);
+			process.exit(1);
+		}
+		const valued = new Set(['--grep', '--limit', '--port']);
+		const words = rest.filter((a, i) => !a.startsWith('--') && !valued.has(rest[i - 1]));
+		const json = rest.includes('--json');
+		const redactor = new Redactor({ show: rest.includes('--show-secrets') });
+		const hint = () => {
+			if (redactor.hidden && !json) console.error(`\n(${redactor.hidden} secret value${redactor.hidden === 1 ? '' : 's'} masked; add --show-secrets to print them)`);
+		};
+
+		if (cmd === 'request') {
+			const id = parseInt(words[0], 10);
+			if (!id) {
+				console.error('Usage: coderemote request <ID> [PORT] [--show-secrets] [--json]');
+				process.exit(1);
+			}
+			// Ids are unique across ports, so without a port each previewed one is tried.
+			let found;
+			for (const p of await previewPorts(agent, words[1])) {
+				try {
+					found = await agentApi(agent, 'GET', '/api/preview/request', { port: p, id });
+					break;
+				} catch {}
+			}
+			if (!found) {
+				console.error(`No request #${id} (only the latest 200 per port are kept).`);
+				process.exit(1);
+			}
+			console.log(json ? JSON.stringify(redactDetail(found, redactor), null, 2) : formatDetail(found, redactor));
+			hint();
+			break;
+		}
+
+		if (words[0] === 'clear') {
+			for (const p of await previewPorts(agent, words[1])) {
+				await agentApi(agent, 'DELETE', '/api/preview/requests', { port: p });
+				console.log(`cleared the requests to port ${p}`);
+			}
+			break;
+		}
+
+		const ports = await previewPorts(agent, words[0]);
+		let requests = [];
+		for (const p of ports) {
+			const { requests: list } = await agentApi(agent, 'GET', '/api/preview/requests', { port: p });
+			requests.push(...list.map((r) => ({ ...r, port: Number(p) })));
+		}
+		requests.sort((a, b) => a.id - b.id);
+		requests = filterRequests(requests, { grep: flag('--grep'), failed: rest.includes('--failed') });
+		const limit = parseInt(flag('--limit'), 10) || 50;
+		const total = requests.length;
+		requests = requests.slice(-limit);
+		if (json) {
+			console.log(JSON.stringify(requests.map((r) => ({ ...r, path: redactor.path(r.path) })), null, 2));
+			break;
+		}
+		if (!total) {
+			console.log('No matching requests.');
+			break;
+		}
+		console.log(formatList(requests, redactor, { showPort: ports.length > 1 }));
+		if (total > requests.length) console.error(`\n(${total - requests.length} older not shown; raise --limit)`);
+		console.error('\nDetails: coderemote request <ID>');
+		hint();
 		break;
 	}
 	case 'version':

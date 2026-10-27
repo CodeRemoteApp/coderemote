@@ -95,6 +95,8 @@ coderemote kill <id>...          # end terminal sessions (an id prefix from `sta
 coderemote kill --all            # end every session
 coderemote stop                  # stop the agent for this folder (--all: every agent)
 coderemote serve                 # share on 127.0.0.1 only, no tunnel (local testing)
+coderemote requests [PORT]       # requests that reached a previewed port (--grep, --failed, --json)
+coderemote request <ID>          # headers and bodies of one request (--show-secrets, --json)
 coderemote rotate-token          # revoke every paired device
 coderemote login                 # sign in again (--microsoft, or --device-code without a browser)
 coderemote update                # install the latest version (`up` says when there's one)
@@ -103,6 +105,12 @@ coderemote help                  # all options
 
 Options: `--root DIR` shares another folder; `--port N` picks the local port (default
 `31580`). The tunnel URL stays the same between runs, so paired phones reconnect on their own.
+
+`requests` and `request` read the traffic log of a port you preview from the app, so a coding
+agent in a terminal (Claude Code, Codex, …) can debug with it: run them in the shared folder.
+The log lives in the agent's memory only (the latest 200 requests per port, bodies up to 64 KB).
+Auth headers, cookies and token-like fields are masked; `--show-secrets` prints them, for
+example to reuse a session token in a test.
 
 ## Requirements
 
