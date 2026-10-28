@@ -27,7 +27,7 @@ before(async () => {
 	const fake = path.join(tmp, 'claude');
 	await fs.writeFile(fake, `#!/bin/sh\nstty raw -echo\nexec cat > "${tmp}/typed-$$"\n`, { mode: 0o755 });
 	hub = new AgentHub({ transcript: async () => [] });
-	server = createAgentServer({ token, root, hookSecret, uploadsDir: uploads, claudeCommand: fake, agents: hub });
+	server = createAgentServer({ token, root, hookSecret, uploadsDir: uploads, claudeCommand: fake, pluginInstalled: async () => true, agents: hub });
 	await new Promise((r) => server.listen(0, '127.0.0.1', r));
 	baseUrl = `http://127.0.0.1:${server.address().port}`;
 });

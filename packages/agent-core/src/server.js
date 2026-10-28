@@ -99,6 +99,8 @@ async function readJson(req) {
  * @param {string | null} [opts.uploadsDir]  where files sent from the phone go; sessions started
  *        here may read it without asking
  * @param {string} [opts.claudeCommand]  the Claude Code executable that sessions started here run
+ * @param {() => Promise<boolean>} [opts.pluginInstalled]  whether Claude Code has the Code Remote
+ *        plugin (default: asks `claude plugin list --json`)
  * @param {AgentHub} [opts.agents]  coding-agent sessions (one is made when absent)
  * @param {{ load: () => object[], save: (devices: object[]) => void } | null} [opts.pushStore]
  *        keeps push registrations across restarts; without it they last until the agent stops
@@ -114,6 +116,7 @@ export function createAgentServer({
 	hookBin = null,
 	uploadsDir = null,
 	claudeCommand = 'claude',
+	pluginInstalled = null,
 	agents = new AgentHub(),
 	pushStore = null,
 	pushOptions = {},
@@ -179,14 +182,34 @@ export function createAgentServer({
 		return Promise.all(ids.map((a) => uploadPath(a)));
 	}
 
-	/** Whether `claudeCommand` runs here, looked up through a login shell like the session will be. */
-	function claudeInstalled() {
+	/** Runs `script` in a login shell, like sessions are started; null when it fails. */
+	function loginShell(script) {
 		const shell = process.env.SHELL || '/bin/sh';
 		return new Promise((resolve) => {
-			execFile(shell, ['-l', '-c', `command -v ${shellQuote(claudeCommand)}`], { timeout: 10_000 }, (err, out) =>
-				resolve(!err && out.trim() !== ''),
-			);
+			execFile(shell, ['-l', '-c', script], { timeout: 20_000 }, (err, out) => resolve(err ? null : out));
 		});
+	}
+
+	/** Whether `claudeCommand` runs here, looked up through a login shell like the session will be. */
+	async function claudeInstalled() {
+		return Boolean((await loginShell(`command -v ${shellQuote(claudeCommand)}`))?.trim());
+	}
+
+	// Whether Claude Code has the plugin; asking takes a second or two, so the answer is kept a
+	// while. Any hook event proves it.
+	let plugin = { installed: false, checkedAt: 0 };
+	async function hasPlugin() {
+		if (Date.now() - plugin.checkedAt < 30_000) return plugin.installed;
+		let installed = false;
+		if (pluginInstalled) installed = await pluginInstalled();
+		else {
+			try {
+				const list = JSON.parse((await loginShell(`${shellQuote(claudeCommand)} plugin list --json`)) ?? '[]');
+				installed = list.some((p) => p.id === 'coderemote@coderemote' && p.enabled !== false);
+			} catch {}
+		}
+		plugin = { installed, checkedAt: Date.now() };
+		return installed;
 	}
 
 	function hookAuthorized(req) {
@@ -474,6 +497,11 @@ export function createAgentServer({
 		[Routes.agentsTimeline]: async (url) =>
 			agents.timeline(url.searchParams.get('session'), parseInt(url.searchParams.get('after'), 10) || 0),
 
+		[Routes.agentsSetup]: async () => {
+			const claude = await claudeInstalled();
+			return { claude, plugin: claude && (await hasPlugin()) };
+		},
+
 		[Routes.agentsLaunch]: async (url, req) => {
 			const { cwd, model, permissionMode, resume, cols, rows } = await readJson(req);
 			let dir;
@@ -498,6 +526,12 @@ export function createAgentServer({
 			if (!(await claudeInstalled())) {
 				throw Object.assign(new HttpError(400, 'Claude Code is not installed on this computer (no `claude` command).'), {
 					code: 'ENOCLAUDE',
+				});
+			}
+			// Without the plugin the session would run but never show up here.
+			if (!(await hasPlugin())) {
+				throw Object.assign(new HttpError(400, 'Claude Code needs the Code Remote plugin first: run `coderemote setup claude` once on the computer.'), {
+					code: 'ENOPLUGIN',
 				});
 			}
 			const id = resume ?? randomUUID();
@@ -617,6 +651,7 @@ export function createAgentServer({
 	/** A hook event from `coderemote hook`; a PermissionRequest is held open until it resolves. */
 	async function hookDelivery(url, req, res) {
 		if (!hookAuthorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+		plugin = { installed: true, checkedAt: Date.now() };
 		const terminal = url.searchParams.get('terminal');
 		// The hook is killed when the computer answers first, which closes this connection.
 		const closed = new AbortController();

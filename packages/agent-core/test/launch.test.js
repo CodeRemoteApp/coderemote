@@ -26,7 +26,7 @@ before(async () => {
 	fakeClaude = path.join(tmp, 'fake claude');
 	await fs.writeFile(fakeClaude, `#!/bin/sh\n{ pwd; echo "classic=$CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"; for a in "$@"; do echo "$a"; done; } > "${tmp}/launched-$$"\nexec sleep 30\n`, { mode: 0o755 });
 	hub = new AgentHub({ startTimeout: 300, transcript: async () => [] });
-	server = createAgentServer({ token, root, hookSecret, uploadsDir: uploads, claudeCommand: fakeClaude, agents: hub });
+	server = createAgentServer({ token, root, hookSecret, uploadsDir: uploads, claudeCommand: fakeClaude, pluginInstalled: async () => true, agents: hub });
 	await new Promise((r) => server.listen(0, '127.0.0.1', r));
 	baseUrl = `http://127.0.0.1:${server.address().port}`;
 });
@@ -150,4 +150,28 @@ test('says when Claude Code is not installed', async () => {
 	other.close();
 	assert.equal(res.status, 400);
 	assert.equal(body.code, 'ENOCLAUDE');
+});
+
+test('without the plugin, says how to set it up instead of starting a session that never shows', async () => {
+	let checks = 0;
+	const other = createAgentServer({ token, root, hookSecret, claudeCommand: fakeClaude, pluginInstalled: async () => (checks++, false) });
+	await new Promise((r) => other.listen(0, '127.0.0.1', r));
+	const url = `http://127.0.0.1:${other.address().port}`;
+	const auth = { authorization: `Bearer ${token}` };
+	const res = await fetch(`${url}/api/agents/sessions`, { method: 'POST', headers: auth, body: '{}' });
+	const body = await res.json();
+	assert.equal(res.status, 400);
+	assert.equal(body.code, 'ENOPLUGIN');
+	assert.match(body.error, /coderemote setup claude/);
+	assert.deepEqual(await (await fetch(`${url}/api/agents/setup`, { headers: auth })).json(), { claude: true, plugin: false });
+	assert.equal(checks, 1, 'the answer is kept a while');
+
+	// A hook event proves the plugin is there.
+	await fetch(`${url}/api/agents/hook`, {
+		method: 'POST',
+		headers: { [HOOK_SECRET_HEADER]: hookSecret },
+		body: JSON.stringify({ session_id: 's', cwd: root, transcript_path: '/x', hook_event_name: 'SessionStart' }),
+	});
+	assert.deepEqual(await (await fetch(`${url}/api/agents/setup`, { headers: auth })).json(), { claude: true, plugin: true });
+	other.close();
 });

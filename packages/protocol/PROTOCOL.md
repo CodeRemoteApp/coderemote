@@ -227,6 +227,7 @@ are forgotten 24 hours after they end.
 | `GET /api/agents/sessions` | | `{ sessions: [session] }`, most recent activity first |
 | `GET /api/agents/timeline?session=&after=` | | `{ entries: [entry], next, requests: [request] }`; `after` skips entries up to that `seq` |
 | `POST /api/agents/answer` | see below | `{}`; 404 for an unknown request, 409 once it is resolved |
+| `GET /api/agents/setup` | | `{ claude, plugin }`: whether Claude Code and its Code Remote plugin are installed |
 | `POST /api/agents/sessions` | `{ cwd?, model?, permissionMode?, resume?, cols?, rows? }` | `{ terminal, session }`; starts Claude Code, see [Starting sessions](#starting-sessions) |
 | `POST /api/agents/prompt` | `{ session, text, attachments? }` | `{ prompt }`; see [Prompts and keys](#prompts-and-keys) |
 | `POST /api/agents/keys` | `{ session, action, command? }` | `{}` |
@@ -271,7 +272,10 @@ starts with `starting: true` and ends with an `error` if Claude Code reports not
 seconds (usually because the plugin isn't installed: `coderemote setup claude`). A resumed conversation that comes back under another id replaces it: the socket sends
 `{ "type": "session_removed", "session": id }` for the old one. Sessions started here may read
 the uploads folder (see [Uploads](#uploads)) without asking. 400 with `code: "ENOCLAUDE"` when
-`claude` isn't installed.
+`claude` isn't installed, and with `code: "ENOPLUGIN"` when Claude Code lacks the Code Remote
+plugin (`coderemote setup claude`), without which the session would never show up.
+`GET /api/agents/setup` tells the same ahead of time (`claude plugin list`, checked at most every
+30 seconds; any hook event counts as proof), so a client can explain the setup up front.
 
 ### Prompts and keys
 
