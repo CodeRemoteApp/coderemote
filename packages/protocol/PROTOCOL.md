@@ -227,7 +227,7 @@ are forgotten 24 hours after they end.
 | `GET /api/agents/sessions` | | `{ sessions: [session] }`, most recent activity first |
 | `GET /api/agents/timeline?session=&after=` | | `{ entries: [entry], next, requests: [request] }`; `after` skips entries up to that `seq` |
 | `POST /api/agents/answer` | see below | `{}`; 404 for an unknown request, 409 once it is resolved |
-| `GET /api/agents/setup` | | `{ claude, plugin, codex, codexPlugin }`: whether Claude Code, Codex and their Code Remote plugins are installed |
+| `GET /api/agents/setup` | | `{ claude, plugin, codex, codexPlugin, codexModels }`: whether Claude Code, Codex and their Code Remote plugins are installed, and the models Codex offers, see [Starting sessions](#starting-sessions) |
 | `POST /api/agents/sessions` | `{ agent?, cwd?, model?, permissionMode?, resume?, cols?, rows? }` | `{ terminal, session }`; starts Claude Code, see [Starting sessions](#starting-sessions) |
 | `POST /api/agents/prompt` | `{ session, text, attachments? }` | `{ prompt }`; see [Prompts and keys](#prompts-and-keys) |
 | `POST /api/agents/keys` | `{ session, action, command? }` | `{}` |
@@ -292,6 +292,9 @@ under the new id).
 (whose hooks must also be trusted once with `/hooks` in Codex).
 `GET /api/agents/setup` tells the same ahead of time (`claude plugin list`, checked at most every
 30 seconds; any hook event counts as proof), so a client can explain the setup up front.
+Its `codexModels` are `{ id, name, description }`, in the order Codex's own model picker shows
+them (read from the list Codex caches in `~/.codex/models_cache.json`); `id` is what `model`
+takes. It is empty when Codex isn't installed or hasn't fetched the list yet; older agents omit it.
 
 ### Prompts and keys
 

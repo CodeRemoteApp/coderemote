@@ -100,6 +100,7 @@ async function readJson(req) {
  *        here may read it without asking
  * @param {string} [opts.claudeCommand]  the Claude Code executable that sessions started here run
  * @param {string} [opts.codexCommand]  the Codex executable that sessions started here run
+ * @param {string} [opts.codexHome]  Codex's own folder, where it caches the models it offers
  * @param {(agent: string) => Promise<boolean>} [opts.pluginInstalled]  whether that coding agent
  *        has the Code Remote plugin (default: asks its `plugin list`)
  * @param {AgentHub} [opts.agents]  coding-agent sessions (one is made when absent)
@@ -118,6 +119,7 @@ export function createAgentServer({
 	uploadsDir = null,
 	claudeCommand = 'claude',
 	codexCommand = 'codex',
+	codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
 	pluginInstalled = null,
 	agents = new AgentHub(),
 	pushStore = null,
@@ -238,7 +240,7 @@ export function createAgentServer({
 			env: {},
 			async plugin() {
 				const list = JSON.parse((await loginShell(`${shellQuote(codexCommand)} plugin list --marketplace coderemote --json`)) ?? '{}');
-				return (list.installed ?? []).some((p) => p.pluginId === 'coderemote-codex@coderemote' && p.enabled !== false);
+				return (list.installed ?? []).some((p) => p.pluginId === 'coderemote@coderemote' && p.enabled !== false);
 			},
 			missingPlugin: 'Codex needs the Code Remote plugin first: run `coderemote setup codex` once on the computer, then trust its hooks with `/hooks` in Codex.',
 		},
@@ -261,6 +263,19 @@ export function createAgentServer({
 		} catch {}
 		plugins[agent] = { installed: found, checkedAt: Date.now() };
 		return found;
+	}
+
+	/** The models Codex's own picker lists, from the cache it keeps of them; empty when there is none. */
+	async function codexModels() {
+		try {
+			const { models } = JSON.parse(await fs.readFile(path.join(codexHome, 'models_cache.json'), 'utf8'));
+			return models
+				.filter((m) => m.visibility === 'list' && typeof m.slug === 'string')
+				.sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
+				.map((m) => ({ id: m.slug, name: m.display_name || m.slug, description: m.description ?? '' }));
+		} catch {
+			return [];
+		}
 	}
 
 	function hookAuthorized(req) {
@@ -551,7 +566,7 @@ export function createAgentServer({
 		[Routes.agentsSetup]: async () => {
 			const [claude, codex] = await Promise.all([installed('claude'), installed('codex')]);
 			const [plugin, codexPlugin] = await Promise.all([claude && hasPlugin('claude'), codex && hasPlugin('codex')]);
-			return { claude, plugin: Boolean(plugin), codex, codexPlugin: Boolean(codexPlugin) };
+			return { claude, plugin: Boolean(plugin), codex, codexPlugin: Boolean(codexPlugin), codexModels: codex ? await codexModels() : [] };
 		},
 
 		[Routes.agentsLaunch]: async (url, req) => {

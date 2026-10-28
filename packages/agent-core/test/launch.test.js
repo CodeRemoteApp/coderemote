@@ -213,3 +213,23 @@ test('starts Codex with its own flags; its first event replaces the placeholder'
 	codex.killAllSessions();
 	codex.close();
 });
+
+test("lists the models Codex's own picker shows, in its order", async () => {
+	const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-home-'));
+	await fs.writeFile(path.join(codexHome, 'models_cache.json'), JSON.stringify({
+		models: [
+			{ slug: 'b', display_name: 'B', description: 'second', visibility: 'list', priority: 9 },
+			{ slug: 'hidden', display_name: 'Hidden', visibility: 'hide', priority: 1 },
+			{ slug: 'a', display_name: 'A', description: 'first', visibility: 'list', priority: 5 },
+		],
+	}));
+	const other = createAgentServer({ token, root, hookSecret, codexCommand: fakeClaude, codexHome, pluginInstalled: async () => true });
+	await new Promise((r) => other.listen(0, '127.0.0.1', r));
+	const url = `http://127.0.0.1:${other.address().port}`;
+	const setup = await (await fetch(`${url}/api/agents/setup`, { headers: { authorization: `Bearer ${token}` } })).json();
+	other.close();
+	assert.deepEqual(setup.codexModels, [
+		{ id: 'a', name: 'A', description: 'first' },
+		{ id: 'b', name: 'B', description: 'second' },
+	]);
+});
