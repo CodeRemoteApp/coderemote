@@ -46,7 +46,7 @@ test('installs the plugin from the marketplace, leaving the user’s own hooks a
 		'features list',
 		'plugin marketplace list',
 		'plugin marketplace add CodeRemoteApp/coderemote',
-		'plugin add coderemote-codex@coderemote',
+		'plugin add coderemote@coderemote',
 	]);
 	assert.ok(userHooksKept);
 	assert.match(out, /\/hooks/);
@@ -63,11 +63,11 @@ test('turns hooks on when they are off, and refreshes a marketplace already adde
 		'plugin marketplace list',
 		'plugin marketplace remove coderemote',
 		'plugin marketplace add /src/coderemote',
-		'plugin add coderemote-codex@coderemote',
+		'plugin add coderemote@coderemote',
 	]);
 	// Without --marketplace, the one already added is refreshed.
 	const again = setup([], { marketplaces: 'coderemote   /src/coderemote\\n' });
-	assert.deepEqual(again.calls.slice(3), ['plugin marketplace upgrade coderemote', 'plugin add coderemote-codex@coderemote']);
+	assert.deepEqual(again.calls.slice(3), ['plugin marketplace upgrade coderemote', 'plugin add coderemote@coderemote']);
 });
 
 test('a Codex without hooks is refused, naming the version that has them', () => {
@@ -80,6 +80,6 @@ test('a Codex without hooks is refused, naming the version that has them', () =>
 test('--remove uninstalls the plugin and its marketplace', () => {
 	const { status, calls, userHooksKept } = setup(['--remove']);
 	assert.equal(status, 0);
-	assert.deepEqual(calls.slice(2), ['plugin remove coderemote-codex@coderemote', 'plugin marketplace remove coderemote']);
+	assert.deepEqual(calls.slice(2), ['plugin remove coderemote@coderemote', 'plugin marketplace remove coderemote']);
 	assert.ok(userHooksKept);
 });

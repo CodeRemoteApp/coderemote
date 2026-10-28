@@ -504,7 +504,7 @@ async function setupClaude() {
 	console.log('  Sessions already running pick it up after a restart. Undo: coderemote setup claude --remove\n');
 }
 
-const CODEX_PLUGIN = 'coderemote-codex@coderemote';
+const CODEX_PLUGIN = 'coderemote@coderemote';
 
 async function codexCli(...args) {
 	try {

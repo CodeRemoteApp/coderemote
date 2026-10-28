@@ -116,7 +116,7 @@ wins). Without a running agent the plugin does nothing. Inside Claude Code the s
 installs with `/plugin install coderemote --marketplace CodeRemoteApp/coderemote`.
 
 `setup codex` does the same for Codex (0.139 or later): it adds this repository as a Codex
-plugin marketplace and installs `coderemote-codex`. Codex runs a plugin's hooks only once you
+plugin marketplace and installs `coderemote`. Codex runs a plugin's hooks only once you
 trust them, so open Codex afterwards and approve the Code Remote hooks in `/hooks`. Codex shows
 its approval prompt only after the hook declines, so the agent answers there at once while you
 are at the computer (or have the app open), and holds the request for your phone, up to ten

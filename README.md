@@ -90,8 +90,8 @@ contract is in [PROTOCOL.md](packages/protocol/PROTOCOL.md); the security model 
 | [`apps/agent`](apps/agent) | `coderemote` CLI, published to npm |
 | [`packages/agent-core`](packages/agent-core) | the agent: HTTP + WebSocket server for files, git and PTY terminals |
 | [`packages/protocol`](packages/protocol) | wire contract shared by agent and app |
-| [`plugins/coderemote`](plugins/coderemote) | Claude Code plugin that runs `coderemote hook`; the repo is its marketplace (`.claude-plugin/marketplace.json`) |
-| [`plugins/coderemote-codex`](plugins/coderemote-codex) | the same for Codex (`hook --agent codex`); the repo is its marketplace too (`.agents/plugins/marketplace.json`) |
+| [`plugins/claude`](plugins/claude) | Claude Code plugin that runs `coderemote hook`; the repo is its marketplace (`.claude-plugin/marketplace.json`) |
+| [`plugins/codex`](plugins/codex) | the same for Codex (`hook --agent codex`); the repo is its marketplace too (`.agents/plugins/marketplace.json`) |
 | [`openspec`](openspec) | specs and change proposals |
 
 ## Develop

@@ -5,10 +5,10 @@
   },
   "plugins": [
     {
-      "name": "coderemote-codex",
+      "name": "coderemote",
       "source": {
         "source": "local",
-        "path": "./plugins/coderemote-codex"
+        "path": "./plugins/codex"
       },
       "policy": {
         "installation": "AVAILABLE",

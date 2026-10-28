@@ -12,13 +12,13 @@ agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 | `apps/agent` | `coderemote` CLI (published to npm): starts the agent and hosts it through a dev tunnel |
 | `packages/agent-core` | the agent's HTTP + WebSocket server (files, git, terminals) |
 | `packages/protocol` | wire contract shared by the agent and clients, documented in `PROTOCOL.md` |
-| `plugins/coderemote` | Claude Code plugin: `hooks/hooks.json` runs `coderemote hook` for each session event. The repository root is its marketplace (`.claude-plugin/marketplace.json`) |
-| `plugins/coderemote-codex` | Codex plugin (`.codex-plugin/plugin.json`, `hooks/hooks.json` running `coderemote hook --agent codex`), listed in `.agents/plugins/marketplace.json`. Try it with `CODEX_HOME=<temp dir> coderemote setup codex --marketplace .` |
+| `plugins/claude` | Claude Code plugin: `hooks/hooks.json` runs `coderemote hook` for each session event. The repository root is its marketplace (`.claude-plugin/marketplace.json`) |
+| `plugins/codex` | Codex plugin (`.codex-plugin/plugin.json`, `hooks/hooks.json` running `coderemote hook --agent codex`), listed in `.agents/plugins/marketplace.json`. Try it with `CODEX_HOME=<temp dir> coderemote setup codex --marketplace .` |
 
 To try plugin changes without installing them, start Claude Code with
-`claude --plugin-dir plugins/coderemote` in a folder a `coderemote serve` agent shares, with
+`claude --plugin-dir plugins/claude` in a folder a `coderemote serve` agent shares, with
 the freshly built `apps/agent/dist/coderemote.js` first on `PATH` as `coderemote`. Bump
-`version` in `plugins/coderemote/.claude-plugin/plugin.json` when the hooks change, so
+`version` in `plugins/claude/.claude-plugin/plugin.json` when the hooks change, so
 installed copies update. Check both with `claude plugin validate .`.
 
 ## Setting up

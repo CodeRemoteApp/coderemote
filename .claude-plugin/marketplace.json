@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "coderemote",
-      "source": "./plugins/coderemote",
+      "source": "./plugins/claude",
       "description": "Sends Claude Code's sessions, permission prompts and questions to the Code Remote app"
     }
   ]
