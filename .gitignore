@@ -11,3 +11,7 @@ node_modules/
 # Built CLI bundle and the LICENSE copied in for npm pack
 apps/agent/dist/
 apps/agent/LICENSE
+
+# Local secrets for `wrangler dev` and its state
+apps/push-relay/.dev.vars
+apps/push-relay/.wrangler/

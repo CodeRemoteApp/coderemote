@@ -12,6 +12,13 @@ agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 | `apps/agent` | `coderemote` CLI (published to npm): starts the agent and hosts it through a dev tunnel |
 | `packages/agent-core` | the agent's HTTP + WebSocket server (files, git, terminals) |
 | `packages/protocol` | wire contract shared by the agent and clients, documented in `PROTOCOL.md` |
+| `plugins/coderemote` | Claude Code plugin: `hooks/hooks.json` runs `coderemote hook` for each session event. The repository root is its marketplace (`.claude-plugin/marketplace.json`) |
+
+To try plugin changes without installing them, start Claude Code with
+`claude --plugin-dir plugins/coderemote` in a folder a `coderemote serve` agent shares, with
+the freshly built `apps/agent/dist/coderemote.js` first on `PATH` as `coderemote`. Bump
+`version` in `plugins/coderemote/.claude-plugin/plugin.json` when the hooks change, so
+installed copies update. Check both with `claude plugin validate .`.
 
 ## Setting up
 
@@ -75,6 +82,9 @@ Changes here get extra review; please explain the reasoning in the pull request:
 - authentication: the bearer token, the tunnel sign-in handoff (`handoff.js`)
   and pairing links
 - anything that runs commands (`git.js` uses `execFile` without a shell; keep it that way)
+- `coderemote hook` and the agents routes: the hook must fail open (exit 0, print nothing)
+  whatever happens, and hook deliveries are authenticated by `~/.coderemote/hook-secret`,
+  which never leaves the computer
 
 ## Pull requests
 

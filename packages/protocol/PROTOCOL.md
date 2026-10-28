@@ -207,3 +207,121 @@ the response streams), `status` null until it starts. `error` says why the proxy
 (e.g. nothing listening on the port). A `body` is `{ size, truncated }` plus `text` for textual
 content types or `base64` for the rest, both left out when it was too large. Ports never
 previewed answer 404.
+
+## Agents
+
+Coding-agent sessions running on the computer (Claude Code today), so a client can see which
+ones are working, waiting or done, read what they did, and answer their permission prompts and
+questions. Sessions reach the agent through `coderemote hook`, which Claude Code runs for each
+hook event once `coderemote setup claude` has installed the Code Remote plugin. Added without a
+protocol bump: older agents answer these routes with 404.
+
+A session reaches the agent that started its terminal (Claude Code inherits
+`CODEREMOTE_AGENT_PORT` and `CODEREMOTE_TERM_ID` from it), else the running agent whose shared
+folder is the longest prefix of its working directory. Sessions in folders no agent shares are
+dropped. Sessions live in the agent's memory only: they are gone when it stops, and ended ones
+are forgotten 24 hours after they end.
+
+| Route | Request | Response |
+| --- | --- | --- |
+| `GET /api/agents/sessions` | | `{ sessions: [session] }`, most recent activity first |
+| `GET /api/agents/timeline?session=&after=` | | `{ entries: [entry], next, requests: [request] }`; `after` skips entries up to that `seq` |
+| `POST /api/agents/answer` | see below | `{}`; 404 for an unknown request, 409 once it is resolved |
+
+A session is `{ id, agent, cwd, title, state, terminal, startedAt, lastActivityAt, pending }`.
+`agent` is `"claude"`. `title` is the first line of the first prompt (80 characters at most), or
+the folder's name before there is one. `state` is `running`, `waiting` (on a request), `idle`
+(the turn ended) or `ended`. `terminal` is the id of the terminal session it runs in (see
+[Terminal](#terminal)), or null when it was started outside the agent. `pending` counts its
+unresolved requests. Times are milliseconds since the epoch.
+
+Entries are append-only, numbered by `seq` (increasing per session), and the agent keeps the
+latest 500 of each session. Each is `{ seq, time, kind, ... }`:
+
+| `kind` | Fields |
+| --- | --- |
+| `prompt` | `text` |
+| `assistant` | `text` |
+| `tool` | `toolUseId`, `name`, `input` |
+| `tool_result` | `toolUseId`, `name`, `output` (string), `error` (bool), `truncated` (bool), `duration` (ms, or null) |
+| `request` | `request` (the request object below) |
+| `request_resolved` | `request` (id), `outcome`: `allowed`, `denied`, `answered`, `withdrawn` or `expired`; `by`: `phone`, `computer` or `agent` |
+| `turn_end` | `duration` (ms) |
+
+`output` keeps the first 16 KB of a tool result; `truncated` says there was more.
+
+### Requests
+
+A request is a prompt the session is blocked on: `{ id, session, kind, tool, input,
+suggestions, questions, createdAt }`. `kind` is `permission` (may `tool` run with `input`?) or
+`question` (Claude Code's `AskUserQuestion`; `questions` is its list of `{ question, header,
+options: [{ label, description }], multiSelect }`). `suggestions` are the "always allow" rules
+Claude Code offers for a permission, as it reports them (`permission_suggestions`), possibly
+empty.
+
+The prompt stays open on the computer too: whichever side answers first wins. When the computer
+answers, the request resolves as `withdrawn` by `computer`; a request nobody answers within an
+hour resolves as `expired` and is left to the computer.
+
+`POST /api/agents/answer` takes `{ request, behavior, message?, suggestion?, answers? }`:
+
+| Answer | Body |
+| --- | --- |
+| Allow | `{ request, behavior: "allow" }` |
+| Allow and remember | `{ request, behavior: "allow", suggestion: <index into suggestions> }` |
+| Deny | `{ request, behavior: "deny", message? }`; `message` tells Claude why |
+| Answer a question | `{ request, behavior: "allow", answers: { "<question text>": "<label>" } }`; several labels of a multi-select question are joined with `", "`; any other text is a free-form answer |
+
+### Live updates
+
+WebSocket `GET /api/agents/ws` (bearer token as usual). Server to client, all text frames:
+
+- `{ "type": "snapshot", "sessions": [session], "requests": [request] }` first
+- `{ "type": "session", "session" }` when a session is new or changes
+- `{ "type": "entry", "session": id, "entry" }` for every new timeline entry
+- `{ "type": "request", "request" }` when a request opens
+- `{ "type": "request_resolved", "session": id, "request": id, "outcome", "by" }`
+
+Client to server: `{ "type": "presence", "foreground": bool }`. Send `true` while the app shows
+this machine and at least every 20 seconds; while one is fresh the agent sends no pushes
+(see [Push](#push)).
+
+### Hook delivery
+
+`POST /api/agents/hook?agent=claude&terminal=<id>` carries a hook event's JSON input as the body.
+It is authenticated with `X-Coderemote-Hook: <secret>` instead of the bearer token; the secret is
+in `~/.coderemote/hook-secret` and never leaves the computer, so paired devices can't post
+events (401). For `PermissionRequest` the response holds until the request resolves, and its
+body is the hook's output (empty when the computer should decide); other events answer `{}`.
+
+## Push
+
+Notifications on the phone when a session needs an answer or finishes a long turn, through a
+relay that holds the APNs key ([`apps/push-relay`](../../apps/push-relay)) and stores nothing.
+The app registers each device with the relay, which returns a ticket bound to the device token;
+only a matching ticket lets the agent push to that token. Added without a protocol bump.
+
+| Route | Request | Response |
+| --- | --- | --- |
+| `PUT /api/push/device` | `{ relay, token, environment, ticket, key, keyId, kinds }` | `{}`; adds or replaces the registration for `token` |
+| `DELETE /api/push/device?token=` | | `{}` |
+| `POST /api/push/test` | `{ token }` | `{}` once the relay accepted it; 404 for an unregistered token, 502 when the relay or APNs refused |
+
+`relay` is the relay's base URL, `environment` `production` or `development` (APNs sandbox),
+`key` a base64 AES-256 key the app generated for this machine and `keyId` its name, which comes
+back in every push so the app can pick the key. `kinds` is `{ requests: bool, finished: bool }`.
+Registrations are kept across restarts in `~/.coderemote/push/<port>.json` and deleted by
+`coderemote rotate-token`, or when APNs reports the token gone.
+
+The agent pushes for a new request, when a turn that ran 60 seconds or more ends, and to replace
+the notification of a request resolved elsewhere (same `apns-collapse-id`, the request id). It
+pushes nothing while the computer's user was active in the last 2 minutes (macOS only) or a
+client's presence is fresh.
+
+Every push has a generic `aps.alert`, `mutable-content: 1`, a `category` (`PERMISSION`,
+`QUESTION`, `DONE` or none), `thread-id` (the session id), and two custom keys: `k`, the
+`keyId`, and `e`, base64 of a 12-byte nonce, the AES-256-GCM ciphertext and its 16-byte tag. The
+plaintext is JSON `{ kind, title, body, session, request?, question?, options? }` (`kind`:
+`request`, `finished`, `resolved` or `test`). `question` and `options` (its labels) come with a
+request that is one single-choice question, which can be answered from the notification; so the
+relay and APNs never see a command, prompt or session title.

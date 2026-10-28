@@ -1,0 +1,22 @@
+# The Code Remote push relay. It holds the APNs key and forwards pushes that agents have already
+# encrypted; it has no storage bindings and keeps no logs. See README.md.
+name = "coderemote-push"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[observability]
+enabled = false
+
+# 20 sends per device token per minute (keyed by a hash of the token).
+[[ratelimits]]
+name = "LIMITER"
+namespace_id = "1001"
+
+  [ratelimits.simple]
+  limit = 20
+  period = 60
+
+# Secrets (wrangler secret put …): APNS_KEY (the .p8 file's contents), APNS_KEY_ID, APNS_TEAM_ID,
+# BUNDLE_ID (the app's bundle id, the APNs topic) and RELAY_SECRET (any long random string;
+# changing it invalidates every ticket, and apps register again on their next launch).

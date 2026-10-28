@@ -1,0 +1,14 @@
+{
+  "name": "coderemote",
+  "description": "Code Remote: follow and answer your coding agents from your iPhone",
+  "owner": {
+    "name": "Thanh Tran"
+  },
+  "plugins": [
+    {
+      "name": "coderemote",
+      "source": "./plugins/coderemote",
+      "description": "Sends Claude Code's sessions, permission prompts and questions to the Code Remote app"
+    }
+  ]
+}

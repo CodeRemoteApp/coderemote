@@ -6,7 +6,7 @@ import pty from 'node-pty';
 const SCROLLBACK_LIMIT = 256 * 1024;
 
 class TerminalSession {
-	constructor({ cols, rows, cwd }) {
+	constructor({ cols, rows, cwd, env = {} }) {
 		this.id = randomUUID();
 		this.createdAt = Date.now();
 		this.chunks = [];
@@ -21,7 +21,8 @@ class TerminalSession {
 			cols,
 			rows,
 			cwd: cwd || os.homedir(),
-			env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
+			// CODEREMOTE_TERM_ID lets `coderemote hook` tell which terminal a coding agent runs in.
+			env: { ...process.env, ...env, CODEREMOTE_TERM_ID: this.id, TERM: 'xterm-256color', COLORTERM: 'truecolor' },
 		});
 		this.pty.onData((data) => this.#output(Buffer.from(data, 'utf8')));
 		this.pty.onExit(({ exitCode }) => {
@@ -93,9 +94,17 @@ class TerminalSession {
 export class SessionManager {
 	#sessions = new Map();
 
+	/** @param {{ onExit?: (id: string) => void }} [opts] */
+	constructor({ onExit } = {}) {
+		this.onExit = onExit;
+	}
+
 	create(opts) {
 		const session = new TerminalSession(opts);
-		session.onExit = () => this.#sessions.delete(session.id);
+		session.onExit = () => {
+			this.#sessions.delete(session.id);
+			this.onExit?.(session.id);
+		};
 		this.#sessions.set(session.id, session);
 		return session;
 	}

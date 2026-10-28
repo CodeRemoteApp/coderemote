@@ -1,0 +1,11 @@
+{
+  "name": "coderemote",
+  "version": "1.0.1",
+  "description": "Sends Claude Code's sessions, permission prompts and questions to the Code Remote app, so you can follow and answer them from your iPhone. Needs the coderemote CLI (npm install -g coderemote) and a running `coderemote up`; without them it does nothing.",
+  "author": {
+    "name": "Thanh Tran"
+  },
+  "homepage": "https://coderemoteapp.github.io/web/",
+  "repository": "https://github.com/CodeRemoteApp/coderemote",
+  "license": "AGPL-3.0-or-later"
+}

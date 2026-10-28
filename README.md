@@ -13,7 +13,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/coderemote"><img src="https://img.shields.io/npm/v/coderemote?label=npm%20coderemote" alt="npm"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue" alt="license"></a>
-  <img src="https://img.shields.io/badge/iOS-27%2B-black" alt="iOS 27+">
+  <img src="https://img.shields.io/badge/iOS-26%2B-black" alt="iOS 26+">
 </p>
 
 <p align="center">
@@ -35,6 +35,15 @@ cd ~/projects/my-app && coderemote up
 On your iPhone: scan the QR code it prints. That's all: the first run downloads Microsoft's
 Dev Tunnels CLI and asks you to sign in with GitHub in the browser.
 
+Using Claude Code? Run `coderemote setup claude` once, or inside Claude Code:
+
+```
+/plugin install coderemote --marketplace CodeRemoteApp/coderemote
+```
+
+Its sessions then show in the app, where you can follow them and answer their permission
+prompts and questions.
+
 Want the full editor too? `coderemote up --web` also starts VS Code's own tunnel
 (`code tunnel`) and prints a vscode.dev link that opens the folder in VS Code in the browser.
 It needs VS Code's `code` command on your `PATH`, signs in with its own GitHub account and
@@ -54,6 +63,9 @@ Everything about the CLI (commands, requirements, FAQ) is in its
 - **Terminal:** a real PTY shell with a key bar for Ctrl, Tab, Esc, arrows and modifier
   combos (Mac and Windows layouts); sessions survive the phone sleeping and reattach with
   their output, so `claude`, `vim` or a long build keep going
+- **Coding agents:** every Claude Code session in the folder, what it is doing, and its
+  permission prompts and questions, answered from the phone while they stay open on the
+  computer (needs `coderemote setup claude`)
 - **VS Code in the browser (optional):** `coderemote up --web` also starts VS Code's own
   tunnel and prints a vscode.dev link that opens the folder in the full editor
 - **Private by default:** only your own GitHub or Microsoft account gets through the tunnel,
@@ -77,6 +89,7 @@ contract is in [PROTOCOL.md](packages/protocol/PROTOCOL.md); the security model 
 | [`apps/agent`](apps/agent) | `coderemote` CLI, published to npm |
 | [`packages/agent-core`](packages/agent-core) | the agent: HTTP + WebSocket server for files, git and PTY terminals |
 | [`packages/protocol`](packages/protocol) | wire contract shared by agent and app |
+| [`plugins/coderemote`](plugins/coderemote) | Claude Code plugin that runs `coderemote hook`; the repo is its marketplace (`.claude-plugin/marketplace.json`) |
 | [`openspec`](openspec) | specs and change proposals |
 
 ## Develop

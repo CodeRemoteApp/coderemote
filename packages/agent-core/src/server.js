@@ -5,12 +5,24 @@ import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { timingSafeEqual } from 'node:crypto';
-import { PROTOCOL_VERSION, PAIRING_SCHEME, Routes, TERMINAL_WS_PATH, TUNNEL_AUTH_CALLBACK_HOST, TUNNEL_HANDOFF_PATH } from '@vsremote/protocol';
+import {
+	AGENTS_WS_PATH,
+	AgentsClientMessage,
+	HOOK_SECRET_HEADER,
+	PROTOCOL_VERSION,
+	PAIRING_SCHEME,
+	Routes,
+	TERMINAL_WS_PATH,
+	TUNNEL_AUTH_CALLBACK_HOST,
+	TUNNEL_HANDOFF_PATH,
+} from '@vsremote/protocol';
 import { WebSocketServer } from 'ws';
+import { AgentHub } from './agents.js';
 import * as Git from './git.js';
 import { TunnelHandoff } from './handoff.js';
 import { LANDING_HTML } from './landing.js';
 import { killListener, listPorts } from './ports.js';
+import { PushSender } from './push.js';
 import { detail, InspectingProxy } from './inspector.js';
 import { HttpError, Sandbox } from './sandbox.js';
 import { SessionManager } from './sessions.js';
@@ -63,16 +75,48 @@ async function readJson(req) {
  *        `token()`); absent without a tunnel
  * @param {() => Promise<object | null>} [opts.tunnelStatus]  the tunnel and the account's other
  *        machines, for `GET /api/tunnel`; absent without a tunnel
+ * @param {string | null} [opts.hookSecret]  authenticates `coderemote hook` deliveries; without
+ *        one the agent takes no hook events
+ * @param {string | null} [opts.hookBin]  the CLI that runs `hook`, handed to terminals so a coding
+ *        agent started in one reports through this agent's own version, whatever is on PATH
+ * @param {AgentHub} [opts.agents]  coding-agent sessions (one is made when absent)
+ * @param {{ load: () => object[], save: (devices: object[]) => void } | null} [opts.pushStore]
+ *        keeps push registrations across restarts; without it they last until the agent stops
+ * @param {object} [opts.pushOptions]  passed to PushSender (tests stub the relay and presence)
  */
-export function createAgentServer({ token, root, tunnelToken = async () => null, preview = null, tunnelStatus = null }) {
+export function createAgentServer({
+	token,
+	root,
+	tunnelToken = async () => null,
+	preview = null,
+	tunnelStatus = null,
+	hookSecret = null,
+	hookBin = null,
+	agents = new AgentHub(),
+	pushStore = null,
+	pushOptions = {},
+}) {
 	const handoff = new TunnelHandoff({ token, mint: tunnelToken });
 	const sandbox = new Sandbox(root);
-	const sessions = new SessionManager();
+	const sessions = new SessionManager({ onExit: (id) => agents.terminalExited(id) });
 	const expected = Buffer.from(`Bearer ${token}`);
+	const sweep = setInterval(() => agents.sweep(), 10 * 60 * 1000);
+	sweep.unref();
+	// When a client last said it shows this machine; pushes wait while that is recent.
+	let foregroundAt = 0;
+	const clientInForeground = () => Date.now() - foregroundAt < 30_000;
+	const push = new PushSender({ hub: agents, store: pushStore, foreground: clientInForeground, ...pushOptions });
 
 	function authorized(req) {
 		const got = Buffer.from(req.headers.authorization || '');
 		return got.length === expected.length && timingSafeEqual(got, expected);
+	}
+
+	function hookAuthorized(req) {
+		if (!hookSecret) return false;
+		const got = Buffer.from(String(req.headers[HOOK_SECRET_HEADER] || ''));
+		const want = Buffer.from(hookSecret);
+		return got.length === want.length && timingSafeEqual(got, want);
 	}
 
 	function previewPort(value, ownPort) {
@@ -348,6 +392,31 @@ export function createAgentServer({ token, root, tunnelToken = async () => null,
 			return issued;
 		},
 
+		[Routes.agentsSessions]: async () => ({ sessions: agents.sessions() }),
+
+		[Routes.agentsTimeline]: async (url) =>
+			agents.timeline(url.searchParams.get('session'), parseInt(url.searchParams.get('after'), 10) || 0),
+
+		[Routes.agentsAnswer]: async (url, req) => {
+			agents.answer(await readJson(req));
+			return {};
+		},
+
+		[Routes.pushDeviceSet]: async (url, req) => {
+			push.register(await readJson(req));
+			return {};
+		},
+
+		[Routes.pushDeviceDelete]: async (url) => {
+			push.unregister(url.searchParams.get('token') ?? '');
+			return {};
+		},
+
+		[Routes.pushTest]: async (url, req) => {
+			await push.test((await readJson(req)).token);
+			return {};
+		},
+
 		[Routes.termKill]: async (url) => {
 			const s = sessions.get(url.searchParams.get('id'));
 			if (!s) throw new HttpError(404, 'no such session');
@@ -367,6 +436,7 @@ export function createAgentServer({ token, root, tunnelToken = async () => null,
 			return res.end(LANDING_HTML);
 		}
 		if (req.method === 'GET' && url.pathname === TUNNEL_HANDOFF_PATH) return handoffRedirect(url, res);
+		if (`${req.method} ${url.pathname}` === Routes.agentsHook) return hookDelivery(url, req, res);
 		if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
 		const handler = routes[`${req.method} ${url.pathname}`];
 		if (!handler) return sendJson(res, 404, { error: 'not found' });
@@ -379,6 +449,31 @@ export function createAgentServer({ token, root, tunnelToken = async () => null,
 			else res.destroy(e);
 		}
 	});
+
+	/** A hook event from `coderemote hook`; a PermissionRequest is held open until it resolves. */
+	async function hookDelivery(url, req, res) {
+		if (!hookAuthorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+		const terminal = url.searchParams.get('terminal');
+		// The hook is killed when the computer answers first, which closes this connection.
+		const closed = new AbortController();
+		res.on('close', () => {
+			if (!res.writableFinished) closed.abort();
+		});
+		try {
+			const output = await agents.handle(await readJson(req), {
+				agent: url.searchParams.get('agent') || 'claude',
+				terminal: terminal && sessions.get(terminal) ? terminal : null,
+				signal: closed.signal,
+			});
+			if (res.destroyed) return;
+			if (output) return sendJson(res, 200, output);
+			// No decision: the computer's own prompt answers.
+			res.writeHead(200, { 'content-length': 0 });
+			res.end();
+		} catch (e) {
+			if (!res.headersSent) sendJson(res, e.status || 500, { error: e.message });
+		}
+	}
 
 	/** Reached only after the relay's sign-in; the HMAC proves the caller also has the pairing token. */
 	async function handoffRedirect(url, res) {
@@ -406,6 +501,10 @@ export function createAgentServer({ token, root, tunnelToken = async () => null,
 	const wss = new WebSocketServer({ noServer: true });
 	server.on('upgrade', async (req, socket, head) => {
 		const url = new URL(req.url, 'http://localhost');
+		if (url.pathname === AGENTS_WS_PATH && authorized(req)) {
+			wss.handleUpgrade(req, socket, head, watchAgents);
+			return;
+		}
 		if (url.pathname !== TERMINAL_WS_PATH || !authorized(req)) {
 			socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
 			return;
@@ -425,6 +524,10 @@ export function createAgentServer({ token, root, tunnelToken = async () => null,
 					rows: parseInt(url.searchParams.get('rows'), 10) || 24,
 					// New shells start in the shared folder unless a subfolder is asked for.
 					cwd: await sandbox.resolve(url.searchParams.get('cwd') || sandbox.root),
+					env: {
+						CODEREMOTE_AGENT_PORT: String(server.address()?.port ?? ''),
+						...(hookBin ? { CODEREMOTE_HOOK_BIN: hookBin } : {}),
+					},
 				});
 			} catch (e) {
 				socket.end(`HTTP/1.1 ${e.status || (e.code === 'ENOENT' ? 404 : 500)} Error\r\n\r\n`);
@@ -434,11 +537,34 @@ export function createAgentServer({ token, root, tunnelToken = async () => null,
 		wss.handleUpgrade(req, socket, head, (ws) => session.attach(ws));
 	});
 
+	// Agents socket: a snapshot, then every change as it happens.
+	function watchAgents(ws) {
+		const send = (msg) => ws.send(JSON.stringify(msg));
+		send({ type: 'snapshot', sessions: agents.sessions(), requests: agents.requests() });
+		agents.on('message', send);
+		ws.on('message', (data, isBinary) => {
+			if (isBinary) return;
+			let msg;
+			try {
+				msg = JSON.parse(data.toString('utf8'));
+			} catch {
+				return;
+			}
+			if (msg.type === AgentsClientMessage.presence) foregroundAt = msg.foreground === true ? Date.now() : 0;
+		});
+		ws.on('close', () => agents.off('message', send));
+	}
+
 	server.on('close', () => {
+		clearInterval(sweep);
 		sessions.killAll();
 		for (const proxy of proxies.values()) proxy.close();
 	});
 	// server.close() waits for open sockets; callers shutting down kill shells right away.
 	server.killAllSessions = () => sessions.killAll();
+	server.agents = agents;
+	// Whether a client showed this machine in the last 30 seconds.
+	server.clientInForeground = clientInForeground;
+	server.push = push;
 	return server;
 }

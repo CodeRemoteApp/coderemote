@@ -10,7 +10,9 @@ import { promisify } from 'node:util';
 import qrcode from 'qrcode-terminal';
 import { createAgentServer } from '@vsremote/agent-core';
 import { ensureDevtunnel } from '../src/devtunnel.js';
+import { ensureHookSecret, readHookSecret, runHook } from '../src/hook.js';
 import { PreviewTunnel } from '../src/preview.js';
+import { pushStore } from '../src/push-store.js';
 import { AgentRegistry } from '../src/registry.js';
 import { MACHINE_LABEL, tunnelStatus } from '../src/tunnel-status.js';
 import { availableUpdate, fetchLatest, installCommand, isNewer } from '../src/update.js';
@@ -26,6 +28,8 @@ const CONFIG_DIR = path.join(os.homedir(), '.coderemote');
 const LEGACY_CONFIG_DIR = path.join(os.homedir(), '.vsremote');
 if (!fs.existsSync(CONFIG_DIR) && fs.existsSync(LEGACY_CONFIG_DIR)) fs.renameSync(LEGACY_CONFIG_DIR, CONFIG_DIR);
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+// Phones registered for notifications, per agent port; `rotate-token` deletes them all.
+const PUSH_DIR = path.join(CONFIG_DIR, 'push');
 const DEFAULT_PORT = 31580;
 // Bundled into the published dist/coderemote.js, whose package.json the release workflow stamps
 // with the tag's version. A source checkout has no real version, so it never checks for updates.
@@ -41,6 +45,8 @@ function loadConfig() {
 	if (!cfg.token) {
 		cfg.token = randomBytes(32).toString('base64url');
 		saveConfig(cfg);
+		// Devices registered for notifications were paired devices too.
+		fs.rmSync(PUSH_DIR, { recursive: true, force: true });
 	}
 	// Older releases kept one tunnel per machine, made for the default port.
 	if (cfg.tunnelId && !cfg.tunnels) {
@@ -65,7 +71,18 @@ function portFree(port) {
 }
 
 function listen(token, port, root, tunnelToken, preview, status) {
-	const server = createAgentServer({ token, root, tunnelToken, preview, tunnelStatus: status });
+	const hookSecret = ensureHookSecret(CONFIG_DIR);
+	const server = createAgentServer({
+		token,
+		root,
+		tunnelToken,
+		preview,
+		tunnelStatus: status,
+		hookSecret,
+		// This very CLI, so coding agents in the app's terminals report through the same version.
+		hookBin: fs.realpathSync(process.argv[1]),
+		pushStore: pushStore(PUSH_DIR, port),
+	});
 	return new Promise((resolve, reject) => {
 		server.once('error', reject);
 		// Loopback only: remote access goes exclusively through the tunnel.
@@ -290,6 +307,8 @@ const USAGE = `Usage: coderemote <command> [options]
   request <ID> [PORT]  headers and bodies of one request (bodies up to 64 KB are kept);
                        auth headers, cookies and token-like fields are masked unless
                        --show-secrets is given; --json on either for machine-readable output
+  setup claude         let the app follow Claude Code sessions and answer their prompts
+                       (installs the Code Remote plugin into Claude Code); --remove undoes it
   version              print this coderemote's version (also --version, -v)
   login                sign in to Microsoft Dev Tunnels with GitHub (up does this when needed);
                        --microsoft for a Microsoft account, --device-code without a browser
@@ -435,6 +454,50 @@ async function start({ tunnel }) {
 	return { url, access };
 }
 
+// The plugin's marketplace is this repository; --marketplace points at a checkout to try changes.
+const PLUGIN = 'coderemote@coderemote';
+
+async function claudeCli(...args) {
+	try {
+		return (await run('claude', args, { timeout: 120_000 })).stdout.trim();
+	} catch (e) {
+		if (e.code === 'ENOENT') return null;
+		throw new Error((e.stderr || e.stdout || e.message).trim());
+	}
+}
+
+async function setupClaude() {
+	const version = await claudeCli('--version');
+	if (version === null) {
+		console.error('Claude Code is required: install it from https://claude.com/claude-code, then run this again.');
+		process.exit(1);
+	}
+	if (rest.includes('--remove')) {
+		await claudeCli('plugin', 'uninstall', PLUGIN).catch((e) => console.error(e.message));
+		await claudeCli('plugin', 'marketplace', 'remove', 'coderemote').catch(() => {});
+		console.log('Removed the Code Remote plugin. New Claude Code sessions no longer reach the app.');
+		return;
+	}
+	const source = flag('--marketplace') ?? 'CodeRemoteApp/coderemote';
+	spinner.start(`Installing the Code Remote plugin into ${version}`);
+	try {
+		// Adding it again when it is already there succeeds; refreshing then picks up the latest plugin.
+		await claudeCli('plugin', 'marketplace', 'add', source);
+		await claudeCli('plugin', 'marketplace', 'update', 'coderemote').catch(() => {});
+		await claudeCli('plugin', 'install', PLUGIN);
+		// Installing over an installed plugin keeps the old copy; this brings it to the latest.
+		await claudeCli('plugin', 'update', PLUGIN).catch(() => {});
+	} catch (e) {
+		spinner.fail();
+		console.error(e.message);
+		process.exit(1);
+	}
+	spinner.succeed();
+	console.log('\n  New Claude Code sessions in a folder shared with `coderemote up` now show in the');
+	console.log('  app’s Agents tab, where you can answer their permission prompts and questions.');
+	console.log('  Sessions already running pick it up after a restart. Undo: coderemote setup claude --remove\n');
+}
+
 /** Calls a running agent's local API. */
 async function agentApi(agent, method, route, query = {}) {
 	const url = new URL(route, `http://127.0.0.1:${agent.port}`);
@@ -488,6 +551,30 @@ function ago(ms) {
 }
 
 switch (cmd) {
+	case 'hook': {
+		// Claude Code waits on this; print only a decision, and never fail.
+		let out = '';
+		try {
+			const chunks = [];
+			for await (const c of process.stdin) chunks.push(c);
+			out = await runHook({
+				input: Buffer.concat(chunks).toString('utf8'),
+				agents: registry.list(),
+				secret: readHookSecret(CONFIG_DIR),
+				agent: flag('--agent') ?? 'claude',
+			});
+		} catch {}
+		if (out) process.stdout.write(`${out}\n`);
+		process.exit(0);
+	}
+	case 'setup': {
+		if (rest[0] !== 'claude') {
+			console.error('Usage: coderemote setup claude [--remove]');
+			process.exit(1);
+		}
+		await setupClaude();
+		break;
+	}
 	case 'serve': {
 		await start({ tunnel: false });
 		console.log(`coderemote agent on http://127.0.0.1:${port}\nSharing: ${root}\nToken: ${cfg.token}`);

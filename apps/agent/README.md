@@ -97,6 +97,7 @@ coderemote stop                  # stop the agent for this folder (--all: every 
 coderemote serve                 # share on 127.0.0.1 only, no tunnel (local testing)
 coderemote requests [PORT]       # requests that reached a previewed port (--grep, --failed, --json)
 coderemote request <ID>          # headers and bodies of one request (--show-secrets, --json)
+coderemote setup claude          # let the app follow and answer Claude Code sessions (--remove)
 coderemote rotate-token          # revoke every paired device, stop running agents
 coderemote login                 # sign in again (--microsoft, or --device-code without a browser)
 coderemote update                # install the latest version (`up` says when there's one)
@@ -105,6 +106,13 @@ coderemote help                  # all options
 
 Options: `--root DIR` shares another folder; `--port N` picks the local port (default
 `31580`). The tunnel URL stays the same between runs, so paired phones reconnect on their own.
+
+`setup claude` installs the Code Remote plugin into Claude Code (`claude plugin install
+coderemote@coderemote`). From then on, every Claude Code session in a shared folder shows in
+the app's Agents tab: what it is doing, and its permission prompts and questions, which you can
+answer from the phone while the prompt stays open on the computer too (whichever answers first
+wins). Without a running agent the plugin does nothing. Inside Claude Code the same plugin
+installs with `/plugin install coderemote --marketplace CodeRemoteApp/coderemote`.
 
 `requests` and `request` read the traffic log of a port you preview from the app, so a coding
 agent in a terminal (Claude Code, Codex, …) can debug with it: run them in the shared folder.

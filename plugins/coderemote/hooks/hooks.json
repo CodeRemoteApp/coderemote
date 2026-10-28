@@ -1,0 +1,132 @@
+{
+  "description": "Code Remote: forwards session events to the coderemote agent sharing this folder",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "timeout": 3600
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "MessageDisplay": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

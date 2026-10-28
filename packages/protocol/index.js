@@ -42,6 +42,13 @@ export const Routes = Object.freeze({
 	previewRequestsClear: 'DELETE /api/preview/requests',
 	tunnelToken: 'POST /api/tunnel/token',
 	tunnelStatus: 'GET /api/tunnel',
+	agentsHook: 'POST /api/agents/hook',
+	agentsSessions: 'GET /api/agents/sessions',
+	agentsTimeline: 'GET /api/agents/timeline',
+	agentsAnswer: 'POST /api/agents/answer',
+	pushDeviceSet: 'PUT /api/push/device',
+	pushDeviceDelete: 'DELETE /api/push/device',
+	pushTest: 'POST /api/push/test',
 });
 
 // Opened in the system browser (no bearer token); answers with a redirect to
@@ -56,6 +63,24 @@ export const TerminalServerMessage = Object.freeze({ session: 'session', exit: '
 
 // Client -> server text frames. Binary frames carry raw keyboard input.
 export const TerminalClientMessage = Object.freeze({ input: 'input', resize: 'resize' });
+
+// Coding-agent sessions (Claude Code) reported by `coderemote hook`. See PROTOCOL.md, "Agents".
+export const AGENTS_WS_PATH = '/api/agents/ws';
+
+// Hook deliveries carry this header with the machine-local hook secret instead of a bearer token.
+export const HOOK_SECRET_HEADER = 'x-coderemote-hook';
+
+// Server -> client frames on the agents socket.
+export const AgentsServerMessage = Object.freeze({
+	snapshot: 'snapshot',
+	session: 'session',
+	entry: 'entry',
+	request: 'request',
+	requestResolved: 'request_resolved',
+});
+
+// Client -> server frames on the agents socket.
+export const AgentsClientMessage = Object.freeze({ presence: 'presence' });
 
 /** Browser link: the agent's landing page turns the fragment into a pairing link. */
 export function webUrl({ url, token }) {
