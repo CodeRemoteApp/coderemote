@@ -42,7 +42,8 @@ Using Claude Code? Run `coderemote setup claude` once, or inside Claude Code:
 ```
 
 Its sessions then show in the app, where you can follow them and answer their permission
-prompts and questions.
+prompts and questions. For Codex, run `coderemote setup codex`, then trust the Code Remote hooks
+once with `/hooks` in Codex.
 
 Want the full editor too? `coderemote up --web` also starts VS Code's own tunnel
 (`code tunnel`) and prints a vscode.dev link that opens the folder in VS Code in the browser.
@@ -90,6 +91,7 @@ contract is in [PROTOCOL.md](packages/protocol/PROTOCOL.md); the security model 
 | [`packages/agent-core`](packages/agent-core) | the agent: HTTP + WebSocket server for files, git and PTY terminals |
 | [`packages/protocol`](packages/protocol) | wire contract shared by agent and app |
 | [`plugins/coderemote`](plugins/coderemote) | Claude Code plugin that runs `coderemote hook`; the repo is its marketplace (`.claude-plugin/marketplace.json`) |
+| [`plugins/coderemote-codex`](plugins/coderemote-codex) | the same for Codex (`hook --agent codex`); the repo is its marketplace too (`.agents/plugins/marketplace.json`) |
 | [`openspec`](openspec) | specs and change proposals |
 
 ## Develop

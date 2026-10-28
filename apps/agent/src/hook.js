@@ -25,6 +25,20 @@ export function ensureHookSecret(dir) {
 	return secret;
 }
 
+/**
+ * Writes `<dir>/bin/hook`, which runs this CLI's `hook` with this Node. Codex gives plugin hooks
+ * a bare environment (no CODEREMOTE_* variables, its own PATH), so its plugin finds the CLI here.
+ */
+export function writeHookLauncher(dir, { node = process.execPath, script }) {
+	const bin = path.join(dir, 'bin');
+	fs.mkdirSync(bin, { recursive: true, mode: 0o700 });
+	const quote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+	const file = path.join(bin, 'hook');
+	fs.writeFileSync(file, `#!/bin/sh\nexec ${quote(node)} ${quote(script)} hook "$@"\n`, { mode: 0o755 });
+	fs.chmodSync(file, 0o755);
+	return file;
+}
+
 export function readHookSecret(dir) {
 	try {
 		return fs.readFileSync(path.join(dir, 'hook-secret'), 'utf8').trim() || null;

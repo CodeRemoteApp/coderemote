@@ -13,6 +13,7 @@ agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 | `packages/agent-core` | the agent's HTTP + WebSocket server (files, git, terminals) |
 | `packages/protocol` | wire contract shared by the agent and clients, documented in `PROTOCOL.md` |
 | `plugins/coderemote` | Claude Code plugin: `hooks/hooks.json` runs `coderemote hook` for each session event. The repository root is its marketplace (`.claude-plugin/marketplace.json`) |
+| `plugins/coderemote-codex` | Codex plugin (`.codex-plugin/plugin.json`, `hooks/hooks.json` running `coderemote hook --agent codex`), listed in `.agents/plugins/marketplace.json`. Try it with `CODEX_HOME=<temp dir> coderemote setup codex --marketplace .` |
 
 To try plugin changes without installing them, start Claude Code with
 `claude --plugin-dir plugins/coderemote` in a folder a `coderemote serve` agent shares, with

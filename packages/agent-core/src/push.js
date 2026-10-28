@@ -23,6 +23,12 @@ async function macIdleSeconds() {
 	}
 }
 
+/** Whether someone used this computer in the last 2 minutes (false where that can't be known). */
+export async function userActiveHere() {
+	const idle = await macIdleSeconds();
+	return idle !== null && idle < ACTIVE_WITHIN;
+}
+
 /** `base64(nonce ‖ ciphertext ‖ tag)` of `data` as JSON under AES-256-GCM. */
 export function seal(key, data) {
 	const nonce = randomBytes(12);
@@ -100,10 +106,7 @@ export class PushSender {
 		this.#store = store;
 		this.#devices = store?.load() ?? [];
 		this.#foreground = foreground;
-		this.#userActive = userActive ?? (async () => {
-			const idle = await macIdleSeconds();
-			return idle !== null && idle < ACTIVE_WITHIN;
-		});
+		this.#userActive = userActive ?? userActiveHere;
 		this.#fetch = fetch;
 		hub.on('message', (msg) => this.#follow(msg).catch(() => {}));
 	}

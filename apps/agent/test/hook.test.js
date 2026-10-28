@@ -75,3 +75,14 @@ test('fails open: no agent, a folder nobody shares, a wrong secret, bad input', 
 	assert.equal(await runHook({ input: event({ hook_event_name: 'Stop' }), agents: agents(), secret: null, env: {} }), '');
 	assert.equal(await runHook({ input: 'not json', agents: agents(), secret, env: {} }), '');
 });
+
+test('the hook launcher runs this CLI with this Node, whatever the PATH', async () => {
+	const { writeHookLauncher } = await import('../src/hook.js');
+	const { execFileSync } = await import('node:child_process');
+	const script = path.join(dir, "it's cli.js");
+	fs.writeFileSync(script, 'console.log(process.argv.slice(2).join(" "))');
+	const launcher = writeHookLauncher(path.join(dir, 'launch'), { script });
+	assert.equal(fs.statSync(launcher).mode & 0o777, 0o755);
+	const out = execFileSync(launcher, ['--agent', 'codex'], { env: { PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
+	assert.equal(out.trim(), 'hook --agent codex');
+});

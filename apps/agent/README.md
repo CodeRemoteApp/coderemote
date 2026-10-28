@@ -98,6 +98,7 @@ coderemote serve                 # share on 127.0.0.1 only, no tunnel (local tes
 coderemote requests [PORT]       # requests that reached a previewed port (--grep, --failed, --json)
 coderemote request <ID>          # headers and bodies of one request (--show-secrets, --json)
 coderemote setup claude          # let the app follow and answer Claude Code sessions (--remove)
+coderemote setup codex           # the same for Codex; then trust its hooks once with /hooks
 coderemote rotate-token          # revoke every paired device, stop running agents
 coderemote login                 # sign in again (--microsoft, or --device-code without a browser)
 coderemote update                # install the latest version (`up` says when there's one)
@@ -113,6 +114,13 @@ the app's Agents tab: what it is doing, and its permission prompts and questions
 answer from the phone while the prompt stays open on the computer too (whichever answers first
 wins). Without a running agent the plugin does nothing. Inside Claude Code the same plugin
 installs with `/plugin install coderemote --marketplace CodeRemoteApp/coderemote`.
+
+`setup codex` does the same for Codex (0.139 or later): it adds this repository as a Codex
+plugin marketplace and installs `coderemote-codex`. Codex runs a plugin's hooks only once you
+trust them, so open Codex afterwards and approve the Code Remote hooks in `/hooks`. Codex shows
+its approval prompt only after the hook declines, so the agent answers there at once while you
+are at the computer (or have the app open), and holds the request for your phone, up to ten
+minutes, only while you're away.
 
 `requests` and `request` read the traffic log of a port you preview from the app, so a coding
 agent in a terminal (Claude Code, Codex, …) can debug with it: run them in the shared folder.

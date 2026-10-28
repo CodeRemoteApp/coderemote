@@ -23,7 +23,7 @@ import * as Git from './git.js';
 import { TunnelHandoff } from './handoff.js';
 import { LANDING_HTML } from './landing.js';
 import { killListener, listPorts } from './ports.js';
-import { PushSender } from './push.js';
+import { PushSender, userActiveHere } from './push.js';
 import { detail, InspectingProxy } from './inspector.js';
 import { HttpError, Sandbox } from './sandbox.js';
 import { SessionManager, shellQuote } from './sessions.js';
@@ -99,8 +99,9 @@ async function readJson(req) {
  * @param {string | null} [opts.uploadsDir]  where files sent from the phone go; sessions started
  *        here may read it without asking
  * @param {string} [opts.claudeCommand]  the Claude Code executable that sessions started here run
- * @param {() => Promise<boolean>} [opts.pluginInstalled]  whether Claude Code has the Code Remote
- *        plugin (default: asks `claude plugin list --json`)
+ * @param {string} [opts.codexCommand]  the Codex executable that sessions started here run
+ * @param {(agent: string) => Promise<boolean>} [opts.pluginInstalled]  whether that coding agent
+ *        has the Code Remote plugin (default: asks its `plugin list`)
  * @param {AgentHub} [opts.agents]  coding-agent sessions (one is made when absent)
  * @param {{ load: () => object[], save: (devices: object[]) => void } | null} [opts.pushStore]
  *        keeps push registrations across restarts; without it they last until the agent stops
@@ -116,6 +117,7 @@ export function createAgentServer({
 	hookBin = null,
 	uploadsDir = null,
 	claudeCommand = 'claude',
+	codexCommand = 'codex',
 	pluginInstalled = null,
 	agents = new AgentHub(),
 	pushStore = null,
@@ -135,6 +137,11 @@ export function createAgentServer({
 	let foregroundAt = 0;
 	const clientInForeground = () => Date.now() - foregroundAt < 30_000;
 	const push = new PushSender({ hub: agents, store: pushStore, foreground: clientInForeground, ...pushOptions });
+	// Agents whose approvals block the terminal (Codex) ask there while someone uses the computer,
+	// unless a client shows this machine: then the person is on the phone and answers there.
+	if (!agents.presenceSet) {
+		agents.present = async () => !clientInForeground() && (await (pushOptions.userActive ?? userActiveHere)());
+	}
 
 	function authorized(req) {
 		const got = Buffer.from(req.headers.authorization || '');
@@ -156,6 +163,7 @@ export function createAgentServer({
 	 */
 	function typingTarget(id, { whileWaiting }) {
 		const session = typeof id === 'string' ? agents.session(id) : null;
+		// (The keys a session takes depend on its agent; see `capabilities.keys`.)
 		if (!session) throw new HttpError(404, 'no such session');
 		const term = session.terminal && session.state !== 'ended' ? sessions.get(session.terminal) : null;
 		if (!term) throw new HttpError(409, 'this session runs outside Code Remote; it can be followed but not typed into');
@@ -186,30 +194,73 @@ export function createAgentServer({
 	function loginShell(script) {
 		const shell = process.env.SHELL || '/bin/sh';
 		return new Promise((resolve) => {
-			execFile(shell, ['-l', '-c', script], { timeout: 20_000 }, (err, out) => resolve(err ? null : out));
+			// Plugin listings run long (Codex's lists every marketplace's plugins without a filter).
+			execFile(shell, ['-l', '-c', script], { timeout: 20_000, maxBuffer: 16 * 1024 * 1024 }, (err, out) =>
+				resolve(err ? null : out),
+			);
 		});
 	}
 
-	/** Whether `claudeCommand` runs here, looked up through a login shell like the session will be. */
-	async function claudeInstalled() {
-		return Boolean((await loginShell(`command -v ${shellQuote(claudeCommand)}`))?.trim());
+	/**
+	 * How to start each coding agent, and how to tell its plugin is installed. Claude Code takes the
+	 * session id up front; Codex reports its own, which replaces the placeholder.
+	 */
+	const launchers = {
+		claude: {
+			command: claudeCommand,
+			name: 'Claude Code',
+			args: ({ id, resume, model, permissionMode }) => [
+				...(resume ? ['--resume', resume] : ['--session-id', id]),
+				...(model ? ['--model', model] : []),
+				...(permissionMode ? ['--permission-mode', permissionMode] : []),
+				...(uploadsDir ? ['--add-dir', uploadsDir] : []),
+			],
+			// Fullscreen rendering can fail to start while no client is attached to answer the
+			// terminal's queries; the classic renderer doesn't need them.
+			env: { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1' },
+			async plugin() {
+				const list = JSON.parse((await loginShell(`${shellQuote(claudeCommand)} plugin list --json`)) ?? '[]');
+				return list.some((p) => p.id === 'coderemote@coderemote' && p.enabled !== false);
+			},
+			missingPlugin: 'Claude Code needs the Code Remote plugin first: run `coderemote setup claude` once on the computer.',
+		},
+		codex: {
+			command: codexCommand,
+			name: 'Codex',
+			// Codex's sandbox reads anywhere already; --add-dir would make the uploads writable.
+			// Without -a, recent Codex rejects every escalation outright ("granular" policy), so a
+			// session started here asks, and its requests reach the phone or the terminal.
+			args: ({ resume, model, approvalPolicy }) => [
+				...(resume ? ['resume', resume] : []),
+				...(model ? ['-m', model] : []),
+				...(approvalPolicy ? ['-a', approvalPolicy] : []),
+			],
+			env: {},
+			async plugin() {
+				const list = JSON.parse((await loginShell(`${shellQuote(codexCommand)} plugin list --marketplace coderemote --json`)) ?? '{}');
+				return (list.installed ?? []).some((p) => p.pluginId === 'coderemote-codex@coderemote' && p.enabled !== false);
+			},
+			missingPlugin: 'Codex needs the Code Remote plugin first: run `coderemote setup codex` once on the computer, then trust its hooks with `/hooks` in Codex.',
+		},
+	};
+
+	/** Whether that agent's command runs here, looked up through a login shell like the session will be. */
+	async function installed(agent) {
+		return Boolean((await loginShell(`command -v ${shellQuote(launchers[agent].command)}`))?.trim());
 	}
 
-	// Whether Claude Code has the plugin; asking takes a second or two, so the answer is kept a
-	// while. Any hook event proves it.
-	let plugin = { installed: false, checkedAt: 0 };
-	async function hasPlugin() {
-		if (Date.now() - plugin.checkedAt < 30_000) return plugin.installed;
-		let installed = false;
-		if (pluginInstalled) installed = await pluginInstalled();
-		else {
-			try {
-				const list = JSON.parse((await loginShell(`${shellQuote(claudeCommand)} plugin list --json`)) ?? '[]');
-				installed = list.some((p) => p.id === 'coderemote@coderemote' && p.enabled !== false);
-			} catch {}
-		}
-		plugin = { installed, checkedAt: Date.now() };
-		return installed;
+	// Whether each agent has the plugin; asking takes a second or two, so the answer is kept a
+	// while. Any hook event from that agent proves it.
+	const plugins = {};
+	async function hasPlugin(agent) {
+		const known = plugins[agent];
+		if (known && Date.now() - known.checkedAt < 30_000) return known.installed;
+		let found = false;
+		try {
+			found = pluginInstalled ? await pluginInstalled(agent) : await launchers[agent].plugin();
+		} catch {}
+		plugins[agent] = { installed: found, checkedAt: Date.now() };
+		return found;
 	}
 
 	function hookAuthorized(req) {
@@ -498,12 +549,18 @@ export function createAgentServer({
 			agents.timeline(url.searchParams.get('session'), parseInt(url.searchParams.get('after'), 10) || 0),
 
 		[Routes.agentsSetup]: async () => {
-			const claude = await claudeInstalled();
-			return { claude, plugin: claude && (await hasPlugin()) };
+			const [claude, codex] = await Promise.all([installed('claude'), installed('codex')]);
+			const [plugin, codexPlugin] = await Promise.all([claude && hasPlugin('claude'), codex && hasPlugin('codex')]);
+			return { claude, plugin: Boolean(plugin), codex, codexPlugin: Boolean(codexPlugin) };
 		},
 
 		[Routes.agentsLaunch]: async (url, req) => {
-			const { cwd, model, permissionMode, resume, cols, rows } = await readJson(req);
+			const { agent = 'claude', cwd, model, permissionMode, approvalPolicy, resume, cols, rows } = await readJson(req);
+			if (approvalPolicy !== undefined && !['on-request', 'never'].includes(approvalPolicy)) {
+				throw new HttpError(400, 'approvalPolicy must be on-request or never');
+			}
+			if (!Object.hasOwn(launchers, agent)) throw new HttpError(400, `agent must be one of ${Object.keys(launchers).join(', ')}`);
+			const launcher = launchers[agent];
 			let dir;
 			try {
 				dir = await sandbox.resolve(cwd || sandbox.root);
@@ -523,35 +580,35 @@ export function createAgentServer({
 			if (resume && !agents.canResume(resume)) {
 				throw new HttpError(409, 'that session is still open; continue it where it runs, or end it first');
 			}
-			if (!(await claudeInstalled())) {
-				throw Object.assign(new HttpError(400, 'Claude Code is not installed on this computer (no `claude` command).'), {
-					code: 'ENOCLAUDE',
+			if (!(await installed(agent))) {
+				throw Object.assign(new HttpError(400, `${launcher.name} is not installed on this computer (no \`${launcher.command}\` command).`), {
+					code: agent === 'claude' ? 'ENOCLAUDE' : 'ENOAGENT',
 				});
 			}
 			// Without the plugin the session would run but never show up here.
-			if (!(await hasPlugin())) {
-				throw Object.assign(new HttpError(400, 'Claude Code needs the Code Remote plugin first: run `coderemote setup claude` once on the computer.'), {
-					code: 'ENOPLUGIN',
-				});
+			if (!(await hasPlugin(agent))) {
+				throw Object.assign(new HttpError(400, launcher.missingPlugin), { code: 'ENOPLUGIN' });
 			}
 			const id = resume ?? randomUUID();
-			const argv = [claudeCommand, ...(resume ? ['--resume', resume] : ['--session-id', id])];
-			if (model) argv.push('--model', model);
-			if (permissionMode) argv.push('--permission-mode', permissionMode);
-			if (uploadsDir) {
-				await fs.mkdir(uploadsDir, { recursive: true, mode: 0o700 });
-				argv.push('--add-dir', uploadsDir);
-			}
+			if (uploadsDir) await fs.mkdir(uploadsDir, { recursive: true, mode: 0o700 });
+			const argv = [
+				launcher.command,
+				...launcher.args({
+					id,
+					resume,
+					model,
+					permissionMode: agent === 'claude' ? permissionMode : undefined,
+					approvalPolicy: agent === 'codex' ? (approvalPolicy ?? 'on-request') : undefined,
+				}),
+			];
 			const term = sessions.create({
 				cols: Number.isInteger(cols) && cols > 0 ? cols : 80,
 				rows: Number.isInteger(rows) && rows > 0 ? rows : 24,
 				cwd: dir,
-				// Fullscreen rendering can fail to start while no client is attached to answer the
-				// terminal's queries; the classic renderer doesn't need them.
-				env: { ...terminalEnv(), CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1' },
+				env: { ...terminalEnv(), ...launcher.env },
 				command: argv,
 			});
-			return { terminal: term.id, session: agents.launched({ id, terminal: term.id, cwd: dir }) };
+			return { terminal: term.id, session: agents.launched({ id, terminal: term.id, cwd: dir, agent }) };
 		},
 
 		[Routes.agentsPrompt]: async (url, req) => {
@@ -584,6 +641,10 @@ export function createAgentServer({
 
 		[Routes.agentsKeys]: async (url, req) => {
 			const { session: id, action, command } = await readJson(req);
+			const allowed = agents.session(typeof id === 'string' ? id : '')?.capabilities?.keys;
+			if (allowed && !allowed.includes(action === 'command' ? command : action)) {
+				throw new HttpError(400, `this session takes ${allowed.join(', ')}`);
+			}
 			if (action === 'command') {
 				if (!COMMANDS.includes(command)) throw new HttpError(400, `command must be one of ${COMMANDS.join(', ')}`);
 				await typeInto(typingTarget(id, { whileWaiting: false }).term, command);
@@ -651,7 +712,7 @@ export function createAgentServer({
 	/** A hook event from `coderemote hook`; a PermissionRequest is held open until it resolves. */
 	async function hookDelivery(url, req, res) {
 		if (!hookAuthorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
-		plugin = { installed: true, checkedAt: Date.now() };
+		plugins[url.searchParams.get('agent') || 'claude'] = { installed: true, checkedAt: Date.now() };
 		const terminal = url.searchParams.get('terminal');
 		// The hook is killed when the computer answers first, which closes this connection.
 		const closed = new AbortController();

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { HttpError } from './sandbox.js';
+import { RolloutTail, codexItem } from './codex-rollout.js';
 import { readTranscript } from './transcript.js';
 
 const MAX_ENTRIES = 500;
@@ -12,6 +13,33 @@ const MAX_TITLE = 80;
 const ENDED_TTL = 24 * 60 * 60 * 1000;
 const REQUEST_TTL = 60 * 60 * 1000;
 const START_TIMEOUT = 15 * 1000;
+// A request held for the phone blocks a Codex terminal, so it is held for less long.
+const SEQUENTIAL_REQUEST_TTL = 10 * 60 * 1000;
+
+/**
+ * What each coding agent's hooks can do. Claude Code shows its approval dialog alongside a waiting
+ * hook ("parallel"); Codex only after the hook declines ("presence": hold for the phone only while
+ * nobody is at the computer). Their hook payloads share Claude Code's field names.
+ */
+export const ADAPTERS = {
+	claude: {
+		name: 'Claude Code',
+		capabilities: { approvals: 'parallel', alwaysAllow: true, keys: ['interrupt', 'cycle_mode', '/compact', '/clear', '/model'] },
+		normalize: (e) => e,
+	},
+	codex: {
+		name: 'Codex',
+		// Codex reports a session only once it gets its first prompt.
+		startsOnPrompt: true,
+		setupHint: ', then trust its hooks with `/hooks` in Codex',
+		capabilities: { approvals: 'presence', alwaysAllow: false, keys: ['interrupt', '/compact', '/model'] },
+		normalize: (e) => ({
+			...e,
+			// Codex's patch tool carries the patch where Bash has its command.
+			tool_input: e.tool_name === 'apply_patch' && typeof e.tool_input === 'string' ? { command: e.tool_input } : e.tool_input,
+		}),
+	},
+};
 
 /** A prompt as Claude Code reports it back: image paths become `[Image #N]`; spacing may differ. */
 function comparable(text, paths = []) {
@@ -57,6 +85,7 @@ class AgentSession {
 		this.agent = agent;
 		this.cwd = cwd;
 		this.title = path.basename(cwd || '') || 'Session';
+		this.capabilities = (ADAPTERS[agent] ?? ADAPTERS.claude).capabilities;
 		this.titled = false;
 		this.state = 'idle';
 		this.terminal = terminal;
@@ -75,6 +104,8 @@ class AgentSession {
 		this.requests = new Map();
 		// Prompts typed in from a client, waiting for Claude Code to report them: { id, text }.
 		this.prompts = [];
+		// Follows Codex's rollout for what its hooks don't report (see codex-rollout.js).
+		this.tail = null;
 		// Settles once history from the transcript (if any) is in; later events wait for it.
 		this.ready = Promise.resolve();
 	}
@@ -92,6 +123,7 @@ class AgentSession {
 			pending: this.requests.size,
 			starting: this.starting,
 			error: this.error,
+			capabilities: this.capabilities,
 		};
 	}
 }
@@ -107,13 +139,32 @@ export class AgentHub extends EventEmitter {
 	#requestTtl;
 	#transcript;
 	#startTimeout;
+	#sequentialTtl;
+	#rolloutTail;
 
-	constructor({ now = Date.now, requestTtl = REQUEST_TTL, transcript = readTranscript, startTimeout = START_TIMEOUT } = {}) {
+	/**
+	 * `present` says whether someone is at the computer or looking at it in a client; agents whose
+	 * approvals are sequential ask there instead of holding the request for the phone.
+	 */
+	constructor({
+		now = Date.now,
+		requestTtl = REQUEST_TTL,
+		sequentialTtl = SEQUENTIAL_REQUEST_TTL,
+		transcript = readTranscript,
+		startTimeout = START_TIMEOUT,
+		present = async () => false,
+		rolloutTail = (file, onItem) => new RolloutTail(file, onItem),
+	} = {}) {
 		super();
 		this.#now = now;
 		this.#requestTtl = requestTtl;
+		this.#sequentialTtl = sequentialTtl;
 		this.#transcript = transcript;
 		this.#startTimeout = startTimeout;
+		this.present = present;
+		this.#rolloutTail = rolloutTail;
+		// A server leaves `present` alone when the hub was given one.
+		this.presenceSet = arguments[0]?.present !== undefined;
 	}
 
 	/**
@@ -146,12 +197,19 @@ export class AgentHub extends EventEmitter {
 			s = new AgentSession({ id, agent, cwd, terminal, now });
 			this.#sessions.set(id, s);
 		}
-		Object.assign(s, { terminal, state: 'running', starting: true, error: null, endedAt: null, lastActivityAt: now });
+		const adapter = ADAPTERS[agent] ?? ADAPTERS.claude;
+		// One that reports only on its first prompt waits for it, ready to be typed into.
+		const state = adapter.startsOnPrompt ? 'idle' : 'running';
+		Object.assign(s, { terminal, state, starting: true, error: null, endedAt: null, lastActivityAt: now });
+		if (adapter.startsOnPrompt) {
+			this.#emitSession(s);
+			return s.toJSON();
+		}
 		const timer = setTimeout(() => {
 			if (!s.starting || this.#sessions.get(id) !== s) return;
 			s.starting = false;
-			// Usually the plugin isn't installed: Claude Code runs but never reports.
-			s.error = "Claude Code didn't report back. If it runs in the terminal, run `coderemote setup claude` once on the computer.";
+			// Usually the plugin isn't installed: the agent runs but never reports.
+			s.error = `${adapter.name} didn't report back. If it runs in the terminal, run \`coderemote setup ${agent}\` once on the computer${adapter.setupHint ?? ''}.`;
 			this.#end(s);
 			this.#emitSession(s);
 		}, this.#startTimeout);
@@ -184,18 +242,25 @@ export class AgentHub extends EventEmitter {
 	 * request is answered (null when the computer should decide), `{}` for everything else.
 	 * Aborting `signal` (the hook was killed because the computer answered) withdraws the request.
 	 */
-	async handle(event, { agent = 'claude', terminal = null, signal } = {}) {
-		if (!event || typeof event.session_id !== 'string' || !event.session_id) {
+	async handle(raw, { agent = 'claude', terminal = null, signal } = {}) {
+		if (!raw || typeof raw.session_id !== 'string' || !raw.session_id) {
 			throw new HttpError(400, 'hook event without session_id');
 		}
+		if (!Object.hasOwn(ADAPTERS, agent)) throw new HttpError(400, `unknown agent ${agent}`);
+		const event = ADAPTERS[agent].normalize(raw);
 		const now = this.#now();
 		// A resumed conversation can come back under a new id: it replaces the placeholder.
-		if (terminal && !this.#sessions.has(event.session_id)) {
-			for (const p of this.#sessions.values()) {
-				if (p.starting && p.terminal === terminal) {
-					this.#sessions.delete(p.id);
-					this.emit('message', { type: 'session_removed', session: p.id });
-				}
+		let replaced = null;
+		if (!this.#sessions.has(event.session_id)) {
+			// The placeholder started in that terminal. Codex doesn't pass the terminal to its plugin
+			// hooks, so its only placeholder in the same folder stands in for it.
+			const candidates = [...this.#sessions.values()].filter((p) =>
+				p.starting && (terminal ? p.terminal === terminal : p.agent === agent && p.cwd === event.cwd),
+			);
+			if (candidates.length === 1) {
+				replaced = candidates[0];
+				this.#sessions.delete(replaced.id);
+				terminal ??= replaced.terminal;
 			}
 		}
 		let s = this.#sessions.get(event.session_id);
@@ -207,6 +272,15 @@ export class AgentHub extends EventEmitter {
 			if (!fresh && typeof event.transcript_path === 'string') s.ready = this.#backfill(s, event.transcript_path);
 		}
 		await s.ready;
+		if (s.agent === 'codex' && !s.tail && typeof event.transcript_path === 'string') {
+			s.tail = this.#rolloutTail(event.transcript_path, (item) => this.#fromRollout(s, item));
+			s.tail.poll?.().catch(() => {});
+		}
+		if (replaced) {
+			// Prompts typed into the placeholder are confirmed under the real session.
+			s.prompts.push(...replaced.prompts);
+			this.emit('message', { type: 'session_removed', session: replaced.id, replacedBy: s.id });
+		}
 		if (terminal && !s.terminal) s.terminal = terminal;
 		s.starting = false;
 		s.lastActivityAt = now;
@@ -274,9 +348,13 @@ export class AgentHub extends EventEmitter {
 				}
 				break;
 			}
-			case 'PermissionRequest':
+			case 'PermissionRequest': {
 				this.#emitSession(s);
-				return this.#openRequest(s, event, signal);
+				const sequential = s.capabilities.approvals === 'presence';
+				// Someone at the computer answers there; holding the request would block them.
+				const deferNow = sequential && (await this.present().catch(() => false));
+				return this.#openRequest(s, event, signal, { deferNow, ttl: sequential ? this.#sequentialTtl : this.#requestTtl });
+			}
 			case 'Stop':
 			case 'StopFailure': {
 				// MessageDisplay may not have run (older Claude Code); the final text is here too.
@@ -292,9 +370,10 @@ export class AgentHub extends EventEmitter {
 				this.#entry(s, { kind: 'turn_end', duration });
 				break;
 			}
+			case 'Interrupt':
 			case 'Notification':
-				// An interrupted turn (Esc) ends without Stop; Claude Code later says it is idle.
-				if (event.notification_type === 'idle_prompt' && s.state === 'running') {
+				// An interrupted turn (Esc) ends without Stop: Codex reports Interrupt, Claude Code says later it is idle.
+				if ((event.hook_event_name === 'Interrupt' || event.notification_type === 'idle_prompt') && s.state === 'running') {
 					s.state = 'idle';
 					s.turnStartedAt = null;
 				}
@@ -313,7 +392,7 @@ export class AgentHub extends EventEmitter {
 	terminalExited(terminal) {
 		for (const s of this.#sessions.values()) {
 			if (s.terminal === terminal && s.state !== 'ended') {
-				if (s.starting) s.error = 'Claude Code exited before it started. Open the terminal to see why.';
+				if (s.starting) s.error = `${(ADAPTERS[s.agent] ?? ADAPTERS.claude).name} exited before it started. Open the terminal to see why.`;
 				s.starting = false;
 				this.#end(s);
 				this.#emitSession(s);
@@ -325,7 +404,10 @@ export class AgentHub extends EventEmitter {
 	sweep() {
 		const cutoff = this.#now() - ENDED_TTL;
 		for (const s of this.#sessions.values()) {
-			if (s.state === 'ended' && s.endedAt < cutoff) this.#sessions.delete(s.id);
+			if (s.state === 'ended' && s.endedAt < cutoff) {
+				s.tail?.stop();
+				this.#sessions.delete(s.id);
+			}
 		}
 	}
 
@@ -355,7 +437,9 @@ export class AgentHub extends EventEmitter {
 			decision = { behavior: 'allow' };
 			if (suggestion !== undefined) {
 				const rule = Number.isInteger(suggestion) ? request.suggestions[suggestion] : undefined;
-				if (!rule) throw new HttpError(400, 'suggestion must index the request’s suggestions');
+				if (!rule || !pending.session.capabilities.alwaysAllow) {
+					throw new HttpError(400, 'suggestion must index the request’s suggestions');
+				}
 				decision.updatedPermissions = [rule];
 			}
 			outcome = 'allowed';
@@ -366,7 +450,7 @@ export class AgentHub extends EventEmitter {
 	// Ids of requests resolved recently, to tell "already answered" (409) from unknown (404).
 	#resolved = new Set();
 
-	#openRequest(s, event, signal) {
+	#openRequest(s, event, signal, { deferNow = false, ttl = this.#requestTtl } = {}) {
 		const isQuestion = event.tool_name === 'AskUserQuestion';
 		const input = event.tool_input ?? {};
 		const request = {
@@ -381,7 +465,7 @@ export class AgentHub extends EventEmitter {
 		};
 		return new Promise((resolve) => {
 			const pending = { request, input, session: s, resolve, timer: null, signal, onAbort: null };
-			pending.timer = setTimeout(() => this.#resolve(pending, null, 'expired', 'agent'), this.#requestTtl);
+			pending.timer = setTimeout(() => this.#resolve(pending, null, 'expired', 'agent'), ttl);
 			pending.timer.unref?.();
 			pending.onAbort = () => this.#resolve(pending, null, 'withdrawn', 'computer');
 			signal?.addEventListener('abort', pending.onAbort, { once: true });
@@ -392,6 +476,7 @@ export class AgentHub extends EventEmitter {
 			this.emit('message', { type: 'request', request });
 			this.#emitSession(s);
 			if (signal?.aborted) pending.onAbort();
+			else if (deferNow) this.#resolve(pending, null, 'deferred', 'agent');
 		});
 	}
 
@@ -433,12 +518,34 @@ export class AgentHub extends EventEmitter {
 		if (s.entries.length > MAX_ENTRIES) s.entries.splice(0, s.entries.length - MAX_ENTRIES);
 	}
 
+	/** Something Codex said or a tool's result, from its rollout, unless the hooks told it already. */
+	#fromRollout(s, item) {
+		const fields = codexItem(item);
+		if (!fields) return;
+		const recent = s.entries.slice(-8);
+		if (fields.kind === 'assistant') {
+			// Stop reports the last reply too, whichever arrives first.
+			if (recent.some((e) => e.kind === 'assistant' && e.text.trim() === fields.text)) return;
+			this.#entry(s, fields);
+		} else {
+			if (s.entries.some((e) => e.kind === 'tool_result' && e.toolUseId === fields.toolUseId)) return;
+			const call = [...s.entries].reverse().find((e) => e.kind === 'tool' && e.toolUseId === fields.toolUseId);
+			if (!call) return;
+			const { text, truncated } = clip(fields.output);
+			this.#entry(s, { kind: 'tool_result', toolUseId: fields.toolUseId, name: call.name, output: text, error: fields.error, truncated, duration: null });
+		}
+		s.lastActivityAt = this.#now();
+		this.#emitSession(s);
+	}
+
 	#startTurn(s, now) {
 		if (s.state !== 'waiting') s.state = 'running';
 		s.turnStartedAt ??= now;
 	}
 
 	#end(s) {
+		s.tail?.stop();
+		s.tail = null;
 		for (const pending of [...s.requests.values()]) this.#resolve(pending, null, 'withdrawn', 'computer');
 		s.state = 'ended';
 		s.endedAt = this.#now();

@@ -1,0 +1,20 @@
+{
+  "name": "coderemote",
+  "interface": {
+    "displayName": "Code Remote"
+  },
+  "plugins": [
+    {
+      "name": "coderemote-codex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/coderemote-codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

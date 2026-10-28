@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 import qrcode from 'qrcode-terminal';
 import { createAgentServer } from '@vsremote/agent-core';
 import { ensureDevtunnel } from '../src/devtunnel.js';
-import { ensureHookSecret, readHookSecret, runHook } from '../src/hook.js';
+import { ensureHookSecret, readHookSecret, runHook, writeHookLauncher } from '../src/hook.js';
 import { PreviewTunnel } from '../src/preview.js';
 import { pushStore } from '../src/push-store.js';
 import { AgentRegistry } from '../src/registry.js';
@@ -75,6 +75,7 @@ function portFree(port) {
 
 function listen(token, port, root, tunnelToken, preview, status) {
 	const hookSecret = ensureHookSecret(CONFIG_DIR);
+	writeHookLauncher(CONFIG_DIR, { script: fs.realpathSync(process.argv[1]) });
 	const server = createAgentServer({
 		token,
 		root,
@@ -313,6 +314,7 @@ const USAGE = `Usage: coderemote <command> [options]
                        --show-secrets is given; --json on either for machine-readable output
   setup claude         let the app follow Claude Code sessions and answer their prompts
                        (installs the Code Remote plugin into Claude Code); --remove undoes it
+  setup codex          the same for Codex (then trust its hooks once with /hooks in Codex)
   version              print this coderemote's version (also --version, -v)
   login                sign in to Microsoft Dev Tunnels with GitHub (up does this when needed);
                        --microsoft for a Microsoft account, --device-code without a browser
@@ -502,6 +504,66 @@ async function setupClaude() {
 	console.log('  Sessions already running pick it up after a restart. Undo: coderemote setup claude --remove\n');
 }
 
+const CODEX_PLUGIN = 'coderemote-codex@coderemote';
+
+async function codexCli(...args) {
+	try {
+		return (await run('codex', args, { timeout: 120_000 })).stdout.trim();
+	} catch (e) {
+		if (e.code === 'ENOENT') return null;
+		throw new Error((e.stderr || e.stdout || e.message).trim());
+	}
+}
+
+async function setupCodex() {
+	const version = await codexCli('--version');
+	if (version === null) {
+		console.error('Codex is required: install it (npm install -g @openai/codex), then run this again.');
+		process.exit(1);
+	}
+	// The `hooks` feature arrived in Codex 0.139; older ones can't report sessions.
+	const hooks = (await codexCli('features', 'list')).split('\n').find((line) => /^hooks\s/.test(line));
+	if (!hooks) {
+		console.error(`${version} has no hooks. Update Codex to 0.139 or later (codex update), then run this again.`);
+		process.exit(1);
+	}
+	if (rest.includes('--remove')) {
+		await codexCli('plugin', 'remove', CODEX_PLUGIN).catch((e) => console.error(e.message));
+		await codexCli('plugin', 'marketplace', 'remove', 'coderemote').catch(() => {});
+		console.log('Removed the Code Remote plugin. New Codex sessions no longer reach the app.');
+		return;
+	}
+	const given = flag('--marketplace');
+	const source = given ?? 'CodeRemoteApp/coderemote';
+	spinner.start(`Installing the Code Remote plugin into ${version}`);
+	try {
+		if (/\bfalse\s*$/.test(hooks)) await codexCli('features', 'enable', 'hooks');
+		const known = /^coderemote\s/m.test(await codexCli('plugin', 'marketplace', 'list'));
+		if (known && given) {
+			// A source given explicitly replaces whatever the marketplace pointed at before.
+			await codexCli('plugin', 'marketplace', 'remove', 'coderemote').catch(() => {});
+			await codexCli('plugin', 'marketplace', 'add', source);
+		} else if (known) {
+			await codexCli('plugin', 'marketplace', 'upgrade', 'coderemote').catch(() => {});
+		} else {
+			await codexCli('plugin', 'marketplace', 'add', source);
+		}
+		await codexCli('plugin', 'add', CODEX_PLUGIN);
+	} catch (e) {
+		spinner.fail();
+		console.error(e.message);
+		if (/not found in marketplace/.test(e.message) && !given) {
+			console.error('Your coderemote may be newer than the published plugin; point at a checkout with --marketplace <dir>.');
+		}
+		process.exit(1);
+	}
+	spinner.succeed();
+	console.log('\n  One more step, once: open Codex, type /hooks and trust the Code Remote hooks.');
+	console.log('  Codex runs a plugin\'s hooks only after you have reviewed them.');
+	console.log('  Then new Codex sessions in a folder shared with `coderemote up` show in the app.');
+	console.log('  Undo: coderemote setup codex --remove\n');
+}
+
 /** Calls a running agent's local API. */
 async function agentApi(agent, method, route, query = {}) {
 	const url = new URL(route, `http://127.0.0.1:${agent.port}`);
@@ -572,11 +634,12 @@ switch (cmd) {
 		process.exit(0);
 	}
 	case 'setup': {
-		if (rest[0] !== 'claude') {
-			console.error('Usage: coderemote setup claude [--remove]');
+		if (rest[0] === 'claude') await setupClaude();
+		else if (rest[0] === 'codex') await setupCodex();
+		else {
+			console.error('Usage: coderemote setup claude|codex [--remove]');
 			process.exit(1);
 		}
-		await setupClaude();
 		break;
 	}
 	case 'serve': {

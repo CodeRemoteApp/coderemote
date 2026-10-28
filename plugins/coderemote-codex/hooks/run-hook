@@ -1,0 +1,10 @@
+#!/bin/sh
+# Codex passes plugin hooks neither our environment nor the user's shell setup, so the CLI comes
+# from the launcher the running agent keeps at ~/.coderemote/bin/hook, else from PATH. It never
+# fails Codex's hook: without an agent there's nothing to tell.
+if [ -x "$HOME/.coderemote/bin/hook" ]; then
+	"$HOME/.coderemote/bin/hook" --agent codex
+elif command -v coderemote >/dev/null 2>&1; then
+	coderemote hook --agent codex
+fi
+exit 0

@@ -227,15 +227,19 @@ are forgotten 24 hours after they end.
 | `GET /api/agents/sessions` | | `{ sessions: [session] }`, most recent activity first |
 | `GET /api/agents/timeline?session=&after=` | | `{ entries: [entry], next, requests: [request] }`; `after` skips entries up to that `seq` |
 | `POST /api/agents/answer` | see below | `{}`; 404 for an unknown request, 409 once it is resolved |
-| `GET /api/agents/setup` | | `{ claude, plugin }`: whether Claude Code and its Code Remote plugin are installed |
-| `POST /api/agents/sessions` | `{ cwd?, model?, permissionMode?, resume?, cols?, rows? }` | `{ terminal, session }`; starts Claude Code, see [Starting sessions](#starting-sessions) |
+| `GET /api/agents/setup` | | `{ claude, plugin, codex, codexPlugin }`: whether Claude Code, Codex and their Code Remote plugins are installed |
+| `POST /api/agents/sessions` | `{ agent?, cwd?, model?, permissionMode?, resume?, cols?, rows? }` | `{ terminal, session }`; starts Claude Code, see [Starting sessions](#starting-sessions) |
 | `POST /api/agents/prompt` | `{ session, text, attachments? }` | `{ prompt }`; see [Prompts and keys](#prompts-and-keys) |
 | `POST /api/agents/keys` | `{ session, action, command? }` | `{}` |
 | `POST /api/agents/uploads` | the file's bytes | `{ id, name, type, size }`; see [Uploads](#uploads) |
 
 A session is `{ id, agent, cwd, title, state, terminal, startedAt, lastActivityAt, pending,
-starting, error }`.
-`agent` is `"claude"`. `title` is the first line of the first prompt (80 characters at most), or
+starting, error, capabilities }`.
+`agent` is `"claude"` or `"codex"`. `capabilities` is `{ approvals, alwaysAllow, keys }`: `approvals`
+`"parallel"` (Claude Code: its own prompt stays open alongside, whichever side answers first wins)
+or `"presence"` (Codex: its own prompt shows only once the agent declines, so the agent holds a
+request for clients only while nobody is at the computer, see [Requests](#requests));
+`alwaysAllow` says whether "allow and remember" (`suggestion`) is possible. Older agents omit it. `title` is the first line of the first prompt (80 characters at most), or
 the folder's name before there is one. `state` is `running`, `waiting` (on a request), `idle`
 (the turn ended) or `ended`. `terminal` is the id of the terminal session it runs in (see
 [Terminal](#terminal)), or null when it was started outside the agent. `pending` counts its
@@ -253,14 +257,15 @@ latest 500 of each session. Each is `{ seq, time, kind, ... }`:
 | `tool` | `toolUseId`, `name`, `input` |
 | `tool_result` | `toolUseId`, `name`, `output` (string), `error` (bool), `truncated` (bool), `duration` (ms, or null) |
 | `request` | `request` (the request object below) |
-| `request_resolved` | `request` (id), `outcome`: `allowed`, `denied`, `answered`, `withdrawn` or `expired`; `by`: `phone`, `computer` or `agent` |
+| `request_resolved` | `request` (id), `outcome`: `allowed`, `denied`, `answered`, `withdrawn`, `expired` or `deferred`; `by`: `phone`, `computer` or `agent` |
 | `turn_end` | `duration` (ms) |
 
 `output` keeps the first 16 KB of a tool result; `truncated` says there was more.
 
 ### Starting sessions
 
-`POST /api/agents/sessions` runs Claude Code in a new terminal (see [Terminal](#terminal); it
+`POST /api/agents/sessions` runs `agent` (`claude`, the default, or `codex`) in a new terminal.
+For Claude Code: (see [Terminal](#terminal); it
 ends when Claude Code exits) through a login shell, so it finds `claude` on the user's PATH, with
 the classic renderer (`CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`): fullscreen rendering can fail to
 start while no client is attached to the terminal.
@@ -274,6 +279,17 @@ seconds (usually because the plugin isn't installed: `coderemote setup claude`).
 the uploads folder (see [Uploads](#uploads)) without asking. 400 with `code: "ENOCLAUDE"` when
 `claude` isn't installed, and with `code: "ENOPLUGIN"` when Claude Code lacks the Code Remote
 plugin (`coderemote setup claude`), without which the session would never show up.
+
+For Codex, `model` is passed with `-m` and `resume` as `codex resume <id>`; `permissionMode` is
+ignored, and `approvalPolicy` (`on-request`, the default, or `never`) is passed with `-a`: without
+it recent Codex rejects every escalation instead of asking, so no request would reach anyone; and the uploads folder isn't added (Codex's
+`--add-dir` would make it writable; its sandbox reads it anyway). Codex picks its own session id,
+and reports a session only once it gets its first prompt: its placeholder stays `idle` (and
+`starting`), with no start timeout, ready to be typed into, and is replaced by the session that
+prompt creates (`session_removed` with `replacedBy`; prompts sent to the placeholder are confirmed
+under the new id).
+`code: "ENOAGENT"` when `codex` isn't installed, `ENOPLUGIN` without `coderemote setup codex`
+(whose hooks must also be trusted once with `/hooks` in Codex).
 `GET /api/agents/setup` tells the same ahead of time (`claude plugin list`, checked at most every
 30 seconds; any hook event counts as proof), so a client can explain the setup up front.
 
@@ -291,7 +307,8 @@ socket as `{ "type": "prompt_confirmed", "session": id, "prompt": id }` once Cla
 the prompt (`UserPromptSubmit`); a prompt that is never confirmed didn't reach it, for example
 because the terminal had a menu open.
 
-`POST /api/agents/keys` presses keys the agent knows by name: `interrupt` (Esc, which also backs
+`POST /api/agents/keys` presses keys the agent knows by name, among the session's
+`capabilities.keys` (Codex has no `cycle_mode` or `/clear`): `interrupt` (Esc, which also backs
 out of a dialog and works while the session waits), `cycle_mode` (Shift+Tab, the next permission
 mode), or `command` with `command` one of `/compact`, `/clear` or `/model`. Anything else is 400;
 the terminal itself remains for the rest.
@@ -314,9 +331,17 @@ options: [{ label, description }], multiSelect }`). `suggestions` are the "alway
 Claude Code offers for a permission, as it reports them (`permission_suggestions`), possibly
 empty.
 
-The prompt stays open on the computer too: whichever side answers first wins. When the computer
+For `approvals: "parallel"` sessions the prompt stays open on the computer too: whichever side
+answers first wins. When the computer
 answers, the request resolves as `withdrawn` by `computer`; a request nobody answers within an
 hour resolves as `expired` and is left to the computer.
+
+For `approvals: "presence"` sessions (Codex) the computer's prompt appears only once the agent
+declines, so while someone used the computer in the last 2 minutes (macOS) and no client's
+presence is fresh, a request resolves at once as `deferred` by `agent` and is answered on the
+computer. A client showing the machine means the person is on the phone: the request is held for it.
+Otherwise it is held like any other, for at most 10 minutes, then `expired`. There is no "allow
+and remember" (`suggestion` is 400).
 
 `POST /api/agents/answer` takes `{ request, behavior, message?, suggestion?, answers? }`:
 
@@ -336,7 +361,7 @@ WebSocket `GET /api/agents/ws` (bearer token as usual). Server to client, all te
 - `{ "type": "entry", "session": id, "entry" }` for every new timeline entry
 - `{ "type": "request", "request" }` when a request opens
 - `{ "type": "request_resolved", "session": id, "request": id, "outcome", "by" }`
-- `{ "type": "session_removed", "session": id }` when a placeholder gave way (see above)
+- `{ "type": "session_removed", "session": id, "replacedBy": id }` when a placeholder gave way to the session Claude Code or Codex reports (see above)
 - `{ "type": "prompt_confirmed", "session": id, "prompt": id }` (see below)
 
 Client to server: `{ "type": "presence", "foreground": bool }`. Send `true` while the app shows
@@ -345,7 +370,12 @@ this machine and at least every 20 seconds; while one is fresh the agent sends n
 
 ### Hook delivery
 
-`POST /api/agents/hook?agent=claude&terminal=<id>` carries a hook event's JSON input as the body.
+`POST /api/agents/hook?agent=claude&terminal=<id>` carries a hook event's JSON input as the body
+(`agent=codex` for Codex, whose hook payloads use the same field names). Codex runs plugin hooks
+with a bare environment: none of the variables above reach them, so its plugin finds the CLI
+through `~/.coderemote/bin/hook` (written by each agent when it starts) and the event is routed by
+folder only; a Codex session then takes over the one Codex placeholder in its folder, if there is
+exactly one.
 It is authenticated with `X-Coderemote-Hook: <secret>` instead of the bearer token; the secret is
 in `~/.coderemote/hook-secret` and never leaves the computer, so paired devices can't post
 events (401). For `PermissionRequest` the response holds until the request resolves, and its

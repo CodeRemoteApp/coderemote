@@ -129,7 +129,7 @@ test('a session that never reports ends with an error, and ends with its termina
 	const { body } = await launch({});
 	await launchedArgs();
 	assert.ok(await until(() => hub.session(body.session.id).state === 'ended'));
-	assert.match(hub.session(body.session.id).error, /didn't report back/);
+	assert.match(hub.session(body.session.id).error, /Claude Code didn't report back.*setup claude/);
 
 	const second = (await launch({})).body;
 	await launchedArgs();
@@ -163,8 +163,9 @@ test('without the plugin, says how to set it up instead of starting a session th
 	assert.equal(res.status, 400);
 	assert.equal(body.code, 'ENOPLUGIN');
 	assert.match(body.error, /coderemote setup claude/);
-	assert.deepEqual(await (await fetch(`${url}/api/agents/setup`, { headers: auth })).json(), { claude: true, plugin: false });
-	assert.equal(checks, 1, 'the answer is kept a while');
+	const setup = await (await fetch(`${url}/api/agents/setup`, { headers: auth })).json();
+	assert.deepEqual([setup.claude, setup.plugin], [true, false]);
+	assert.equal(checks, setup.codex ? 2 : 1, 'one check per agent, kept a while');
 
 	// A hook event proves the plugin is there.
 	await fetch(`${url}/api/agents/hook`, {
@@ -172,6 +173,43 @@ test('without the plugin, says how to set it up instead of starting a session th
 		headers: { [HOOK_SECRET_HEADER]: hookSecret },
 		body: JSON.stringify({ session_id: 's', cwd: root, transcript_path: '/x', hook_event_name: 'SessionStart' }),
 	});
-	assert.deepEqual(await (await fetch(`${url}/api/agents/setup`, { headers: auth })).json(), { claude: true, plugin: true });
+	assert.equal((await (await fetch(`${url}/api/agents/setup`, { headers: auth })).json()).plugin, true);
 	other.close();
+});
+
+test('starts Codex with its own flags; its first event replaces the placeholder', async () => {
+	const codex = createAgentServer({ token, root, hookSecret, codexCommand: fakeClaude, pluginInstalled: async () => true, agents: hub });
+	await new Promise((r) => codex.listen(0, '127.0.0.1', r));
+	const url = `http://127.0.0.1:${codex.address().port}`;
+	const auth = { authorization: `Bearer ${token}` };
+	const res = await fetch(`${url}/api/agents/sessions`, { method: 'POST', headers: auth, body: JSON.stringify({ agent: 'codex', model: 'gpt-5.6-luna', permissionMode: 'plan' }) });
+	const body = await res.json();
+	assert.equal(res.status, 200);
+	const [, classic, ...args] = await launchedArgs();
+	assert.deepEqual(args, ['-m', 'gpt-5.6-luna', '-a', 'on-request'], 'asks for approval, no Claude-only flags');
+	assert.equal(classic, 'classic=');
+	assert.equal(body.session.agent, 'codex');
+
+	// Codex reports nothing until its first prompt: no start timeout, ready to be typed into.
+	assert.deepEqual([body.session.state, body.session.starting], ['idle', true]);
+	await new Promise((r) => setTimeout(r, 400));
+	assert.equal(hub.session(body.session.id).error, null);
+	const removed = new Promise((r) => hub.on('message', (m) => m.type === 'session_removed' && m.session === body.session.id && r(m)));
+	await fetch(`${url}/api/agents/hook?agent=codex&terminal=${body.terminal}`, {
+		method: 'POST',
+		headers: { [HOOK_SECRET_HEADER]: hookSecret },
+		body: JSON.stringify({ session_id: '01a180e0-codex', cwd: root, transcript_path: '/x', hook_event_name: 'SessionStart', source: 'startup' }),
+	});
+	assert.equal((await removed).replacedBy, '01a180e0-codex');
+	const real = hub.session('01a180e0-codex');
+	assert.deepEqual([real.agent, real.terminal, real.capabilities.approvals], ['codex', body.terminal, 'presence']);
+
+	// Codex has no Shift+Tab mode cycling or /clear.
+	const key = (b) => fetch(`${url}/api/agents/keys`, { method: 'POST', headers: auth, body: JSON.stringify({ session: real.id, ...b }) });
+	assert.equal((await key({ action: 'cycle_mode' })).status, 400);
+	assert.equal((await key({ action: 'command', command: '/clear' })).status, 400);
+	assert.equal((await key({ action: 'interrupt' })).status, 200);
+	assert.equal((await fetch(`${url}/api/agents/sessions`, { method: 'POST', headers: auth, body: JSON.stringify({ agent: 'gemini' }) })).status, 400);
+	codex.killAllSessions();
+	codex.close();
 });
