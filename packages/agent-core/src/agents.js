@@ -11,6 +11,14 @@ const MAX_TEXT = 16 * 1024;
 const MAX_TITLE = 80;
 const ENDED_TTL = 24 * 60 * 60 * 1000;
 const REQUEST_TTL = 60 * 60 * 1000;
+const START_TIMEOUT = 15 * 1000;
+
+/** A prompt as Claude Code reports it back: image paths become `[Image #N]`; spacing may differ. */
+function comparable(text, paths = []) {
+	let t = String(text);
+	for (const p of paths) t = t.split(p).join(' ');
+	return t.replace(/\[Image #\d+\]/g, ' ').replace(/\s+/g, ' ').trim();
+}
 
 /** The first `MAX_TEXT` bytes of `text`, and whether anything was cut. */
 function clip(text) {
@@ -55,6 +63,9 @@ class AgentSession {
 		this.startedAt = now;
 		this.lastActivityAt = now;
 		this.endedAt = null;
+		// Started from the phone and not heard from yet; `error` says why it never started.
+		this.starting = false;
+		this.error = null;
 		this.turnStartedAt = null;
 		this.entries = [];
 		this.seq = 0;
@@ -62,6 +73,8 @@ class AgentSession {
 		// deliver a message's batches out of order, so they are joined once all have arrived.
 		this.streaming = new Map();
 		this.requests = new Map();
+		// Prompts typed in from a client, waiting for Claude Code to report them: { id, text }.
+		this.prompts = [];
 		// Settles once history from the transcript (if any) is in; later events wait for it.
 		this.ready = Promise.resolve();
 	}
@@ -77,6 +90,8 @@ class AgentSession {
 			startedAt: this.startedAt,
 			lastActivityAt: this.lastActivityAt,
 			pending: this.requests.size,
+			starting: this.starting,
+			error: this.error,
 		};
 	}
 }
@@ -91,12 +106,58 @@ export class AgentHub extends EventEmitter {
 	#now;
 	#requestTtl;
 	#transcript;
+	#startTimeout;
 
-	constructor({ now = Date.now, requestTtl = REQUEST_TTL, transcript = readTranscript } = {}) {
+	constructor({ now = Date.now, requestTtl = REQUEST_TTL, transcript = readTranscript, startTimeout = START_TIMEOUT } = {}) {
 		super();
 		this.#now = now;
 		this.#requestTtl = requestTtl;
 		this.#transcript = transcript;
+		this.#startTimeout = startTimeout;
+	}
+
+	/**
+	 * A prompt a client typed into a session's terminal. Once Claude Code reports a matching
+	 * `UserPromptSubmit`, the socket gets `prompt_confirmed` with this id.
+	 */
+	prompted(sessionId, { id, text, paths = [] }) {
+		const s = this.#sessions.get(sessionId);
+		if (!s) return;
+		s.prompts.push({ id, text: comparable(text, paths), at: this.#now() });
+		// Unconfirmed prompts don't pile up: the client gives up on them after 10 seconds anyway.
+		s.prompts = s.prompts.filter((p) => this.#now() - p.at < 60_000).slice(-20);
+	}
+
+	/** Whether `resume` may reopen a session: only one no process runs any more. */
+	canResume(id) {
+		const s = this.#sessions.get(id);
+		return !s || s.state === 'ended';
+	}
+
+	/**
+	 * A session the agent just started in `terminal` (`id`: the id it passed with --session-id,
+	 * or the one it resumes). It shows right away; if Claude Code reports nothing within the
+	 * start timeout, it ends with an error.
+	 */
+	launched({ id, terminal, cwd, agent = 'claude' }) {
+		const now = this.#now();
+		let s = this.#sessions.get(id);
+		if (!s) {
+			s = new AgentSession({ id, agent, cwd, terminal, now });
+			this.#sessions.set(id, s);
+		}
+		Object.assign(s, { terminal, state: 'running', starting: true, error: null, endedAt: null, lastActivityAt: now });
+		const timer = setTimeout(() => {
+			if (!s.starting || this.#sessions.get(id) !== s) return;
+			s.starting = false;
+			// Usually the plugin isn't installed: Claude Code runs but never reports.
+			s.error = "Claude Code didn't report back. If it runs in the terminal, run `coderemote setup claude` once on the computer.";
+			this.#end(s);
+			this.#emitSession(s);
+		}, this.#startTimeout);
+		timer.unref?.();
+		this.#emitSession(s);
+		return s.toJSON();
 	}
 
 	sessions() {
@@ -128,6 +189,15 @@ export class AgentHub extends EventEmitter {
 			throw new HttpError(400, 'hook event without session_id');
 		}
 		const now = this.#now();
+		// A resumed conversation can come back under a new id: it replaces the placeholder.
+		if (terminal && !this.#sessions.has(event.session_id)) {
+			for (const p of this.#sessions.values()) {
+				if (p.starting && p.terminal === terminal) {
+					this.#sessions.delete(p.id);
+					this.emit('message', { type: 'session_removed', session: p.id });
+				}
+			}
+		}
 		let s = this.#sessions.get(event.session_id);
 		if (!s) {
 			s = new AgentSession({ id: event.session_id, agent, cwd: event.cwd ?? null, terminal, now });
@@ -138,6 +208,7 @@ export class AgentHub extends EventEmitter {
 		}
 		await s.ready;
 		if (terminal && !s.terminal) s.terminal = terminal;
+		s.starting = false;
 		s.lastActivityAt = now;
 		if (s.state === 'ended' && event.hook_event_name !== 'SessionEnd') {
 			// A resumed conversation comes back under the same id.
@@ -156,6 +227,12 @@ export class AgentHub extends EventEmitter {
 				}
 				this.#startTurn(s, now);
 				this.#entry(s, { kind: 'prompt', text });
+				const said = comparable(text);
+				const i = s.prompts.findIndex((p) => p.text === said || (p.text && said.startsWith(p.text)));
+				if (i >= 0) {
+					const [prompt] = s.prompts.splice(i, 1);
+					this.emit('message', { type: 'prompt_confirmed', session: s.id, prompt: prompt.id });
+				}
 				break;
 			}
 			case 'PreToolUse':
@@ -236,6 +313,8 @@ export class AgentHub extends EventEmitter {
 	terminalExited(terminal) {
 		for (const s of this.#sessions.values()) {
 			if (s.terminal === terminal && s.state !== 'ended') {
+				if (s.starting) s.error = 'Claude Code exited before it started. Open the terminal to see why.';
+				s.starting = false;
 				this.#end(s);
 				this.#emitSession(s);
 			}

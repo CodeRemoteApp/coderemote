@@ -5,8 +5,17 @@ import pty from 'node-pty';
 // Keep enough scrollback to repaint a screen after a mobile reconnect.
 const SCROLLBACK_LIMIT = 256 * 1024;
 
+/** One POSIX shell word for `arg`, whatever it contains. */
+export function shellQuote(arg) {
+	return `'${String(arg).replace(/'/g, `'\\''`)}'`;
+}
+
 class TerminalSession {
-	constructor({ cols, rows, cwd, env = {} }) {
+	/**
+	 * `command` (an argv array) runs that program through a login shell (for the user's PATH)
+	 * instead of an interactive shell; the session ends when it exits.
+	 */
+	constructor({ cols, rows, cwd, env = {}, command = null }) {
 		this.id = randomUUID();
 		this.createdAt = Date.now();
 		this.chunks = [];
@@ -16,7 +25,9 @@ class TerminalSession {
 
 		const shell = process.env.SHELL || (os.platform() === 'win32' ? 'powershell.exe' : '/bin/sh');
 		this.shell = shell;
-		this.pty = pty.spawn(shell, ['-l'], {
+		this.command = command;
+		const args = command ? ['-l', '-c', `exec ${command.map(shellQuote).join(' ')}`] : ['-l'];
+		this.pty = pty.spawn(shell, args, {
 			name: 'xterm-256color',
 			cols,
 			rows,
@@ -77,6 +88,11 @@ class TerminalSession {
 
 	kill() {
 		this.pty.kill();
+	}
+
+	/** Types into the session, as a client's keyboard would. */
+	write(data) {
+		this.pty.write(data);
 	}
 
 	toJSON() {

@@ -46,6 +46,10 @@ export const Routes = Object.freeze({
 	agentsSessions: 'GET /api/agents/sessions',
 	agentsTimeline: 'GET /api/agents/timeline',
 	agentsAnswer: 'POST /api/agents/answer',
+	agentsLaunch: 'POST /api/agents/sessions',
+	agentsPrompt: 'POST /api/agents/prompt',
+	agentsKeys: 'POST /api/agents/keys',
+	agentsUpload: 'POST /api/agents/uploads',
 	pushDeviceSet: 'PUT /api/push/device',
 	pushDeviceDelete: 'DELETE /api/push/device',
 	pushTest: 'POST /api/push/test',
@@ -77,6 +81,8 @@ export const AgentsServerMessage = Object.freeze({
 	entry: 'entry',
 	request: 'request',
 	requestResolved: 'request_resolved',
+	sessionRemoved: 'session_removed',
+	promptConfirmed: 'prompt_confirmed',
 });
 
 // Client -> server frames on the agents socket.

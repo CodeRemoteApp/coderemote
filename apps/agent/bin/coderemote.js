@@ -30,6 +30,8 @@ if (!fs.existsSync(CONFIG_DIR) && fs.existsSync(LEGACY_CONFIG_DIR)) fs.renameSyn
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 // Phones registered for notifications, per agent port; `rotate-token` deletes them all.
 const PUSH_DIR = path.join(CONFIG_DIR, 'push');
+// Photos and files sent from the phone to coding-agent sessions.
+const UPLOADS_DIR = path.join(CONFIG_DIR, 'uploads');
 const DEFAULT_PORT = 31580;
 // Bundled into the published dist/coderemote.js, whose package.json the release workflow stamps
 // with the tag's version. A source checkout has no real version, so it never checks for updates.
@@ -45,8 +47,9 @@ function loadConfig() {
 	if (!cfg.token) {
 		cfg.token = randomBytes(32).toString('base64url');
 		saveConfig(cfg);
-		// Devices registered for notifications were paired devices too.
+		// Devices registered for notifications were paired devices too, and sent these files.
 		fs.rmSync(PUSH_DIR, { recursive: true, force: true });
+		fs.rmSync(UPLOADS_DIR, { recursive: true, force: true });
 	}
 	// Older releases kept one tunnel per machine, made for the default port.
 	if (cfg.tunnelId && !cfg.tunnels) {
@@ -82,6 +85,7 @@ function listen(token, port, root, tunnelToken, preview, status) {
 		// This very CLI, so coding agents in the app's terminals report through the same version.
 		hookBin: fs.realpathSync(process.argv[1]),
 		pushStore: pushStore(PUSH_DIR, port),
+		uploadsDir: UPLOADS_DIR,
 	});
 	return new Promise((resolve, reject) => {
 		server.once('error', reject);

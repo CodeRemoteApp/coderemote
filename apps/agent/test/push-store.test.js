@@ -17,11 +17,14 @@ test('keeps each port’s registrations in its own private file', () => {
 	fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('rotate-token deletes every push registration', () => {
+test('rotate-token deletes every push registration and upload', () => {
 	const home = fs.mkdtempSync(path.join(os.tmpdir(), 'coderemote-home-'));
 	pushStore(path.join(home, '.coderemote', 'push'), 31580).save([{ token: 'ab' }]);
+	fs.mkdirSync(path.join(home, '.coderemote', 'uploads', '2026-10-28'), { recursive: true });
+	fs.writeFileSync(path.join(home, '.coderemote', 'uploads', '2026-10-28', 'x-shot.png'), 'png');
 	const bin = new URL('../bin/coderemote.js', import.meta.url).pathname;
 	execFileSync(process.execPath, [bin, 'rotate-token'], { env: { ...process.env, HOME: home }, stdio: 'pipe' });
 	assert.equal(fs.existsSync(path.join(home, '.coderemote', 'push')), false);
+	assert.equal(fs.existsSync(path.join(home, '.coderemote', 'uploads')), false);
 	fs.rmSync(home, { recursive: true, force: true });
 });

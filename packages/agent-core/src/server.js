@@ -4,7 +4,8 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import {
 	AGENTS_WS_PATH,
 	AgentsClientMessage,
@@ -25,7 +26,8 @@ import { killListener, listPorts } from './ports.js';
 import { PushSender } from './push.js';
 import { detail, InspectingProxy } from './inspector.js';
 import { HttpError, Sandbox } from './sandbox.js';
-import { SessionManager } from './sessions.js';
+import { SessionManager, shellQuote } from './sessions.js';
+import { UploadStore } from './uploads.js';
 
 function kindOf(stat) {
 	if (stat.isDirectory()) return 'dir';
@@ -47,6 +49,21 @@ async function describe(fullPath, name) {
 	}
 	return entry;
 }
+
+const PASTE_START = '\x1b[200~';
+const PASTE_END = '\x1b[201~';
+// Keystrokes a client may send to a session, by name; anything else goes through the terminal.
+const KEYS = { interrupt: '\x1b', cycle_mode: '\x1b[Z' };
+const COMMANDS = ['/compact', '/clear', '/model'];
+
+/** Text without control characters (an ESC could end the paste early), newlines and tabs kept. */
+function typeable(text) {
+	return text.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+}
+
+// Permission modes a session started from the phone may begin in; skipping prompts entirely is
+// for the computer to choose.
+const LAUNCH_MODES = ['manual', 'acceptEdits', 'plan', 'auto'];
 
 function sendJson(res, status, body) {
 	const json = JSON.stringify(body);
@@ -79,6 +96,9 @@ async function readJson(req) {
  *        one the agent takes no hook events
  * @param {string | null} [opts.hookBin]  the CLI that runs `hook`, handed to terminals so a coding
  *        agent started in one reports through this agent's own version, whatever is on PATH
+ * @param {string | null} [opts.uploadsDir]  where files sent from the phone go; sessions started
+ *        here may read it without asking
+ * @param {string} [opts.claudeCommand]  the Claude Code executable that sessions started here run
  * @param {AgentHub} [opts.agents]  coding-agent sessions (one is made when absent)
  * @param {{ load: () => object[], save: (devices: object[]) => void } | null} [opts.pushStore]
  *        keeps push registrations across restarts; without it they last until the agent stops
@@ -92,6 +112,8 @@ export function createAgentServer({
 	tunnelStatus = null,
 	hookSecret = null,
 	hookBin = null,
+	uploadsDir = null,
+	claudeCommand = 'claude',
 	agents = new AgentHub(),
 	pushStore = null,
 	pushOptions = {},
@@ -100,7 +122,11 @@ export function createAgentServer({
 	const sandbox = new Sandbox(root);
 	const sessions = new SessionManager({ onExit: (id) => agents.terminalExited(id) });
 	const expected = Buffer.from(`Bearer ${token}`);
-	const sweep = setInterval(() => agents.sweep(), 10 * 60 * 1000);
+	const uploads = uploadsDir ? new UploadStore(uploadsDir) : null;
+	const sweep = setInterval(() => {
+		agents.sweep();
+		uploads?.sweep().catch(() => {});
+	}, 10 * 60 * 1000);
 	sweep.unref();
 	// When a client last said it shows this machine; pushes wait while that is recent.
 	let foregroundAt = 0;
@@ -110,6 +136,57 @@ export function createAgentServer({
 	function authorized(req) {
 		const got = Buffer.from(req.headers.authorization || '');
 		return got.length === expected.length && timingSafeEqual(got, expected);
+	}
+
+	/** What terminals add to the environment, so coding agents in them reach this agent. */
+	function terminalEnv() {
+		return {
+			CODEREMOTE_AGENT_PORT: String(server.address()?.port ?? ''),
+			...(hookBin ? { CODEREMOTE_HOOK_BIN: hookBin } : {}),
+		};
+	}
+
+	/**
+	 * The terminal a session runs in, to type into. 404 for an unknown session, 409 when it has no
+	 * terminal here (started elsewhere), has ended, or (unless `whileWaiting`) waits on a request,
+	 * whose dialog would take the keystrokes.
+	 */
+	function typingTarget(id, { whileWaiting }) {
+		const session = typeof id === 'string' ? agents.session(id) : null;
+		if (!session) throw new HttpError(404, 'no such session');
+		const term = session.terminal && session.state !== 'ended' ? sessions.get(session.terminal) : null;
+		if (!term) throw new HttpError(409, 'this session runs outside Code Remote; it can be followed but not typed into');
+		if (!whileWaiting && session.state === 'waiting') throw new HttpError(409, 'answer the pending request first');
+		return { session, term };
+	}
+
+	/** Pastes `text` as one block, then presses Enter once the TUI has taken the paste in. */
+	async function typeInto(term, text) {
+		term.write(`${PASTE_START}${text}${PASTE_END}`);
+		await new Promise((r) => setTimeout(r, 300));
+		term.write('\r');
+	}
+
+	function uploadPath(id) {
+		if (!uploads) throw new HttpError(400, 'this agent takes no uploads');
+		return uploads.path(id);
+	}
+
+	/** Absolute paths of uploaded files, by upload id (see Uploads). */
+	async function attachmentPaths(ids) {
+		if (ids === undefined) return [];
+		if (!Array.isArray(ids) || ids.some((a) => typeof a !== 'string')) throw new HttpError(400, 'attachments must be upload ids');
+		return Promise.all(ids.map((a) => uploadPath(a)));
+	}
+
+	/** Whether `claudeCommand` runs here, looked up through a login shell like the session will be. */
+	function claudeInstalled() {
+		const shell = process.env.SHELL || '/bin/sh';
+		return new Promise((resolve) => {
+			execFile(shell, ['-l', '-c', `command -v ${shellQuote(claudeCommand)}`], { timeout: 10_000 }, (err, out) =>
+				resolve(!err && out.trim() !== ''),
+			);
+		});
 	}
 
 	function hookAuthorized(req) {
@@ -397,6 +474,93 @@ export function createAgentServer({
 		[Routes.agentsTimeline]: async (url) =>
 			agents.timeline(url.searchParams.get('session'), parseInt(url.searchParams.get('after'), 10) || 0),
 
+		[Routes.agentsLaunch]: async (url, req) => {
+			const { cwd, model, permissionMode, resume, cols, rows } = await readJson(req);
+			let dir;
+			try {
+				dir = await sandbox.resolve(cwd || sandbox.root);
+			} catch (e) {
+				throw new HttpError(400, e.message);
+			}
+			if (!(await fs.stat(dir)).isDirectory()) throw new HttpError(400, 'cwd must be a folder');
+			if (model !== undefined && (typeof model !== 'string' || !/^[A-Za-z0-9._[\]-]{1,80}$/.test(model))) {
+				throw new HttpError(400, 'invalid model');
+			}
+			if (permissionMode !== undefined && !LAUNCH_MODES.includes(permissionMode)) {
+				throw new HttpError(400, `permissionMode must be one of ${LAUNCH_MODES.join(', ')}`);
+			}
+			if (resume !== undefined && (typeof resume !== 'string' || !/^[0-9a-f-]{8,64}$/i.test(resume))) {
+				throw new HttpError(400, 'resume must be a session id');
+			}
+			if (resume && !agents.canResume(resume)) {
+				throw new HttpError(409, 'that session is still open; continue it where it runs, or end it first');
+			}
+			if (!(await claudeInstalled())) {
+				throw Object.assign(new HttpError(400, 'Claude Code is not installed on this computer (no `claude` command).'), {
+					code: 'ENOCLAUDE',
+				});
+			}
+			const id = resume ?? randomUUID();
+			const argv = [claudeCommand, ...(resume ? ['--resume', resume] : ['--session-id', id])];
+			if (model) argv.push('--model', model);
+			if (permissionMode) argv.push('--permission-mode', permissionMode);
+			if (uploadsDir) {
+				await fs.mkdir(uploadsDir, { recursive: true, mode: 0o700 });
+				argv.push('--add-dir', uploadsDir);
+			}
+			const term = sessions.create({
+				cols: Number.isInteger(cols) && cols > 0 ? cols : 80,
+				rows: Number.isInteger(rows) && rows > 0 ? rows : 24,
+				cwd: dir,
+				// Fullscreen rendering can fail to start while no client is attached to answer the
+				// terminal's queries; the classic renderer doesn't need them.
+				env: { ...terminalEnv(), CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1' },
+				command: argv,
+			});
+			return { terminal: term.id, session: agents.launched({ id, terminal: term.id, cwd: dir }) };
+		},
+
+		[Routes.agentsPrompt]: async (url, req) => {
+			const { session: id, text, attachments } = await readJson(req);
+			if (typeof text !== 'string' || !text.trim() || text.length > 100_000) {
+				throw new HttpError(400, 'text must be a non-empty string');
+			}
+			const { term } = typingTarget(id, { whileWaiting: false });
+			const paths = await attachmentPaths(attachments);
+			const typed = typeable([text.trim(), ...paths].join('\n'));
+			const prompt = randomUUID();
+			agents.prompted(id, { id: prompt, text: typed, paths });
+			await typeInto(term, typed);
+			return { prompt };
+		},
+
+		[Routes.agentsUpload]: async (url, req) => {
+			if (!uploads) throw new HttpError(404, 'this agent takes no uploads');
+			let name = req.headers['x-filename'];
+			try {
+				name = decodeURIComponent(name ?? '');
+			} catch {}
+			const { id, name: saved, type, size } = await uploads.save(req, {
+				name,
+				type: req.headers['content-type'],
+				length: req.headers['content-length'],
+			});
+			return { id, name: saved, type, size };
+		},
+
+		[Routes.agentsKeys]: async (url, req) => {
+			const { session: id, action, command } = await readJson(req);
+			if (action === 'command') {
+				if (!COMMANDS.includes(command)) throw new HttpError(400, `command must be one of ${COMMANDS.join(', ')}`);
+				await typeInto(typingTarget(id, { whileWaiting: false }).term, command);
+			} else if (Object.hasOwn(KEYS, action)) {
+				typingTarget(id, { whileWaiting: true }).term.write(KEYS[action]);
+			} else {
+				throw new HttpError(400, `action must be one of ${[...Object.keys(KEYS), 'command'].join(', ')}`);
+			}
+			return {};
+		},
+
 		[Routes.agentsAnswer]: async (url, req) => {
 			agents.answer(await readJson(req));
 			return {};
@@ -524,10 +688,7 @@ export function createAgentServer({
 					rows: parseInt(url.searchParams.get('rows'), 10) || 24,
 					// New shells start in the shared folder unless a subfolder is asked for.
 					cwd: await sandbox.resolve(url.searchParams.get('cwd') || sandbox.root),
-					env: {
-						CODEREMOTE_AGENT_PORT: String(server.address()?.port ?? ''),
-						...(hookBin ? { CODEREMOTE_HOOK_BIN: hookBin } : {}),
-					},
+					env: terminalEnv(),
 				});
 			} catch (e) {
 				socket.end(`HTTP/1.1 ${e.status || (e.code === 'ENOENT' ? 404 : 500)} Error\r\n\r\n`);
@@ -566,5 +727,6 @@ export function createAgentServer({
 	// Whether a client showed this machine in the last 30 seconds.
 	server.clientInForeground = clientInForeground;
 	server.push = push;
+	server.agentsUploadPath = (id) => uploadPath(id);
 	return server;
 }

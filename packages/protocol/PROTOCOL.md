@@ -227,13 +227,20 @@ are forgotten 24 hours after they end.
 | `GET /api/agents/sessions` | | `{ sessions: [session] }`, most recent activity first |
 | `GET /api/agents/timeline?session=&after=` | | `{ entries: [entry], next, requests: [request] }`; `after` skips entries up to that `seq` |
 | `POST /api/agents/answer` | see below | `{}`; 404 for an unknown request, 409 once it is resolved |
+| `POST /api/agents/sessions` | `{ cwd?, model?, permissionMode?, resume?, cols?, rows? }` | `{ terminal, session }`; starts Claude Code, see [Starting sessions](#starting-sessions) |
+| `POST /api/agents/prompt` | `{ session, text, attachments? }` | `{ prompt }`; see [Prompts and keys](#prompts-and-keys) |
+| `POST /api/agents/keys` | `{ session, action, command? }` | `{}` |
+| `POST /api/agents/uploads` | the file's bytes | `{ id, name, type, size }`; see [Uploads](#uploads) |
 
-A session is `{ id, agent, cwd, title, state, terminal, startedAt, lastActivityAt, pending }`.
+A session is `{ id, agent, cwd, title, state, terminal, startedAt, lastActivityAt, pending,
+starting, error }`.
 `agent` is `"claude"`. `title` is the first line of the first prompt (80 characters at most), or
 the folder's name before there is one. `state` is `running`, `waiting` (on a request), `idle`
 (the turn ended) or `ended`. `terminal` is the id of the terminal session it runs in (see
 [Terminal](#terminal)), or null when it was started outside the agent. `pending` counts its
-unresolved requests. Times are milliseconds since the epoch.
+unresolved requests. `starting` is true for a session started from a client that Claude Code
+hasn't reported yet; `error` says why such a session ended without starting (else null). Older
+agents omit both. Times are milliseconds since the epoch.
 
 Entries are append-only, numbered by `seq` (increasing per session), and the agent keeps the
 latest 500 of each session. Each is `{ seq, time, kind, ... }`:
@@ -249,6 +256,50 @@ latest 500 of each session. Each is `{ seq, time, kind, ... }`:
 | `turn_end` | `duration` (ms) |
 
 `output` keeps the first 16 KB of a tool result; `truncated` says there was more.
+
+### Starting sessions
+
+`POST /api/agents/sessions` runs Claude Code in a new terminal (see [Terminal](#terminal); it
+ends when Claude Code exits) through a login shell, so it finds `claude` on the user's PATH, with
+the classic renderer (`CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`): fullscreen rendering can fail to
+start while no client is attached to the terminal.
+`cwd` is a folder inside the shared folder (default: the shared folder itself), `model` a model
+name or alias, `permissionMode` one of `manual`, `acceptEdits`, `plan` or `auto`, and `resume`
+the id of an `ended` session to continue (409 for one that is still open). A new session gets its
+id from the agent (`--session-id`), so `session` is already the one later events report; it
+starts with `starting: true` and ends with an `error` if Claude Code reports nothing within 15
+seconds (usually because the plugin isn't installed: `coderemote setup claude`). A resumed conversation that comes back under another id replaces it: the socket sends
+`{ "type": "session_removed", "session": id }` for the old one. Sessions started here may read
+the uploads folder (see [Uploads](#uploads)) without asking. 400 with `code: "ENOCLAUDE"` when
+`claude` isn't installed.
+
+### Prompts and keys
+
+A session that runs in one of the agent's terminals (`terminal` set, not `ended`) can be typed
+into. Others answer 409: a session started outside Code Remote can be followed but not prompted.
+
+`POST /api/agents/prompt` pastes `text` into the session as one block (bracketed paste, so line
+breaks stay in the message) and presses Enter. `attachments` are upload ids; their paths are
+added on lines of their own, and Claude Code shows images among them as images. Control
+characters other than newlines and tabs are dropped. While the session waits on a request (its
+dialog would take the keystrokes) it answers 409. The response's `prompt` id comes back on the
+socket as `{ "type": "prompt_confirmed", "session": id, "prompt": id }` once Claude Code reports
+the prompt (`UserPromptSubmit`); a prompt that is never confirmed didn't reach it, for example
+because the terminal had a menu open.
+
+`POST /api/agents/keys` presses keys the agent knows by name: `interrupt` (Esc, which also backs
+out of a dialog and works while the session waits), `cycle_mode` (Shift+Tab, the next permission
+mode), or `command` with `command` one of `/compact`, `/clear` or `/model`. Anything else is 400;
+the terminal itself remains for the rest.
+
+### Uploads
+
+`POST /api/agents/uploads` takes a file as the request body, with its media type in
+`Content-Type` and its name, URI-encoded, in `X-Filename`. Files go to `~/.coderemote/uploads/`,
+outside the shared folder so they never land in a repository, up to 100 MB each (413 above).
+HEIC photos are converted to JPEG on macOS, since Claude Code reads PNG, JPEG, GIF and WebP.
+Sessions started by the agent may read the folder without asking. Uploads are deleted after 7
+days, and by `coderemote rotate-token`.
 
 ### Requests
 
@@ -281,6 +332,8 @@ WebSocket `GET /api/agents/ws` (bearer token as usual). Server to client, all te
 - `{ "type": "entry", "session": id, "entry" }` for every new timeline entry
 - `{ "type": "request", "request" }` when a request opens
 - `{ "type": "request_resolved", "session": id, "request": id, "outcome", "by" }`
+- `{ "type": "session_removed", "session": id }` when a placeholder gave way (see above)
+- `{ "type": "prompt_confirmed", "session": id, "prompt": id }` (see below)
 
 Client to server: `{ "type": "presence", "foreground": bool }`. Send `true` while the app shows
 this machine and at least every 20 seconds; while one is fresh the agent sends no pushes
