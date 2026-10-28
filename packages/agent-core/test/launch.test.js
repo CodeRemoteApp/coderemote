@@ -106,10 +106,10 @@ test('resumes only sessions no process runs any more', async () => {
 	await hook({ session_id: id, cwd: root, transcript_path: '/x', hook_event_name: 'SessionEnd', reason: 'other' });
 	const { status, body } = await launch({ resume: id });
 	assert.equal(status, 200);
-	const [, , ...args] = await launchedArgs();
-	assert.deepEqual(args.slice(0, 2), ['--resume', id]);
 	assert.equal(body.session.id, id);
 	assert.equal(hub.session(id).state, 'running');
+	const [, , ...args] = await launchedArgs();
+	assert.deepEqual(args.slice(0, 2), ['--resume', id]);
 });
 
 test('a resume that comes back under a new id replaces its placeholder', async () => {
@@ -118,8 +118,9 @@ test('a resume that comes back under a new id replaces its placeholder', async (
 	const removed = [];
 	hub.on('message', (m) => m.type === 'session_removed' && removed.push(m.session));
 	const { body } = await launch({ resume: old });
-	await launchedArgs();
+	// Reported at once: a slow machine can take longer than the short start timeout to run the stand-in.
 	await hook({ session_id: 'new-id-2222', cwd: root, transcript_path: '/x', hook_event_name: 'SessionStart', source: 'resume' }, body.terminal);
+	await launchedArgs();
 	assert.deepEqual(removed, [old]);
 	assert.equal(hub.session(old), null);
 	assert.equal(hub.session('new-id-2222').terminal, body.terminal);
@@ -131,11 +132,19 @@ test('a session that never reports ends with an error, and ends with its termina
 	assert.ok(await until(() => hub.session(body.session.id).state === 'ended'));
 	assert.match(hub.session(body.session.id).error, /Claude Code didn't report back.*setup claude/);
 
-	const second = (await launch({})).body;
+	// A start timeout that can't fire first, however slow the machine is to start and stop the stand-in.
+	const patient = new AgentHub({ startTimeout: 60_000, transcript: async () => [] });
+	const other = createAgentServer({ token, root, hookSecret, claudeCommand: fakeClaude, pluginInstalled: async () => true, agents: patient });
+	await new Promise((r) => other.listen(0, '127.0.0.1', r));
+	const url = `http://127.0.0.1:${other.address().port}`;
+	const auth = { authorization: `Bearer ${token}` };
+	const second = await (await fetch(`${url}/api/agents/sessions`, { method: 'POST', headers: auth, body: '{}' })).json();
 	await launchedArgs();
-	await fetch(`${baseUrl}/api/term?id=${second.terminal}`, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } });
-	assert.ok(await until(() => hub.session(second.session.id).state === 'ended'));
-	assert.match(hub.session(second.session.id).error, /exited before it started/);
+	await fetch(`${url}/api/term?id=${second.terminal}`, { method: 'DELETE', headers: auth });
+	assert.ok(await until(() => patient.session(second.session.id).state === 'ended'));
+	assert.match(patient.session(second.session.id).error, /exited before it started/);
+	other.killAllSessions();
+	other.close();
 });
 
 test('says when Claude Code is not installed', async () => {
