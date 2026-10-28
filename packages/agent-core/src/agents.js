@@ -400,6 +400,18 @@ export class AgentHub extends EventEmitter {
 		}
 	}
 
+	/**
+	 * Drops a session from the list, withdrawing its requests. One still running elsewhere comes
+	 * back with its next hook event.
+	 */
+	forget(id) {
+		const s = this.#sessions.get(id);
+		if (!s) throw new HttpError(404, 'no such session');
+		if (s.state !== 'ended') this.#end(s);
+		this.#sessions.delete(id);
+		this.emit('message', { type: 'session_removed', session: id, replacedBy: null });
+	}
+
 	/** Forgets sessions that ended more than a day ago. */
 	sweep() {
 		const cutoff = this.#now() - ENDED_TTL;

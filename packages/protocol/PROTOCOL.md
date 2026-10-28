@@ -231,6 +231,8 @@ are forgotten 24 hours after they end.
 | `POST /api/agents/sessions` | `{ agent?, cwd?, model?, permissionMode?, resume?, cols?, rows? }` | `{ terminal, session }`; starts Claude Code, see [Starting sessions](#starting-sessions) |
 | `POST /api/agents/prompt` | `{ session, text, attachments? }` | `{ prompt }`; see [Prompts and keys](#prompts-and-keys) |
 | `POST /api/agents/keys` | `{ session, action, command? }` | `{}` |
+| `POST /api/agents/stop` | `{ session }` | `{}`; see [Stopping and forgetting](#stopping-and-forgetting) |
+| `POST /api/agents/forget` | `{ session }` | `{}`; see [Stopping and forgetting](#stopping-and-forgetting) |
 | `POST /api/agents/uploads` | the file's bytes | `{ id, name, type, size }`; see [Uploads](#uploads) |
 
 A session is `{ id, agent, cwd, title, state, terminal, startedAt, lastActivityAt, pending,
@@ -316,6 +318,18 @@ out of a dialog and works while the session waits), `cycle_mode` (Shift+Tab, the
 mode), or `command` with `command` one of `/compact`, `/clear` or `/model`. Anything else is 400;
 the terminal itself remains for the rest.
 
+### Stopping and forgetting
+
+`POST /api/agents/stop` closes the terminal of a session that runs in one of the agent's
+terminals (`terminal` set, not `ended`), which hangs up on Claude Code or Codex; one still running
+3 seconds later is killed. The session then ends as when its terminal exits. 409 for any other
+session: one started outside Code Remote stops only where it runs.
+
+`POST /api/agents/forget` drops a session from the list and withdraws its open requests; the
+socket sends `{ "type": "session_removed", "session": id, "replacedBy": null }`. 409 while it runs
+in one of the agent's terminals (stop it first). A session started outside Code Remote that is
+still running comes back with its next hook event. Older agents answer both with 404.
+
 ### Uploads
 
 `POST /api/agents/uploads` takes a file as the request body, with its media type in
@@ -364,7 +378,7 @@ WebSocket `GET /api/agents/ws` (bearer token as usual). Server to client, all te
 - `{ "type": "entry", "session": id, "entry" }` for every new timeline entry
 - `{ "type": "request", "request" }` when a request opens
 - `{ "type": "request_resolved", "session": id, "request": id, "outcome", "by" }`
-- `{ "type": "session_removed", "session": id, "replacedBy": id }` when a placeholder gave way to the session Claude Code or Codex reports (see above)
+- `{ "type": "session_removed", "session": id, "replacedBy": id }` when a placeholder gave way to the session Claude Code or Codex reports (see above), or with `replacedBy: null` once a session is forgotten
 - `{ "type": "prompt_confirmed", "session": id, "prompt": id }` (see below)
 
 Client to server: `{ "type": "presence", "foreground": bool }`. Send `true` while the app shows

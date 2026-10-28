@@ -86,8 +86,8 @@ class TerminalSession {
 		}
 	}
 
-	kill() {
-		this.pty.kill();
+	kill(signal) {
+		this.pty.kill(signal);
 	}
 
 	/** Types into the session, as a client's keyboard would. */

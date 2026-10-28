@@ -242,3 +242,31 @@ test("lists the models Codex's own picker shows, in its order", async () => {
 		{ id: 'b', name: 'B', description: 'second' },
 	]);
 });
+
+const post = (route, body) =>
+	fetch(`${baseUrl}/api/agents/${route}`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+
+test('stops a session by closing its terminal, then forgets it', async () => {
+	const { body } = await launch({});
+	const id = body.session.id;
+	await hook({ session_id: id, cwd: root, transcript_path: '/x', hook_event_name: 'SessionStart', source: 'startup' }, body.terminal);
+	await launchedArgs();
+	assert.equal((await post('forget', { session: id })).status, 409);
+	assert.equal((await post('stop', { session: id })).status, 200);
+	assert.ok(await until(() => hub.session(id)?.state === 'ended'));
+	assert.equal((await post('stop', { session: id })).status, 409);
+
+	const removed = new Promise((r) => hub.on('message', (m) => m.type === 'session_removed' && m.session === id && r(m)));
+	assert.equal((await post('forget', { session: id })).status, 200);
+	assert.equal((await removed).replacedBy, null);
+	assert.equal(hub.session(id), null);
+	assert.equal((await post('forget', { session: id })).status, 404);
+});
+
+test('forgets a session started outside Code Remote, which only stops where it runs', async () => {
+	const id = '2b2b2b2b-1111-2222-3333-444455556666';
+	await hook({ session_id: id, cwd: root, transcript_path: '/x', hook_event_name: 'UserPromptSubmit', prompt: 'hi' });
+	assert.equal((await post('stop', { session: id })).status, 409);
+	assert.equal((await post('forget', { session: id })).status, 200);
+	assert.equal(hub.session(id), null);
+});

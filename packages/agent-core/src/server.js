@@ -671,6 +671,28 @@ export function createAgentServer({
 			return {};
 		},
 
+		[Routes.agentsStop]: async (url, req) => {
+			const { session: id } = await readJson(req);
+			const { term } = typingTarget(id, { whileWaiting: true });
+			// Closing the terminal hangs up on the agent; one that ignores it is killed.
+			term.kill();
+			setTimeout(() => {
+				if (term.exitCode === null) term.kill('SIGKILL');
+			}, 3000).unref();
+			return {};
+		},
+
+		[Routes.agentsForget]: async (url, req) => {
+			const { session: id } = await readJson(req);
+			const session = typeof id === 'string' ? agents.session(id) : null;
+			if (!session) throw new HttpError(404, 'no such session');
+			if (session.state !== 'ended' && session.terminal && sessions.get(session.terminal)) {
+				throw new HttpError(409, 'this session still runs here; stop it first');
+			}
+			agents.forget(id);
+			return {};
+		},
+
 		[Routes.agentsAnswer]: async (url, req) => {
 			agents.answer(await readJson(req));
 			return {};
