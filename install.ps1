@@ -2,7 +2,7 @@
 #
 #   irm https://raw.githubusercontent.com/CodeRemoteApp/coderemote/main/install.ps1 | iex
 #
-# With Node.js 20 or newer this is `npm install -g coderemote`. Without it, the current Node.js
+# With Node.js 22 or newer this is `npm install -g coderemote`. Without it, the current Node.js
 # LTS is downloaded from nodejs.org into ~\.coderemote\runtime\node, for coderemote's use only,
 # and coderemote is installed there. ~\.coderemote\runtime\bin then holds `coderemote` and
 # `node` and goes at the end of the user's PATH: the Claude Code plugin's hooks run `node`, and a
@@ -27,7 +27,7 @@
 	$runtime = if ($env:CODEREMOTE_RUNTIME_DIR) { $env:CODEREMOTE_RUNTIME_DIR } else { Join-Path $HOME '.coderemote\runtime' }
 	$nodeDir = Join-Path $runtime 'node'
 	$bin = Join-Path $runtime 'bin'
-	$minNode = 20
+	$minNode = 22
 	$dist = 'https://nodejs.org/dist'
 
 	function Fail($message) { throw "coderemote install: $message" }

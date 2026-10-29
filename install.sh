@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/CodeRemoteApp/coderemote/main/install.sh | sh
 #
-# With Node.js 20 or newer this is `npm install -g coderemote`. Without it (or when npm's global
+# With Node.js 22 or newer this is `npm install -g coderemote`. Without it (or when npm's global
 # folder needs sudo), the current Node.js LTS is downloaded from nodejs.org into
 # ~/.coderemote/runtime/node, for coderemote's use only, and coderemote is installed there.
 # ~/.coderemote/runtime/bin then holds `coderemote` and `node`, and goes at the end of PATH: the
@@ -19,7 +19,7 @@ set -eu
 VERSION="${CODEREMOTE_VERSION:-latest}"
 PACKAGE="${CODEREMOTE_PACKAGE:-coderemote@$VERSION}"
 RUNTIME="${CODEREMOTE_RUNTIME_DIR:-$HOME/.coderemote/runtime}"
-MIN_NODE=20
+MIN_NODE=22
 DIST=https://nodejs.org/dist
 
 say() { printf '%s\n' "$*"; }
@@ -111,7 +111,7 @@ install_node() {
 install_private() {
 	platform
 	install_node
-	say "Installing $PACKAGE…"
+	say "Installing ${PACKAGE}…"
 	# node-pty's install scripts run `node`: this one.
 	PATH="$RUNTIME/node/bin:$PATH" "$RUNTIME/node/bin/node" "$RUNTIME/node/lib/node_modules/npm/bin/npm-cli.js" \
 		install -g --prefix "$RUNTIME/node" --no-fund --no-audit "$PACKAGE" ||

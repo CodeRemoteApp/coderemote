@@ -34,7 +34,7 @@ cd ~/projects/my-app && coderemote up
 
 With Homebrew: `brew install coderemoteapp/tap/coderemote`.
 
-No Node.js? The install scripts use yours when there is one (20 or newer), and otherwise
+No Node.js? The install scripts use yours when there is one (22 or newer), and otherwise
 download Node.js into `~/.coderemote/runtime` for coderemote alone:
 
 ```sh

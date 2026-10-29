@@ -23,7 +23,7 @@ installed copies update. Check both with `claude plugin validate .`.
 
 ## Setting up
 
-Requirements: Node.js 20+. `coderemote up` downloads the
+Requirements: Node.js 22+. `coderemote up` downloads the
 Dev Tunnels CLI on first use (or uses a `devtunnel` on your `PATH`).
 
 ```sh
@@ -74,7 +74,7 @@ GitHub release. See `.claude/skills/release/`.
 
 `install.sh` (macOS, Linux) and `install.ps1` (Windows PowerShell 5.1 and later) are served
 straight from `main`, so a change goes live when it's merged. They run `npm install -g coderemote`
-with the user's Node.js 20+, or else download Node.js into `~/.coderemote/runtime/node` and
+with the user's Node.js 22+, or else download Node.js into `~/.coderemote/runtime/node` and
 install coderemote there; `coderemote update` recognises that install (`src/update.js`). The CI
 workflow installs this checkout both ways on all three systems. To try one locally without
 touching your own install:
