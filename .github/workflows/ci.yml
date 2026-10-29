@@ -1,0 +1,116 @@
+# Runs the tests on macOS, Linux and Windows, and installs the CLI the ways users do: install.sh
+# and install.ps1, both with the Node.js on the machine (npm install -g) and with the private one
+# they download when there is none, and the Homebrew formula. The package installed is this
+# checkout (`npm pack`), not npm's.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+        node: [24]
+        include:
+          - os: ubuntu-latest
+            node: 20 # the oldest supported (engines)
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - run: npm test
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck install.sh
+
+  homebrew:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Formula for this checkout, in a local tap
+        run: |
+          tgz="$PWD/$(npm pack -w coderemote --silent | tail -n 1)"
+          brew tap-new --no-git local/test
+          node packaging/homebrew/formula.mjs "file://$tgz" "$(shasum -a 256 "$tgz" | cut -d' ' -f1)" \
+            > "$(brew --repository local/test)/Formula/coderemote.rb"
+      - run: brew install local/test/coderemote
+      - run: brew test local/test/coderemote
+      - name: Terminal
+        run: |
+          prefix="$(brew --prefix local/test/coderemote)"
+          "$(brew --prefix node)/bin/node" .github/pty-smoke.cjs "$prefix/libexec/lib/node_modules/coderemote/dist/coderemote.js"
+
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+        node: [private, system]
+    runs-on: ${{ matrix.os }}
+    env:
+      CODEREMOTE_PRIVATE_NODE: ${{ matrix.node == 'private' && '1' || '' }}
+      CODEREMOTE_NO_MODIFY_PATH: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Pack this checkout
+        shell: bash
+        run: echo "CODEREMOTE_PACKAGE=$PWD/$(npm pack -w coderemote --silent | tail -n 1)" >> "$GITHUB_ENV"
+
+      - name: install.sh
+        if: runner.os != 'Windows'
+        run: |
+          sh install.sh
+          if [ "${{ matrix.node }}" = private ]; then
+            cli="$HOME/.coderemote/runtime/bin/coderemote"
+            dist="$HOME/.coderemote/runtime/node/lib/node_modules/coderemote/dist/coderemote.js"
+            node="$HOME/.coderemote/runtime/bin/node"
+          else
+            cli="$(npm prefix -g)/bin/coderemote"
+            dist="$(npm root -g)/coderemote/dist/coderemote.js"
+            node=node
+          fi
+          "$cli" --version
+          "$node" .github/pty-smoke.cjs "$dist"
+
+      - name: install.ps1 (Windows PowerShell 5.1, piped into iex)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Get-Content install.ps1 -Raw | Invoke-Expression
+          if ('${{ matrix.node }}' -eq 'private') {
+            $runtime = Join-Path $HOME '.coderemote\runtime'
+            $cli = Join-Path $runtime 'bin\coderemote.cmd'
+            $dist = Join-Path $runtime 'node\node_modules\coderemote\dist\coderemote.js'
+            $node = Join-Path $runtime 'bin\node.exe'
+          } else {
+            $cli = Join-Path (npm.cmd prefix -g) 'coderemote.cmd'
+            $dist = Join-Path (npm.cmd root -g) 'coderemote\dist\coderemote.js'
+            $node = 'node'
+          }
+          & $cli --version
+          if ($LASTEXITCODE) { exit 1 }
+          & $node .github/pty-smoke.cjs $dist
+          if ($LASTEXITCODE) { exit 1 }

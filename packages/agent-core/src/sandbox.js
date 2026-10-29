@@ -16,7 +16,9 @@ export class HttpError extends Error {
 export class Sandbox {
 	constructor(root) {
 		this.root = path.resolve(root);
-		this.realRoot = fsSync.realpathSync(this.root);
+		// The native realpath, like fs.promises.realpath below: on Windows the JS one keeps 8.3
+		// short names (C:\Users\JOHNSM~1), so the two would never agree.
+		this.realRoot = fsSync.realpathSync.native(this.root);
 	}
 
 	#containsReal(p) {

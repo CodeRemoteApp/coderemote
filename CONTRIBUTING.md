@@ -61,11 +61,28 @@ git tag v1.2.0-beta.1 && git push origin v1.2.0-beta.1   # prerelease ("next")
 ```
 
 `.github/workflows/publish-npm.yml` runs the tests and publishes with npm Trusted Publishing.
+For a stable release it then writes the Homebrew formula (`packaging/homebrew/formula.mjs`) for
+the published tarball into [CodeRemoteApp/homebrew-tap](https://github.com/CodeRemoteApp/homebrew-tap),
+using the `HOMEBREW_TAP_TOKEN` secret. CI installs a formula built from the checkout on macOS.
 
 In Claude Code, `/release` does all of it: picks the next patch version (or the one you pass,
 `/release v1.2.0`, `/release v1.2.0-beta.1`, `/release beta`), checks that `main` is clean and
 pushed and that tests pass, pushes the tag and creates the
 GitHub release. See `.claude/skills/release/`.
+
+## Install scripts
+
+`install.sh` (macOS, Linux) and `install.ps1` (Windows PowerShell 5.1 and later) are served
+straight from `main`, so a change goes live when it's merged. They run `npm install -g coderemote`
+with the user's Node.js 20+, or else download Node.js into `~/.coderemote/runtime/node` and
+install coderemote there; `coderemote update` recognises that install (`src/update.js`). The CI
+workflow installs this checkout both ways on all three systems. To try one locally without
+touching your own install:
+
+```sh
+CODEREMOTE_PACKAGE="$PWD/$(npm pack -w coderemote --silent | tail -n 1)" \
+CODEREMOTE_RUNTIME_DIR=/tmp/cr/runtime CODEREMOTE_PRIVATE_NODE=1 CODEREMOTE_NO_MODIFY_PATH=1 sh install.sh
+```
 
 ## Changing the protocol
 

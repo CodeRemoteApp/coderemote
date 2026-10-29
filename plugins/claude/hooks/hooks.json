@@ -6,7 +6,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.mjs"
+            ],
             "timeout": 10
           }
         ]
@@ -17,7 +20,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.mjs"
+            ],
             "timeout": 10
           }
         ]
@@ -28,7 +34,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.mjs"
+            ],
             "timeout": 10
           }
         ]
@@ -39,7 +48,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.mjs"
+            ],
             "timeout": 10
           }
         ]
@@ -50,7 +62,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.mjs"
+            ],
             "timeout": 5
           }
         ]
@@ -61,7 +76,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.mjs"
+            ],
             "timeout": 3600
           }
         ]
@@ -72,7 +90,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.mjs"
+            ],
             "timeout": 10,
             "async": true
           }
@@ -84,7 +105,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.mjs"
+            ],
             "timeout": 10,
             "async": true
           }
@@ -96,7 +120,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.mjs"
+            ],
             "timeout": 10,
             "async": true
           }
@@ -108,7 +135,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.mjs"
+            ],
             "timeout": 10,
             "async": true
           }
@@ -121,7 +151,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -x \"$CODEREMOTE_HOOK_BIN\" ]; then \"$CODEREMOTE_HOOK_BIN\" hook; elif command -v coderemote >/dev/null 2>&1; then coderemote hook; fi; true",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.mjs"
+            ],
             "timeout": 10,
             "async": true
           }

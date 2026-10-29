@@ -6,6 +6,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { HOOK_SECRET_HEADER } from '@vsremote/protocol';
 import { AgentHub, createAgentServer } from '../src/index.js';
+import { isWindows } from '../src/platform.js';
 
 const token = 'test-token';
 const hookSecret = 'hook-secret';
@@ -16,15 +17,26 @@ let fakeClaude;
 let server;
 let hub;
 let baseUrl;
+// Quotes can't be in a Windows file name; cmd.exe's metacharacters can.
+const PROJECT = isWindows ? "it's a (project) & 100% more" : `it's a "project"`;
 
 before(async () => {
 	tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'vsremote-launch-'));
 	root = path.join(tmp, 'share');
 	uploads = path.join(tmp, 'uploads');
-	await fs.mkdir(path.join(root, `it's a "project"`), { recursive: true });
+	await fs.mkdir(path.join(root, PROJECT), { recursive: true });
 	// Records where and how it was started, then stays up like Claude Code would.
 	fakeClaude = path.join(tmp, 'fake claude');
-	await fs.writeFile(fakeClaude, `#!/bin/sh\n{ pwd; echo "classic=$CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"; for a in "$@"; do echo "$a"; done; } > "${tmp}/launched-$$"\nexec sleep 30\n`, { mode: 0o755 });
+	if (isWindows) {
+		// A batch file, like npm's claude.cmd, in front of a script doing the same.
+		const script = path.join(tmp, 'fake-claude.mjs');
+		const record = `[process.cwd(), 'classic=' + (process.env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN ?? ''), ...process.argv.slice(2)].join('\\n') + '\\n'`;
+		await fs.writeFile(script, `import fs from 'node:fs';\nfs.writeFileSync(${JSON.stringify(tmp)} + '/launched-' + process.pid, ${record});\nsetTimeout(() => {}, 30_000);\n`);
+		fakeClaude += '.cmd';
+		await fs.writeFile(fakeClaude, `@"${process.execPath}" "${script}" %*\r\n`);
+	} else {
+		await fs.writeFile(fakeClaude, `#!/bin/sh\n{ pwd; echo "classic=$CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"; for a in "$@"; do echo "$a"; done; } > "${tmp}/launched-$$"\nexec sleep 30\n`, { mode: 0o755 });
+	}
 	hub = new AgentHub({ startTimeout: 300, transcript: async () => [] });
 	server = createAgentServer({ token, root, hookSecret, uploadsDir: uploads, claudeCommand: fakeClaude, pluginInstalled: async () => true, agents: hub });
 	await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -32,7 +44,7 @@ before(async () => {
 });
 
 after(async () => {
-	server.killAllSessions();
+	await server.killAllSessions();
 	server.close();
 	await fs.rm(tmp, { recursive: true, force: true });
 });
@@ -74,7 +86,7 @@ const until = async (check) => {
 };
 
 test('starts Claude Code in a folder of the share, quoted safely, with its own session id', async () => {
-	const dir = path.join(root, `it's a "project"`);
+	const dir = path.join(root, PROJECT);
 	const { status, body } = await launch({ cwd: dir, model: 'sonnet', permissionMode: 'acceptEdits' });
 	assert.equal(status, 200);
 	const [cwd, classic, ...args] = await launchedArgs();
@@ -143,7 +155,7 @@ test('a session that never reports ends with an error, and ends with its termina
 	await fetch(`${url}/api/term?id=${second.terminal}`, { method: 'DELETE', headers: auth });
 	assert.ok(await until(() => patient.session(second.session.id).state === 'ended'));
 	assert.match(patient.session(second.session.id).error, /exited before it started/);
-	other.killAllSessions();
+	await other.killAllSessions();
 	other.close();
 });
 
@@ -219,7 +231,7 @@ test('starts Codex with its own flags; its first event replaces the placeholder'
 	assert.equal((await key({ action: 'command', command: '/clear' })).status, 400);
 	assert.equal((await key({ action: 'interrupt' })).status, 200);
 	assert.equal((await fetch(`${url}/api/agents/sessions`, { method: 'POST', headers: auth, body: JSON.stringify({ agent: 'gemini' }) })).status, 400);
-	codex.killAllSessions();
+	await codex.killAllSessions();
 	codex.close();
 });
 

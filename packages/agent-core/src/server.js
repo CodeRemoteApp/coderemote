@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { execFile } from 'node:child_process';
 import {
 	AGENTS_WS_PATH,
 	AgentsClientMessage,
@@ -25,8 +24,9 @@ import { LANDING_HTML } from './landing.js';
 import { killListener, listPorts } from './ports.js';
 import { PushSender, userActiveHere } from './push.js';
 import { detail, InspectingProxy } from './inspector.js';
+import { capture, commandExists, interactiveShell, isWindows } from './platform.js';
 import { HttpError, Sandbox } from './sandbox.js';
-import { SessionManager, shellQuote } from './sessions.js';
+import { SessionManager } from './sessions.js';
 import { UploadStore } from './uploads.js';
 
 function kindOf(stat) {
@@ -192,17 +192,6 @@ export function createAgentServer({
 		return Promise.all(ids.map((a) => uploadPath(a)));
 	}
 
-	/** Runs `script` in a login shell, like sessions are started; null when it fails. */
-	function loginShell(script) {
-		const shell = process.env.SHELL || '/bin/sh';
-		return new Promise((resolve) => {
-			// Plugin listings run long (Codex's lists every marketplace's plugins without a filter).
-			execFile(shell, ['-l', '-c', script], { timeout: 20_000, maxBuffer: 16 * 1024 * 1024 }, (err, out) =>
-				resolve(err ? null : out),
-			);
-		});
-	}
-
 	/**
 	 * How to start each coding agent, and how to tell its plugin is installed. Claude Code takes the
 	 * session id up front; Codex reports its own, which replaces the placeholder.
@@ -221,7 +210,7 @@ export function createAgentServer({
 			// terminal's queries; the classic renderer doesn't need them.
 			env: { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1' },
 			async plugin() {
-				const list = JSON.parse((await loginShell(`${shellQuote(claudeCommand)} plugin list --json`)) ?? '[]');
+				const list = JSON.parse((await capture([claudeCommand, 'plugin', 'list', '--json'])) ?? '[]');
 				return list.some((p) => p.id === 'coderemote@coderemote' && p.enabled !== false);
 			},
 			missingPlugin: 'Claude Code needs the Code Remote plugin first: run `coderemote setup claude` once on the computer.',
@@ -239,16 +228,17 @@ export function createAgentServer({
 			],
 			env: {},
 			async plugin() {
-				const list = JSON.parse((await loginShell(`${shellQuote(codexCommand)} plugin list --marketplace coderemote --json`)) ?? '{}');
+				// Plugin listings run long (Codex's lists every marketplace's plugins without a filter).
+				const list = JSON.parse((await capture([codexCommand, 'plugin', 'list', '--marketplace', 'coderemote', '--json'])) ?? '{}');
 				return (list.installed ?? []).some((p) => p.pluginId === 'coderemote@coderemote' && p.enabled !== false);
 			},
 			missingPlugin: 'Codex needs the Code Remote plugin first: run `coderemote setup codex` once on the computer, then trust its hooks with `/hooks` in Codex.',
 		},
 	};
 
-	/** Whether that agent's command runs here, looked up through a login shell like the session will be. */
-	async function installed(agent) {
-		return Boolean((await loginShell(`command -v ${shellQuote(launchers[agent].command)}`))?.trim());
+	/** Whether that agent's command runs here, looked up the way the session will start it. */
+	function installed(agent) {
+		return commandExists(launchers[agent].command);
 	}
 
 	// Whether each agent has the plugin; asking takes a second or two, so the answer is kept a
@@ -365,7 +355,8 @@ export function createAgentServer({
 			platform: os.platform(),
 			root: sandbox.root,
 			user: os.userInfo().username,
-			shell: process.env.SHELL || null,
+			// On Windows, terminals run PowerShell whatever $SHELL (Git Bash sets one) says.
+			shell: isWindows ? interactiveShell().file : process.env.SHELL || null,
 		}),
 
 		[Routes.fsList]: async (url) => {

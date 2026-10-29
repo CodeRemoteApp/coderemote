@@ -8,6 +8,10 @@
 # Authenticates with npm Trusted Publishing (OIDC), so no npm token is stored in GitHub.
 # One-time setup on npmjs.com: package coderemote → Settings → Trusted Publisher → GitHub Actions,
 # repository CodeRemoteApp/coderemote, workflow file publish-npm.yml, environment npm.
+#
+# A stable release then updates the Homebrew formula in CodeRemoteApp/homebrew-tap. That needs a
+# HOMEBREW_TAP_TOKEN secret: a fine-grained token with Contents read and write on that repository.
+# Without it the formula is left alone, with a warning.
 name: Publish to npm
 
 on:
@@ -25,6 +29,9 @@ jobs:
     permissions:
       contents: read
       id-token: write # OIDC token for npm Trusted Publishing and provenance
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      dist-tag: ${{ steps.version.outputs.dist-tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -39,6 +46,7 @@ jobs:
       - run: npm ci
 
       - name: Version from the tag
+        id: version
         run: |
           version="${GITHUB_REF_NAME#v}"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
@@ -48,6 +56,8 @@ jobs:
           npm version "$version" -w coderemote --no-git-tag-version --allow-same-version
           # Prereleases go to the "next" dist-tag so `npm install coderemote` keeps the stable one.
           if [[ "$version" == *-* ]]; then echo "DIST_TAG=next" >> "$GITHUB_ENV"; else echo "DIST_TAG=latest" >> "$GITHUB_ENV"; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then echo "dist-tag=next" >> "$GITHUB_OUTPUT"; else echo "dist-tag=latest" >> "$GITHUB_OUTPUT"; fi
 
       - name: Agent tests
         run: npm test
@@ -63,3 +73,45 @@ jobs:
           fi
         env:
           GH_TOKEN: ${{ github.token }}
+
+  homebrew:
+    # Stable releases only: the formula follows npm's "latest".
+    needs: publish
+    if: needs.publish.outputs.dist-tag == 'latest'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.publish.outputs.version }}
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tarball from npm
+        run: |
+          # npm can take a little while to serve a version it has just accepted.
+          url=
+          for _ in $(seq 30); do
+            url="$(npm view "coderemote@$VERSION" dist.tarball 2>/dev/null)" && [ -n "$url" ] && break
+            sleep 10
+          done
+          if [ -z "$url" ]; then echo "::error::coderemote@$VERSION isn't on npm yet"; exit 1; fi
+          curl -fsSL --retry 3 -o coderemote.tgz "$url"
+          node packaging/homebrew/formula.mjs "$url" "$(sha256sum coderemote.tgz | cut -d' ' -f1)" > coderemote.rb
+          cat coderemote.rb
+
+      - name: Push to the tap
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning::No HOMEBREW_TAP_TOKEN secret, so the Homebrew formula still has the previous version"
+            exit 0
+          fi
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/CodeRemoteApp/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp coderemote.rb tap/Formula/coderemote.rb
+          cd tap
+          git add Formula/coderemote.rb
+          if git diff --cached --quiet; then exit 0; fi
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "coderemote $VERSION"
+          git push

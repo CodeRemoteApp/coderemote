@@ -10,6 +10,6 @@
   ],
   "scripts": {
     "agent": "node apps/agent/bin/coderemote.js",
-    "test": "npm test --workspaces --if-present && node --test 'apps/push-relay/test/*.test.js'"
+    "test": "npm test --workspaces --if-present && node --test \"apps/push-relay/test/*.test.js\""
   }
 }

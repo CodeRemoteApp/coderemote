@@ -66,6 +66,16 @@ export async function availableUpdate({ current, dir, fetch, now = Date.now() })
  */
 export function installCommand(installedAt) {
 	const p = installedAt.split(path.sep).join('/');
+	// The private Node.js of install.sh / install.ps1 (~/.coderemote/runtime/node), which is its own
+	// npm prefix: lib/node_modules on macOS and Linux, node_modules on Windows. Its npm runs through
+	// its node, as it isn't on PATH.
+	const runtime = p.match(/^(.*\/runtime\/node)\/(lib\/)?node_modules\/coderemote\//);
+	if (runtime) {
+		const prefix = installedAt.slice(0, runtime[1].length);
+		const [node, modules] = runtime[2] ? [path.join(prefix, 'bin', 'node'), path.join(prefix, 'lib', 'node_modules')] : [path.join(prefix, 'node.exe'), path.join(prefix, 'node_modules')];
+		return [node, [path.join(modules, 'npm', 'bin', 'npm-cli.js'), 'install', '-g', '--prefix', prefix, 'coderemote@latest']];
+	}
+	if (p.includes('/Cellar/coderemote/')) return ['brew', ['upgrade', 'coderemote']];
 	if (p.includes('/pnpm/') || p.includes('/.pnpm/')) return ['pnpm', ['add', '-g', 'coderemote@latest']];
 	if (p.includes('/.bun/')) return ['bun', ['add', '-g', 'coderemote@latest']];
 	if (p.includes('/.yarn/') || p.includes('/yarn/global/')) return ['yarn', ['global', 'add', 'coderemote@latest']];

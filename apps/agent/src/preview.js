@@ -4,8 +4,11 @@
 // own tunnel means a restart only blips other previews, never the main tunnel's terminals.
 // The preview tunnel is private; the app opens it with a connect token the agent hands out.
 import { spawn } from 'node:child_process';
+import { PREVIEW_LABEL, TUNNEL_LIMIT, makeRoom } from './tunnels.js';
 
 const HOST_READY_TIMEOUT_MS = 30_000;
+// Shutting down waits this long for the tunnel's deletion; a later run deletes it otherwise.
+const CLOSE_TIMEOUT_MS = 5_000;
 // Reuse a connect token until it has less than this left (they last 24 hours).
 const TOKEN_REUSE_MS = 12 * 3_600_000;
 
@@ -87,8 +90,14 @@ export class PreviewTunnel {
 		return this.#serial(async () => {
 			const url = this.#host?.urls.get(port);
 			if (url) return { port, url };
-			const id = await this.#ensureTunnel();
-			const res = await this.devtunnel('port', 'create', id, '-p', String(port), '--protocol', 'http');
+			let id = await this.#ensureTunnel();
+			let res = await this.devtunnel('port', 'create', id, '-p', String(port), '--protocol', 'http');
+			if (!res.ok && /not found/i.test(res.out)) {
+				// Deleted under us: another agent made room on a full account while nothing hosted it.
+				this.#forgetTunnel();
+				id = await this.#ensureTunnel();
+				res = await this.devtunnel('port', 'create', id, '-p', String(port), '--protocol', 'http');
+			}
 			if (!res.ok && !/already exists|conflict/i.test(res.out)) throw new Error(`devtunnel port create failed: ${res.out.trim()}`);
 			this.#ports.add(port);
 			try {
@@ -128,16 +137,50 @@ export class PreviewTunnel {
 		this.#stopHost();
 	}
 
+	/**
+	 * Stops hosting and deletes the tunnel (or the last run's), which nothing reuses: each run
+	 * starts a new one. If that fails or takes too long, the next run deletes it.
+	 */
+	async close() {
+		this.#stopHost();
+		const id = this.#tunnelId ?? this.leftover;
+		if (!id) return;
+		const res = await Promise.race([
+			this.devtunnel('delete', id, '-f'),
+			new Promise((resolve) => setTimeout(resolve, CLOSE_TIMEOUT_MS, { ok: false, out: 'timed out' })),
+		]);
+		if (res.ok || /not found/i.test(res.out)) this.remember(null);
+	}
+
+	#forgetTunnel() {
+		this.#stopHost();
+		this.#tunnelId = null;
+		this.#token = null;
+		this.#ports.clear();
+		this.#shares.clear();
+	}
+
 	async #ensureTunnel() {
 		if (this.#tunnelId) return this.#tunnelId;
 		// Start clean: ports left on an old preview tunnel would be forwarded again.
 		if (this.leftover) await this.devtunnel('delete', this.leftover, '-f');
 		// Nothing renews it while the agent runs, so it gets as long as the main tunnel does; the
 		// next run deletes it anyway, so a long expiry leaves nothing behind.
-		const created = await this.devtunnel(
-			'create', '--expiration', '30d', '-d', this.description, '--labels', 'coderemote-preview', '--json',
-		);
-		if (!created.ok) throw new Error(`devtunnel create failed: ${created.out.trim()}`);
+		const create = () =>
+			this.devtunnel('create', '--expiration', '30d', '-d', this.description, '--labels', PREVIEW_LABEL, '--json');
+		let created = await create();
+		if (!created.ok) {
+			const room = await makeRoom(this.devtunnel);
+			if (room?.freed) created = await create();
+			// Shown on the phone, which can't run devtunnel: say what to do on the computer.
+			if (room?.full) {
+				throw new Error(
+					`Your Dev Tunnels account already has ${TUNNEL_LIMIT} tunnels, the most it may keep. ` +
+						'Delete ones nothing uses on the computer (coderemote tunnels, coderemote tunnels delete <id>), then try again.',
+				);
+			}
+			if (!created.ok) throw new Error(`devtunnel create failed: ${created.out.trim()}`);
+		}
 		const id = JSON.parse(created.out.slice(created.out.indexOf('{'))).tunnel?.tunnelId;
 		if (!id) throw new Error(`could not parse tunnel id from:\n${created.out}`);
 		this.#tunnelId = id;

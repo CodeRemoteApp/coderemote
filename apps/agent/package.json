@@ -43,17 +43,13 @@
   "engines": {
     "node": ">=20"
   },
-  "os": [
-    "darwin",
-    "linux"
-  ],
   "scripts": {
     "build": "node scripts/build.js",
     "prepare": "node scripts/build.js",
-    "prepack": "node scripts/build.js && cp ../../LICENSE LICENSE",
-    "postpack": "rm -f LICENSE",
+    "prepack": "node scripts/build.js && node -e \"require('fs').copyFileSync('../../LICENSE', 'LICENSE')\"",
+    "postpack": "node -e \"require('fs').rmSync('LICENSE', { force: true })\"",
     "postinstall": "node scripts/fix-node-pty.js",
-    "test": "node --test 'test/*.test.js'"
+    "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {
     "node-pty": "^1.1.0",

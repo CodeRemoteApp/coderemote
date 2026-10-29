@@ -7,6 +7,7 @@ import { after, before, test } from 'node:test';
 import { AGENTS_WS_PATH, HOOK_SECRET_HEADER, TERMINAL_WS_PATH } from '@vsremote/protocol';
 import WebSocket from 'ws';
 import { createAgentServer } from '../src/index.js';
+import { isWindows } from '../src/platform.js';
 
 const token = 'test-token';
 const hookSecret = 'hook-secret';
@@ -22,7 +23,7 @@ before(async () => {
 });
 
 after(async () => {
-	server.killAllSessions();
+	await server.killAllSessions();
 	server.close();
 	await fs.rm(root, { recursive: true, force: true });
 });
@@ -146,7 +147,9 @@ test('terminals tell coding agents where they run, and link sessions to them', a
 		else if (JSON.parse(data.toString()).type === 'session') id = JSON.parse(data.toString()).id;
 	});
 	await new Promise((r) => term.once('open', r));
-	term.send(JSON.stringify({ type: 'input', data: 'echo "bin=$CODEREMOTE_HOOK_BIN port=$CODEREMOTE_AGENT_PORT term=$CODEREMOTE_TERM_ID"\r' }));
+	// Terminals run PowerShell on Windows, which reads the environment as $env:NAME.
+	const env = isWindows ? '$env:' : '$';
+	term.send(JSON.stringify({ type: 'input', data: `echo "bin=${env}CODEREMOTE_HOOK_BIN port=${env}CODEREMOTE_AGENT_PORT term=${env}CODEREMOTE_TERM_ID"\r` }));
 	const deadline = Date.now() + 5000;
 	while (!/port=\d+ term=[0-9a-f-]{36}/.test(output) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
 	const [, port, termId] = output.match(/port=(\d+) term=([0-9a-f-]{36})/);

@@ -43,7 +43,21 @@ test('asks the registry at most once a day, and stays quiet offline', async () =
 
 test('updates with the package manager that installed it', () => {
 	assert.deepEqual(installCommand('/opt/homebrew/lib/node_modules/coderemote/dist/coderemote.js'), ['npm', ['install', '-g', 'coderemote@latest']]);
+	assert.deepEqual(installCommand('/opt/homebrew/Cellar/coderemote/1.2.0/libexec/lib/node_modules/coderemote/dist/coderemote.js'), ['brew', ['upgrade', 'coderemote']]);
 	assert.deepEqual(installCommand('/Users/me/Library/pnpm/global/5/node_modules/coderemote/dist/coderemote.js')[0], 'pnpm');
 	assert.deepEqual(installCommand('/Users/me/.bun/install/global/node_modules/coderemote/dist/coderemote.js')[0], 'bun');
 	assert.deepEqual(installCommand('/Users/me/.config/yarn/global/node_modules/coderemote/dist/coderemote.js')[0], 'yarn');
+});
+
+test('updates the private Node.js install of install.sh and install.ps1 with its own npm', () => {
+	const prefix = path.join(os.homedir(), '.coderemote', 'runtime', 'node');
+	const update = (npmCli) => [npmCli, 'install', '-g', '--prefix', prefix, 'coderemote@latest'];
+	assert.deepEqual(installCommand(path.join(prefix, 'lib', 'node_modules', 'coderemote', 'dist', 'coderemote.js')), [
+		path.join(prefix, 'bin', 'node'),
+		update(path.join(prefix, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')),
+	]);
+	assert.deepEqual(installCommand(path.join(prefix, 'node_modules', 'coderemote', 'dist', 'coderemote.js')), [
+		path.join(prefix, 'node.exe'),
+		update(path.join(prefix, 'node_modules', 'npm', 'bin', 'npm-cli.js')),
+	]);
 });

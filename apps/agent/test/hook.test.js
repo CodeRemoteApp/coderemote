@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
-import { createAgentServer } from '@vsremote/agent-core';
+import { fileURLToPath } from 'node:url';
+import { createAgentServer, isWindows } from '@vsremote/agent-core';
 import { pairingUrl } from '@vsremote/protocol';
 import { ensureHookSecret, hookTarget, readHookSecret, runHook } from '../src/hook.js';
 
@@ -31,7 +32,8 @@ const event = (fields) => JSON.stringify({ session_id: 's', transcript_path: '/n
 
 test('the hook secret is private to the user and stays off the pairing link', () => {
 	const config = path.join(dir, 'config');
-	assert.equal(fs.statSync(path.join(config, 'hook-secret')).mode & 0o777, 0o600);
+	// Windows has no file modes; the user's profile folder is private through its ACL.
+	if (!isWindows) assert.equal(fs.statSync(path.join(config, 'hook-secret')).mode & 0o777, 0o600);
 	assert.equal(ensureHookSecret(config), secret);
 	assert.equal(readHookSecret(config), secret);
 	assert.equal(readHookSecret(path.join(dir, 'missing')), null);
@@ -76,7 +78,8 @@ test('fails open: no agent, a folder nobody shares, a wrong secret, bad input', 
 	assert.equal(await runHook({ input: 'not json', agents: agents(), secret, env: {} }), '');
 });
 
-test('the hook launcher runs this CLI with this Node, whatever the PATH', async () => {
+// The launcher is a /bin/sh script, for Codex's plugin hooks on macOS and Linux.
+test('the hook launcher runs this CLI with this Node, whatever the PATH', { skip: isWindows }, async () => {
 	const { writeHookLauncher } = await import('../src/hook.js');
 	const { execFileSync } = await import('node:child_process');
 	const script = path.join(dir, "it's cli.js");
@@ -84,5 +87,17 @@ test('the hook launcher runs this CLI with this Node, whatever the PATH', async 
 	const launcher = writeHookLauncher(path.join(dir, 'launch'), { script });
 	assert.equal(fs.statSync(launcher).mode & 0o777, 0o755);
 	const out = execFileSync(launcher, ['--agent', 'codex'], { env: { PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
+	assert.equal(out.trim(), 'hook --agent codex');
+});
+
+test("the Codex plugin's Windows hook finds this CLI through the launcher's record", async () => {
+	const { writeHookLauncher } = await import('../src/hook.js');
+	const { execFileSync } = await import('node:child_process');
+	const home = path.join(dir, 'codex-home');
+	const script = path.join(dir, "it's cli.cjs");
+	fs.writeFileSync(script, 'console.log(process.argv.slice(2).join(" "))');
+	writeHookLauncher(path.join(home, '.coderemote'), { script });
+	const hook = new URL('../../../plugins/codex/hooks/run-hook.mjs', import.meta.url);
+	const out = execFileSync(process.execPath, [fileURLToPath(hook)], { env: { ...process.env, HOME: home, USERPROFILE: home }, input: '{}', encoding: 'utf8' });
 	assert.equal(out.trim(), 'hook --agent codex');
 });

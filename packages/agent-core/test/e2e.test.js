@@ -10,6 +10,7 @@ import { after, before, test } from 'node:test';
 import { TERMINAL_WS_PATH } from '@vsremote/protocol';
 import WebSocket from 'ws';
 import { createAgentServer } from '../src/index.js';
+import { isWindows } from '../src/platform.js';
 
 let baseUrl = process.env.VSREMOTE_URL;
 let token = process.env.VSREMOTE_TOKEN;
@@ -33,6 +34,8 @@ before(async () => {
 });
 
 after(async () => {
+	// Windows won't delete a folder a terminal still runs in.
+	await server?.killAllSessions();
 	await api('DELETE', '/api/fs', { query: { path: workdir } }).catch(() => {});
 	if (tmpRoot) await fs.rm(tmpRoot, { recursive: true, force: true });
 	server?.close();
@@ -154,7 +157,8 @@ test('nothing outside the shared folder is reachable', async () => {
 
 test('symlinks cannot be used to escape', async () => {
 	const link = path.join(workdir, 'escape');
-	await fs.symlink(os.tmpdir(), link);
+	// A junction on Windows: the link anyone can make there without being an administrator.
+	await fs.symlink(os.tmpdir(), link, 'junction');
 	const listing = await api('GET', '/api/fs/list', { query: { path: workdir } });
 	assert.ok(listing.entries.some((e) => e.name === 'escape' && e.type === 'symlink'), 'the link itself is listed');
 	const forbidden = { status: 403 };
@@ -163,13 +167,17 @@ test('symlinks cannot be used to escape', async () => {
 	await assert.rejects(api('POST', '/api/fs/mkdir', { query: { path: `${link}/a/b` } }), forbidden);
 });
 
+// Terminals run PowerShell on Windows.
+const SIZE = isWindows ? 'echo "$([Console]::WindowHeight) $([Console]::WindowWidth)"' : 'stty size';
+
 test('terminal is a real PTY and survives reconnect', async () => {
 	const t1 = openTerminal({ cols: 100, rows: 30, cwd: workdir });
 	const id = await t1.session;
-	t1.ws.send(JSON.stringify({ type: 'input', data: 'tty; echo "MARK=$((40+2))"; stty size\r' }));
+	const mark = isWindows ? 'echo "MARK=$(40+2)"' : 'tty; echo "MARK=$((40+2))"';
+	t1.ws.send(JSON.stringify({ type: 'input', data: `${mark}; ${SIZE}\r` }));
 	await t1.waitFor(/MARK=42/);
 	await t1.waitFor(/30 100/);
-	assert.match(await t1.waitFor(/\/dev\/(ttys|pts)/), /\/dev\/(ttys|pts)/);
+	if (!isWindows) assert.match(await t1.waitFor(/\/dev\/(ttys|pts)/), /\/dev\/(ttys|pts)/);
 	t1.ws.close();
 
 	// Reattach: scrollback is replayed, then the session keeps working.
@@ -177,7 +185,7 @@ test('terminal is a real PTY and survives reconnect', async () => {
 	assert.equal(await t2.session, id);
 	await t2.waitFor(/MARK=42/);
 	t2.ws.send(JSON.stringify({ type: 'resize', cols: 50, rows: 10 }));
-	t2.ws.send(Buffer.from('stty size\r'), { binary: true });
+	t2.ws.send(Buffer.from(`${SIZE}\r`), { binary: true });
 	await t2.waitFor(/10 50/);
 
 	const { sessions } = await api('GET', '/api/term');
@@ -191,7 +199,8 @@ test('terminal is a real PTY and survives reconnect', async () => {
 test('new terminals start in the shared folder and refuse a cwd outside it', async () => {
 	const t = openTerminal();
 	const id = await t.session;
-	t.ws.send(JSON.stringify({ type: 'input', data: 'echo "CWD=$(pwd -P)"\r' }));
+	const pwd = isWindows ? 'echo "CWD=$((Get-Location).ProviderPath)"' : 'echo "CWD=$(pwd -P)"';
+	t.ws.send(JSON.stringify({ type: 'input', data: `${pwd}\r` }));
 	const realRoot = await fs.realpath(root);
 	await t.waitFor(new RegExp(`CWD=${realRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s`));
 	await api('DELETE', '/api/term', { query: { id } });
@@ -200,7 +209,8 @@ test('new terminals start in the shared folder and refuse a cwd outside it', asy
 });
 
 test('names with reserved URL characters round-trip', async () => {
-	const dir = path.join(workdir, 'Commit+ a&b=c#d?e%f');
+	// Windows file names can't hold a `?`.
+	const dir = path.join(workdir, isWindows ? 'Commit+ a&b=c#d%f' : 'Commit+ a&b=c#d?e%f');
 	await api('POST', '/api/fs/mkdir', { query: { path: dir } });
 	await api('PUT', '/api/fs/write', { query: { path: path.join(dir, 'x+y.txt') }, body: 'ok' });
 	const listing = await api('GET', '/api/fs/list', { query: { path: dir } });
@@ -243,6 +253,8 @@ test('git: finds repos, stages, commits and reads history', async () => {
 		gitIn(repo, 'init', '-q', '-b', 'main');
 		gitIn(repo, 'config', 'user.email', 'test@example.com');
 		gitIn(repo, 'config', 'user.name', 'Test');
+		// Git for Windows turns this on by default, which would rewrite the line endings checked below.
+		gitIn(repo, 'config', 'core.autocrlf', 'false');
 	}
 	await fs.mkdir(path.join(parent, 'node_modules', 'dep', '.git'), { recursive: true });
 

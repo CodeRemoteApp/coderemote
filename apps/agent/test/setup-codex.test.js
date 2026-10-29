@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-const bin = new URL('../bin/coderemote.js', import.meta.url).pathname;
+const bin = fileURLToPath(new URL('../bin/coderemote.js', import.meta.url));
 
 /** Runs `coderemote setup codex …` against a stand-in `codex` that logs its arguments. */
 function setup(args, { hooks = 'hooks                                stable             true', marketplaces = '' } = {}) {
@@ -16,20 +17,26 @@ function setup(args, { hooks = 'hooks                                stable     
 	const userHooks = '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"herdr session"}]}]}}';
 	fs.writeFileSync(path.join(home, '.codex', 'hooks.json'), userHooks);
 	const log = path.join(home, 'calls');
+	const script = path.join(home, 'fake-codex.mjs');
+	const replies = {
+		'--version': 'codex-cli 0.165.0\n',
+		'features list': `apps  stable  true\n${hooks}\n`,
+		'plugin marketplace list': `MARKETPLACE  ROOT\n${marketplaces}`,
+	};
 	fs.writeFileSync(
-		path.join(fakeBin, 'codex'),
-		`#!/bin/sh
-echo "$*" >> "${log}"
-case "$*" in
-  --version) echo "codex-cli 0.165.0" ;;
-  "features list") printf '%s\\n' "apps  stable  true" "${hooks}" ;;
-  "plugin marketplace list") printf 'MARKETPLACE  ROOT\\n${marketplaces}' ;;
-esac
+		script,
+		`import fs from 'node:fs';
+const args = process.argv.slice(2).join(' ');
+fs.appendFileSync(${JSON.stringify(log)}, args + '\\n');
+process.stdout.write(${JSON.stringify(replies)}[args] ?? '');
 `,
-		{ mode: 0o755 },
 	);
+	// On Windows a batch file, like npm's codex.cmd.
+	if (process.platform === 'win32') fs.writeFileSync(path.join(fakeBin, 'codex.cmd'), `@"${process.execPath}" "${script}" %*\r\n`);
+	else fs.writeFileSync(path.join(fakeBin, 'codex'), `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`, { mode: 0o755 });
 	const run = spawnSync(process.execPath, [bin, 'setup', 'codex', ...args], {
-		env: { ...process.env, HOME: home, PATH: `${fakeBin}:${process.env.PATH}` },
+		// Windows finds the home folder through USERPROFILE.
+		env: { ...process.env, HOME: home, USERPROFILE: home, PATH: `${fakeBin}${path.delimiter}${process.env.PATH}` },
 		encoding: 'utf8',
 	});
 	const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : [];
@@ -55,7 +62,7 @@ test('installs the plugin from the marketplace, leaving the user’s own hooks a
 test('turns hooks on when they are off, and refreshes a marketplace already added', () => {
 	const { status, calls } = setup(['--marketplace', '/src/coderemote'], {
 		hooks: 'hooks                                stable             false',
-		marketplaces: 'coderemote   /src/coderemote\\n',
+		marketplaces: 'coderemote   /src/coderemote\n',
 	});
 	assert.equal(status, 0);
 	assert.deepEqual(calls.slice(2), [
@@ -66,7 +73,7 @@ test('turns hooks on when they are off, and refreshes a marketplace already adde
 		'plugin add coderemote@coderemote',
 	]);
 	// Without --marketplace, the one already added is refreshed.
-	const again = setup([], { marketplaces: 'coderemote   /src/coderemote\\n' });
+	const again = setup([], { marketplaces: 'coderemote   /src/coderemote\n' });
 	assert.deepEqual(again.calls.slice(3), ['plugin marketplace upgrade coderemote', 'plugin add coderemote@coderemote']);
 });
 

@@ -28,6 +28,7 @@ export function ensureHookSecret(dir) {
 /**
  * Writes `<dir>/bin/hook`, which runs this CLI's `hook` with this Node. Codex gives plugin hooks
  * a bare environment (no CODEREMOTE_* variables, its own PATH), so its plugin finds the CLI here.
+ * Windows can't run that shell script; the plugin's Node script there reads `<dir>/bin/hook.json`.
  */
 export function writeHookLauncher(dir, { node = process.execPath, script }) {
 	const bin = path.join(dir, 'bin');
@@ -36,6 +37,7 @@ export function writeHookLauncher(dir, { node = process.execPath, script }) {
 	const file = path.join(bin, 'hook');
 	fs.writeFileSync(file, `#!/bin/sh\nexec ${quote(node)} ${quote(script)} hook "$@"\n`, { mode: 0o755 });
 	fs.chmodSync(file, 0o755);
+	fs.writeFileSync(path.join(bin, 'hook.json'), JSON.stringify({ node, script }), { mode: 0o600 });
 	return file;
 }
 
@@ -49,7 +51,8 @@ export function readHookSecret(dir) {
 
 function real(p) {
 	try {
-		return fs.realpathSync(p);
+		// Native, so both sides lose Windows 8.3 short names (C:\Users\JOHNSM~1) and match.
+		return fs.realpathSync.native(p);
 	} catch {
 		return path.resolve(p);
 	}

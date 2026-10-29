@@ -43,6 +43,19 @@ npm install -g coderemote
 cd ~/projects/my-app && coderemote up
 ```
 
+With Homebrew: `brew install coderemoteapp/tap/coderemote`.
+
+No Node.js? The install scripts use yours when there is one (20 or newer), and otherwise
+download Node.js into `~/.coderemote/runtime` for coderemote alone:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/CodeRemoteApp/coderemote/main/install.sh | sh    # macOS, Linux
+```
+
+```powershell
+irm https://raw.githubusercontent.com/CodeRemoteApp/coderemote/main/install.ps1 | iex         # Windows
+```
+
 Scan the QR code it prints with your iPhone Camera (or the **+** button in the app). Done.
 
 The first run sets itself up: it downloads Microsoft's Dev Tunnels CLI (once, verified) and
@@ -130,11 +143,13 @@ example to reuse a session token in a test.
 
 ## Requirements
 
-- **Node.js 20** or newer on **macOS** (Linux is expected to work but not yet tested)
+- **Node.js 20** or newer on **macOS** or **Windows 10/11** (Linux is expected to work but not
+  yet tested); the install scripts download it when it's missing. On Windows, terminals run
+  PowerShell (`pwsh` when installed).
 - A **GitHub or Microsoft account** to sign in to Dev Tunnels
-- The **Dev Tunnels CLI** is downloaded on first run into `~/.coderemote/bin` (the macOS build
-  must carry Microsoft's code signature). A `devtunnel` already on your `PATH` is used instead,
-  or point `CODEREMOTE_DEVTUNNEL` at one.
+- The **Dev Tunnels CLI** is downloaded on first run into `~/.coderemote/bin` (the macOS and
+  Windows builds must carry Microsoft's code signature). A `devtunnel` already on your `PATH` is
+  used instead, or point `CODEREMOTE_DEVTUNNEL` at one.
 - For `--web` only: **VS Code** with its `code` command on your `PATH` (in VS Code, run
   *Shell Command: Install 'code' command in PATH*), or point `CODEREMOTE_CODE` at one. The first
   run signs `code tunnel` in with GitHub.

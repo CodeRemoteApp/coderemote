@@ -1,8 +1,10 @@
 // Listening TCP ports of the agent's user, so a phone can see what dev servers are up and stop them.
 // lsof covers macOS and most Linux installs; Linux without it falls back to `ss` and /proc.
+// Windows asks netstat and the process list (see windowsListeners).
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
+import { isWindows } from './platform.js';
 import { HttpError } from './sandbox.js';
 
 function run(cmd, args) {
@@ -68,9 +70,10 @@ async function processTable() {
 	return table;
 }
 
+// Windows keeps a process's working directory where only a debugger reads it.
 async function workingDirs(pids) {
 	const dirs = new Map();
-	if (!pids.length) return dirs;
+	if (!pids.length || isWindows) return dirs;
 	if (os.platform() === 'linux') {
 		await Promise.all(pids.map(async (pid) => dirs.set(pid, await fs.readlink(`/proc/${pid}/cwd`).catch(() => null))));
 		return dirs;
@@ -84,16 +87,55 @@ async function workingDirs(pids) {
 	return dirs;
 }
 
+// Processes a terminal runs things in; a listener below one was started from a terminal.
+const WINDOWS_SHELLS = new Set(['cmd.exe', 'powershell.exe', 'pwsh.exe', 'bash.exe', 'wsl.exe', 'windowsterminal.exe', 'openconsole.exe']);
+
+/**
+ * Windows: listening sockets from netstat (fast, where Get-NetTCPConnection takes seconds) and
+ * the process table from CIM. netstat translates its LISTENING column, so a listener is told by
+ * its foreign address, which is port 0. Other users' processes and services show no command line
+ * to an agent that isn't elevated, which stands in for lsof's -u filter.
+ */
+async function windowsListeners() {
+	const query = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress';
+	const [v4, v6, json] = await Promise.all([
+		run('netstat', ['-ano', '-p', 'TCP']),
+		run('netstat', ['-ano', '-p', 'TCPv6']),
+		run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', query]),
+	]);
+	const table = new Map();
+	for (const p of [JSON.parse(json || '[]')].flat()) {
+		table.set(p.ProcessId, { ppid: p.ParentProcessId, name: p.Name, tty: null, command: p.CommandLine });
+	}
+	// No controlling terminals here: a process counts as started from one when a shell is above it.
+	for (const proc of table.values()) {
+		for (let p = proc.ppid, depth = 0; p && depth < 64; p = table.get(p)?.ppid, depth++) {
+			if (WINDOWS_SHELLS.has(table.get(p)?.name?.toLowerCase())) {
+				proc.tty = 'console';
+				break;
+			}
+		}
+	}
+	const sockets = [];
+	for (const line of `${v4}\n${v6}`.split(/\r?\n/)) {
+		const m = line.match(/^\s*TCP\s+(\S+)\s+(\S+)\s+\S+\s+(\d+)\s*$/);
+		const hp = m && m[2].endsWith(':0') && splitHostPort(m[1]);
+		const pid = hp && parseInt(m[3], 10);
+		if (hp && table.get(pid)?.command) sockets.push({ pid, name: table.get(pid).name, ...hp });
+	}
+	return [sockets, table];
+}
+
 // Any coderemote agent, this one or another (`coderemote up`, `node .../coderemote.js up`), so
 // clients can warn before stopping one: that cuts the phone off from the folder it shares.
-const AGENT_COMMAND = /(^|[\/\s])coderemote(\.js)?\s+up(\s|$)/;
+const AGENT_COMMAND = /(^|[\/\\\s])coderemote(\.js)?"?\s+up(\s|$)/;
 
 /**
  * @param {Map<number, string>} shells  terminal session shell pid -> session id
  * @returns {Promise<object[]>} one entry per (pid, port), sorted by port
  */
 export async function listPorts(shells = new Map()) {
-	const [sockets, table] = await Promise.all([listeningSockets(), processTable()]);
+	const [sockets, table] = isWindows ? await windowsListeners() : await Promise.all([listeningSockets(), processTable()]);
 	const byKey = new Map();
 	for (const s of sockets) {
 		const key = `${s.pid}:${s.port}`;

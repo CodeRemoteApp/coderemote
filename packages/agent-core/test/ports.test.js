@@ -9,6 +9,7 @@ import { after, before, test } from 'node:test';
 import { TERMINAL_WS_PATH } from '@vsremote/protocol';
 import WebSocket from 'ws';
 import { createAgentServer } from '../src/index.js';
+import { isWindows } from '../src/platform.js';
 
 const token = 'test-token';
 const LISTEN = "const s=require('net').createServer().listen(0,'127.0.0.1',()=>console.log('PORT='+s.address().port))";
@@ -26,7 +27,7 @@ before(async () => {
 
 after(async () => {
 	for (const c of children) c.kill('SIGKILL');
-	server.killAllSessions();
+	await server.killAllSessions();
 	server.close();
 	await fs.rm(tmpRoot, { recursive: true, force: true });
 });
@@ -63,9 +64,11 @@ test('lists listening ports with their process, folder and the agent itself', as
 	assert.equal(entry.pid, child.pid);
 	assert.deepEqual(entry.addresses, ['127.0.0.1']);
 	assert.match(entry.command, /node/);
-	assert.equal(entry.cwd, tmpRoot);
+	// Windows keeps working directories out of reach, and has no controlling terminals: anything
+	// below the shell running these tests counts as started from a terminal.
+	assert.equal(entry.cwd, isWindows ? null : tmpRoot);
 	assert.equal(entry.session, null);
-	assert.equal(entry.terminal, false);
+	if (!isWindows) assert.equal(entry.terminal, false);
 	assert.equal(entry.self, false);
 	assert.equal(entry.agent, false);
 	const own = json.ports.find((p) => p.port === server.address().port);
@@ -84,7 +87,9 @@ test('a listener started in a terminal names its session', async () => {
 				const msg = JSON.parse(data.toString('utf8'));
 				if (msg.type === 'session') {
 					id = msg.id;
-					ws.send(JSON.stringify({ type: 'input', data: `'${process.execPath}' -e "${LISTEN}"\r` }));
+					// PowerShell runs a quoted path only after its call operator.
+					const run = `${isWindows ? '& ' : ''}'${process.execPath}' -e "${LISTEN}"`;
+					ws.send(JSON.stringify({ type: 'input', data: `${run}\r` }));
 				}
 				return;
 			}
@@ -104,9 +109,10 @@ test('stops a listener, and refuses anything else', async () => {
 	const { child } = await listener();
 	const exited = once(child, 'exit');
 	assert.equal((await api('POST', '/api/ports/kill', { pid: child.pid })).status, 200);
-	assert.deepEqual(await exited, [null, 'SIGTERM']);
+	// Windows has no signals: the process is ended outright, with exit code 1.
+	assert.deepEqual(await exited, isWindows ? [1, null] : [null, 'SIGTERM']);
 
-	const idle = spawn('sleep', ['30']);
+	const idle = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30_000)']);
 	children.push(idle);
 	assert.equal((await api('POST', '/api/ports/kill', { pid: idle.pid })).status, 404);
 	assert.equal((await api('POST', '/api/ports/kill', { pid: process.pid })).status, 403);

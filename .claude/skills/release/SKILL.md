@@ -74,7 +74,8 @@ gh run list --workflow publish-npm.yml --limit 5 --json headBranch,url --jq '.[]
 Then one short summary: the version and the previous one, the workflow run link, the GitHub
 release link, the npm link (`https://www.npmjs.com/package/coderemote/v/<version>`, live once
 the workflow finishes and npm has processed it, usually a few minutes), and the install command
-(`npm install -g coderemote`, or `coderemote@next` for a prerelease).
+(`npm install -g coderemote`, or `coderemote@next` for a prerelease). A stable release also
+updates the Homebrew formula (the workflow's `homebrew` job), after the npm publish.
 
 If the user later reports a failed run: show the failing step's log
 (`gh run view <id> --log-failed`). Don't retry or delete the tag on your own; a tag that never

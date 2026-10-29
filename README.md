@@ -32,6 +32,19 @@ npm install -g coderemote
 cd ~/projects/my-app && coderemote up
 ```
 
+With Homebrew: `brew install coderemoteapp/tap/coderemote`.
+
+No Node.js? The install scripts use yours when there is one (20 or newer), and otherwise
+download Node.js into `~/.coderemote/runtime` for coderemote alone:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/CodeRemoteApp/coderemote/main/install.sh | sh    # macOS, Linux
+```
+
+```powershell
+irm https://raw.githubusercontent.com/CodeRemoteApp/coderemote/main/install.ps1 | iex         # Windows
+```
+
 On your iPhone: scan the QR code it prints. That's all: the first run downloads Microsoft's
 Dev Tunnels CLI and asks you to sign in with GitHub in the browser.
 

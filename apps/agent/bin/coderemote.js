@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -8,12 +8,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import qrcode from 'qrcode-terminal';
-import { createAgentServer } from '@vsremote/agent-core';
+import { createAgentServer, execCommand, isWindows, spawnCommand } from '@vsremote/agent-core';
 import { ensureDevtunnel } from '../src/devtunnel.js';
 import { ensureHookSecret, readHookSecret, runHook, writeHookLauncher } from '../src/hook.js';
 import { PreviewTunnel } from '../src/preview.js';
 import { pushStore } from '../src/push-store.js';
 import { AgentRegistry } from '../src/registry.js';
+import { findTunnel, forgetTunnel, formatTunnels, listTunnels, makeRoom, ownUse, tunnelLimitHelp } from '../src/tunnels.js';
 import { MACHINE_LABEL, tunnelStatus } from '../src/tunnel-status.js';
 import { availableUpdate, fetchLatest, installCommand, isNewer } from '../src/update.js';
 import pkg from '../package.json' with { type: 'json' };
@@ -57,6 +58,17 @@ function loadConfig() {
 		saveConfig(cfg);
 	}
 	return cfg;
+}
+
+/**
+ * Stops a running agent. Windows has no SIGTERM for it to clean up on, so the agent is ended
+ * along with everything it started (its tunnel host, terminals), which would outlive it.
+ */
+function stopAgent(pid) {
+	if (!isWindows) return process.kill(pid, 'SIGTERM');
+	try {
+		execFileSync('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore' });
+	} catch {}
 }
 
 function saveConfig(cfg) {
@@ -200,8 +212,21 @@ async function ensureTunnel(cfg, port, anonymous) {
 	const name = port === DEFAULT_PORT ? os.hostname() : `${os.hostname()} :${port}`;
 	const createArgs = ['create', '--expiration', '30d', '-d', `coderemote ${name}`, '--labels', MACHINE_LABEL, '--json'];
 	if (anonymous) createArgs.push('--allow-anonymous');
-	const created = await devtunnel(...createArgs);
-	if (!created.ok) throw new Error(`devtunnel create failed:\n${created.out}`);
+	let created = await devtunnel(...createArgs);
+	if (!created.ok) {
+		const room = await makeRoom(devtunnel);
+		if (room?.full) {
+			spinner.fail();
+			console.error(`\n${tunnelLimitHelp(room.full, cfg)}`);
+			process.exit(1);
+		}
+		if (room?.freed) {
+			spinner.update(`(deleted ${room.freed.length} idle preview tunnel${room.freed.length > 1 ? 's' : ''} to make room)`);
+			if (room.freed.filter((id) => forgetTunnel(cfg, id)).length) saveConfig(cfg);
+			created = await devtunnel(...createArgs);
+		}
+		if (!created.ok) throw new Error(`devtunnel create failed:\n${created.out}`);
+	}
 	const tunnelId = JSON.parse(created.out.slice(created.out.indexOf('{'))).tunnel?.tunnelId;
 	if (!tunnelId) throw new Error(`could not parse tunnel id from:\n${created.out}`);
 
@@ -305,6 +330,9 @@ const USAGE = `Usage: coderemote <command> [options]
   kill <id>... | --all kill terminal sessions (an id prefix is enough)
   stop [--all]         stop the agent for this folder (or every agent)
   rotate-token         revoke every paired device and stop running agents
+  tunnels              list your dev tunnels account's tunnels (it may keep 10)
+  tunnels delete <id>...  delete tunnels nothing uses; one that is online or is this
+                       computer's needs --force (its URL changes, its phones unpair)
   update               install the latest coderemote (up says when there's one)
   requests [PORT]      list the requests that reached a previewed port, oldest first;
                        --grep TEXT, --failed (errors, 4xx and 5xx), --limit N (default 50)
@@ -392,6 +420,7 @@ async function start({ tunnel }) {
 				leftover: cfg.previewTunnels?.[port],
 				remember: (id) => {
 					cfg.previewTunnels = { ...cfg.previewTunnels, [port]: id };
+					if (!id) delete cfg.previewTunnels[port];
 					saveConfig(cfg);
 				},
 				mintToken: connectToken,
@@ -409,7 +438,7 @@ async function start({ tunnel }) {
 		if (e.code !== 'EADDRINUSE') throw e;
 		// Not in the registry: an agent from an older coderemote, or an unrelated program.
 		console.error(`Port ${port} is already in use by another process.`);
-		console.error(`See what holds it with: lsof -nP -iTCP:${port} -sTCP:LISTEN`);
+		console.error(`See what holds it with: ${isWindows ? `netstat -ano | findstr :${port}` : `lsof -nP -iTCP:${port} -sTCP:LISTEN`}`);
 		console.error('Stop that process, or pick another port with --port.');
 		process.exit(1);
 	}
@@ -441,10 +470,11 @@ async function start({ tunnel }) {
 	}
 	spinner.succeed();
 	registry.register({ port, root, url });
-	const shutdown = () => {
+	const shutdown = async () => {
 		child?.kill();
-		preview?.stop();
-		server.killAllSessions();
+		// Previews get a new tunnel every run, so this one would only take up a slot of the account's 10.
+		await preview?.close();
+		await server.killAllSessions();
 		server.close();
 		process.exit(0);
 	};
@@ -465,7 +495,7 @@ const PLUGIN = 'coderemote@coderemote';
 
 async function claudeCli(...args) {
 	try {
-		return (await run('claude', args, { timeout: 120_000 })).stdout.trim();
+		return (await execCommand(['claude', ...args], { timeout: 120_000 })).stdout.trim();
 	} catch (e) {
 		if (e.code === 'ENOENT') return null;
 		throw new Error((e.stderr || e.stdout || e.message).trim());
@@ -508,7 +538,7 @@ const CODEX_PLUGIN = 'coderemote@coderemote';
 
 async function codexCli(...args) {
 	try {
-		return (await run('codex', args, { timeout: 120_000 })).stdout.trim();
+		return (await execCommand(['codex', ...args], { timeout: 120_000 })).stdout.trim();
 	} catch (e) {
 		if (e.code === 'ENOENT') return null;
 		throw new Error((e.stderr || e.stdout || e.message).trim());
@@ -722,7 +752,7 @@ switch (cmd) {
 			break;
 		}
 		for (const agent of targets) {
-			process.kill(agent.pid, 'SIGTERM');
+			stopAgent(agent.pid);
 			console.log(`stopped agent for ${agent.root} (pid ${agent.pid})`);
 		}
 		break;
@@ -733,11 +763,56 @@ switch (cmd) {
 		// Running agents hold the old token in memory and would keep honoring it, so stop them all.
 		const agents = registry.list();
 		for (const agent of agents) {
-			process.kill(agent.pid, 'SIGTERM');
+			stopAgent(agent.pid);
 			console.log(`stopped agent for ${agent.root} (pid ${agent.pid})`);
 		}
 		console.log('Token rotated. Re-pair your devices.');
 		if (agents.length) console.log('Run `coderemote up` again in each folder above; each keeps its tunnel URL.');
+		break;
+	}
+	case 'tunnels': {
+		await resolveDevtunnel();
+		const { tunnels, error } = await listTunnels(devtunnel);
+		if (error) {
+			console.error(error);
+			console.error('Signed in? Run `coderemote login`.');
+			process.exit(1);
+		}
+		if (rest[0] !== 'delete') {
+			console.log(tunnels.length ? formatTunnels(tunnels, cfg).join('\n') : 'No tunnels on this account.');
+			break;
+		}
+		const ids = rest.slice(1).filter((a) => !a.startsWith('--'));
+		if (!ids.length) {
+			console.error('Usage: coderemote tunnels delete <tunnel id>... [--force]');
+			process.exit(1);
+		}
+		let failed = false;
+		for (const id of ids) {
+			const tunnel = findTunnel(tunnels, id);
+			if (!tunnel) {
+				console.error(`${id}: no such tunnel on this account`);
+				failed = true;
+				continue;
+			}
+			// Deleting a tunnel in use changes its URL and unpairs every phone, here or on another computer.
+			const use = ownUse(cfg, tunnel.tunnelId);
+			if (!rest.includes('--force') && (tunnel.hostConnections > 0 || use)) {
+				const why = tunnel.hostConnections > 0 ? 'an agent is serving it right now' : `it is this computer's ${use}`;
+				console.error(`${tunnel.tunnelId}: kept, ${why}. Deleting it unpairs its phones; add --force to delete it anyway.`);
+				failed = true;
+				continue;
+			}
+			const res = await devtunnel('delete', tunnel.tunnelId, '-f');
+			if (!res.ok) {
+				console.error(`${tunnel.tunnelId}: ${res.out.trim()}`);
+				failed = true;
+				continue;
+			}
+			if (forgetTunnel(cfg, tunnel.tunnelId)) saveConfig(cfg);
+			console.log(`deleted ${tunnel.tunnelId}${use ? ` (this computer's ${use}: the next \`coderemote up\` makes a new one)` : ''}`);
+		}
+		if (failed) process.exit(1);
 		break;
 	}
 	case 'login': {
@@ -761,13 +836,13 @@ switch (cmd) {
 		const [command, args] = installCommand(fs.realpathSync(process.argv[1]));
 		console.log(`Updating coderemote ${VERSION} → ${latest}: ${command} ${args.join(' ')}\n`);
 		const code = await new Promise((resolve) => {
-			spawn(command, args, { stdio: 'inherit' })
+			spawnCommand([command, ...args], { stdio: 'inherit' })
 				.on('exit', resolve)
 				.on('error', () => resolve(127));
 		});
 		if (code !== 0) {
 			console.error(`\nThe update failed (${command} exited with ${code}).`);
-			console.error(`If it was a permission error (EACCES), run it with sudo: sudo ${command} ${args.join(' ')}`);
+			if (!isWindows && command === 'npm') console.error(`If it was a permission error (EACCES), run it with sudo: sudo ${command} ${args.join(' ')}`);
 			process.exit(code || 1);
 		}
 		const running = registry.list();

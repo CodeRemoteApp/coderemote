@@ -7,6 +7,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { HOOK_SECRET_HEADER } from '@vsremote/protocol';
 import { AgentHub, createAgentServer } from '../src/index.js';
+import { isWindows } from '../src/platform.js';
 import { UploadStore, safeName } from '../src/uploads.js';
 
 const token = 'test-token';
@@ -24,8 +25,16 @@ before(async () => {
 	uploads = path.join(tmp, 'uploads');
 	await fs.mkdir(root);
 	// Takes the terminal raw and records every byte typed into it.
-	const fake = path.join(tmp, 'claude');
-	await fs.writeFile(fake, `#!/bin/sh\nstty raw -echo\nexec cat > "${tmp}/typed-$$"\n`, { mode: 0o755 });
+	let fake = path.join(tmp, 'claude');
+	if (isWindows) {
+		// A batch file, like npm's claude.cmd, in front of a script doing the same.
+		const script = path.join(tmp, 'fake-claude.mjs');
+		await fs.writeFile(script, `import fs from 'node:fs';\nprocess.stdin.setRawMode(true);\nprocess.stdin.pipe(fs.createWriteStream(${JSON.stringify(tmp)} + '/typed-' + process.pid));\n`);
+		fake += '.cmd';
+		await fs.writeFile(fake, `@"${process.execPath}" "${script}" %*\r\n`);
+	} else {
+		await fs.writeFile(fake, `#!/bin/sh\nstty raw -echo\nexec cat > "${tmp}/typed-$$"\n`, { mode: 0o755 });
+	}
 	hub = new AgentHub({ transcript: async () => [] });
 	server = createAgentServer({ token, root, hookSecret, uploadsDir: uploads, claudeCommand: fake, pluginInstalled: async () => true, agents: hub });
 	await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -33,7 +42,7 @@ before(async () => {
 });
 
 after(async () => {
-	server.killAllSessions();
+	await server.killAllSessions();
 	// Held hook requests and the deliberately unfinished upload would keep it open.
 	server.closeAllConnections();
 	server.close();
