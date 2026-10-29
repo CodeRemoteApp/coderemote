@@ -22,7 +22,7 @@ jobs:
         node: [24]
         include:
           - os: ubuntu-latest
-            node: 20 # the oldest supported (engines)
+            node: 22 # the oldest supported (engines)
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -77,7 +77,7 @@ jobs:
       - run: npm ci
       - name: Pack this checkout
         shell: bash
-        run: echo "CODEREMOTE_PACKAGE=$PWD/$(npm pack -w coderemote --silent | tail -n 1)" >> "$GITHUB_ENV"
+        run: echo "CODEREMOTE_PACKAGE=${{ github.workspace }}/$(npm pack -w coderemote --silent | tail -n 1)" >> "$GITHUB_ENV"
 
       - name: install.sh
         if: runner.os != 'Windows'

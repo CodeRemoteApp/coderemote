@@ -143,7 +143,7 @@ example to reuse a session token in a test.
 
 ## Requirements
 
-- **Node.js 20** or newer on **macOS** or **Windows 10/11** (Linux is expected to work but not
+- **Node.js 22** or newer on **macOS** or **Windows 10/11** (Linux is expected to work but not
   yet tested); the install scripts download it when it's missing. On Windows, terminals run
   PowerShell (`pwsh` when installed).
 - A **GitHub or Microsoft account** to sign in to Dev Tunnels

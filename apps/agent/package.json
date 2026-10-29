@@ -41,7 +41,7 @@
     "scripts/fix-node-pty.js"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "node scripts/build.js",
