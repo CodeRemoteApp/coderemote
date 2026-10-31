@@ -6,6 +6,7 @@ const tunnels = {
 	'own.usw2': {
 		tunnelId: 'own.usw2',
 		description: 'coderemote Work-Mac.local',
+		labels: ['coderemote'],
 		hostConnections: 1,
 		clientConnections: 2,
 		tunnelExpiration: '30 days',
@@ -16,6 +17,7 @@ const tunnels = {
 	'home.usw2': {
 		tunnelId: 'home.usw2',
 		description: 'vsremote Home-Mac.local',
+		labels: ['coderemote'],
 		hostConnections: 0,
 		ports: [{ portNumber: 31580, portUri: 'https://home1-31580.usw2.devtunnels.ms/' }],
 	},
@@ -23,8 +25,16 @@ const tunnels = {
 	'other.usw2': {
 		tunnelId: 'other.usw2',
 		description: 'coderemote Work-Mac.local :31581',
+		labels: ['coderemote'],
 		hostConnections: 1,
 		ports: [{ portNumber: 31581, portUri: 'https://other1-31581.usw2.devtunnels.ms/' }],
+	},
+	// A preview tunnel: not a machine, but it takes one of the account's tunnels.
+	'preview.usw2': {
+		tunnelId: 'preview.usw2',
+		description: 'coderemote preview Work-Mac',
+		labels: ['coderemote-preview'],
+		hostConnections: 1,
 	},
 };
 
@@ -32,7 +42,7 @@ function fakeDevtunnel() {
 	const calls = [];
 	const devtunnel = async (...args) => {
 		calls.push(args.join(' '));
-		if (args[0] === 'list') return { ok: true, out: `Found 3\n${JSON.stringify({ tunnels: Object.values(tunnels) })}` };
+		if (args[0] === 'list') return { ok: true, out: `Found 4\n${JSON.stringify({ tunnels: Object.values(tunnels) })}` };
 		if (args[0] === 'show') return { ok: true, out: JSON.stringify({ tunnel: tunnels[args[1]] }) };
 		return { ok: false, out: 'unexpected' };
 	};
@@ -50,6 +60,7 @@ test('reports the tunnel and the account’s other machines, cached for a while'
 	});
 	const value = await status();
 	assert.deepEqual(value, {
+		provider: 'devtunnels',
 		account: 'me (GitHub)',
 		tunnel: {
 			id: 'own.usw2',
@@ -65,9 +76,10 @@ test('reports the tunnel and the account’s other machines, cached for a while'
 			{ id: 'home.usw2', name: 'Home-Mac', url: 'https://home1-31580.usw2.devtunnels.ms', online: false, current: false },
 			{ id: 'other.usw2', name: 'Work-Mac :31581', url: 'https://other1-31581.usw2.devtunnels.ms', online: true, current: false },
 		],
+		quota: { used: 4, limit: 10 },
 		previewPorts: 1,
 	});
-	assert.ok(calls.includes('list --labels coderemote --json'));
+	assert.ok(calls.includes('list --limit 100 --json'));
 
 	const before = calls.length;
 	await status();

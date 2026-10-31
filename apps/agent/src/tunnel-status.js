@@ -1,6 +1,11 @@
-// What the app's Tunnel screen shows: this agent's tunnel, and the other machines running
-// coderemote on the same dev tunnels account (found by the label every agent gives its tunnel).
+// What the app shows of the tunnel: this agent's tunnel (Machine Info), and the other machines
+// running coderemote on the same dev tunnels account (found by the label every agent gives its
+// tunnel), with how many of the account's tunnels are taken (Settings, Connections).
+import { TUNNEL_LIMIT } from './tunnels.js';
+
 export const MACHINE_LABEL = 'coderemote';
+// Which tunnel service the agent uses; the app names the connection after it.
+export const PROVIDER = 'devtunnels';
 
 // Each devtunnel call takes 1-2s; the screen may ask again right away.
 const CACHE_MS = 15_000;
@@ -47,12 +52,14 @@ export function tunnelStatus({ devtunnel, tunnelId, account, anonymous, preview 
 
 		const [own, listed] = await Promise.all([
 			devtunnel('show', id, '--json'),
-			devtunnel('list', '--labels', MACHINE_LABEL, '--json'),
+			// Every tunnel, previews' too: they all count against the account's limit.
+			devtunnel('list', '--limit', '100', '--json'),
 		]);
 		if (!own.ok) throw new Error(`devtunnel show failed: ${own.out.trim()}`);
 		const tunnel = parse(own.out).tunnel;
+		const all = listed.ok ? (parse(listed.out).tunnels ?? []) : null;
 		// Listing gives no addresses, so each other machine's tunnel is looked up too.
-		const others = listed.ok ? (parse(listed.out).tunnels ?? []).filter((t) => t.tunnelId !== id) : [];
+		const others = (all ?? []).filter((t) => t.tunnelId !== id && t.labels?.includes(MACHINE_LABEL));
 		const shown = await Promise.all(
 			others.map(async (t) => {
 				const res = await devtunnel('show', t.tunnelId, '--json');
@@ -62,6 +69,7 @@ export function tunnelStatus({ devtunnel, tunnelId, account, anonymous, preview 
 		const machines = [machine(tunnel, true), ...shown.filter(Boolean).map((t) => machine(t, false))];
 
 		const value = {
+			provider: PROVIDER,
 			account: account() ?? null,
 			tunnel: {
 				id,
@@ -74,6 +82,8 @@ export function tunnelStatus({ devtunnel, tunnelId, account, anonymous, preview 
 				downloaded: tunnel.downloadTotal ?? null,
 			},
 			machines,
+			// null when the account couldn't be listed
+			quota: all && { used: all.length, limit: TUNNEL_LIMIT },
 		};
 		cached = { at: Date.now(), value };
 		return { ...value, previewPorts: preview?.list().length ?? 0 };

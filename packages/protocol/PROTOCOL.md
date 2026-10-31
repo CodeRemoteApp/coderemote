@@ -50,18 +50,24 @@ remain. Anonymous tunnels answer both routes with 404.
 the same dev tunnels account. Agents without a tunnel, and agents from before this route, answer 404.
 
 ```
-{ account, previewPorts,
+{ provider, account, previewPorts,
   tunnel: { id, url, access: "private" | "anonymous", expiration, connections, uploaded, downloaded },
-  machines: [{ id, name, url, online, current }] }
+  machines: [{ id, name, url, online, current }],
+  quota: { used, limit } | null }
 ```
 
+`provider` names the tunnel service, `"devtunnels"` (missing from agents before 0.3.8: read it as
+`"devtunnels"`). Clients group machines by `provider` and `account`, one connection each.
 `account` is the signed-in dev tunnels user, e.g. `"thanh (GitHub)"`. `expiration`, `uploaded` and
 `downloaded` are the service's own wording (`"30 days"`, `"1188 KB"`); the expiration is pushed
 back every time `coderemote up` starts. `connections` counts clients connected to the tunnel now.
 `machines` are the account's tunnels labelled `coderemote` (every agent labels its own; tunnels from
 older releases are missing until their agent restarts), this one first with `current: true`.
 `url` is a machine's agent address, the same as in its pairing link, so clients can tell which
-ones they've paired; `online` is whether an agent hosts it now. The answer is cached for 15 seconds.
+ones they've paired; `online` is whether an agent hosts it now. `quota` counts every tunnel on the
+account, preview tunnels included, against the most it may keep (`null` when they couldn't be
+listed). Tunnels are managed on a computer signed in to the account (`coderemote tunnels`,
+`coderemote tunnels delete <id>`), not through this route. The answer is cached for 15 seconds.
 
 ## Shared folder
 
