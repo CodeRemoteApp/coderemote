@@ -183,3 +183,27 @@ test('test pushes report what happened', async () => {
 	refused.push.register(device());
 	await assert.rejects(refused.push.test('ab'.repeat(32)), { status: 502 });
 });
+
+test('a build that ends is a finished notification, unless cancelled or someone is around', async () => {
+	const { push, sent } = setup();
+	push.register(device());
+	await push.buildEnded({ id: 'b1', scheme: 'Demo', state: 'succeeded', app: { name: 'Demo', version: '1.2' }, error: null });
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0].body.collapseId, 'build-b1');
+	assert.equal(sent[0].body.payload.aps.category, 'BUILD');
+	assert.deepEqual(open(sent[0].body.payload.e), { kind: 'build', title: 'Build ready to install', body: 'Demo 1.2', build: 'b1' });
+	assert.ok(!sent[0].raw.includes('Demo 1.2'), 'the content is encrypted');
+
+	await push.buildEnded({ id: 'b2', scheme: 'Demo', state: 'failed', error: '\n/p/A.swift:3:1: error: expected expression\nmore' });
+	assert.equal(open(sent[1].body.payload.e).body, 'Demo: /p/A.swift:3:1: error: expected expression');
+	await push.buildEnded({ id: 'b3', scheme: 'Demo', state: 'cancelled', error: null });
+	assert.equal(sent.length, 2);
+
+	push.register(device({ kinds: { finished: false } }));
+	await push.buildEnded({ id: 'b4', scheme: 'Demo', state: 'succeeded', app: { name: 'Demo', version: '1' } });
+	assert.equal(sent.length, 2, 'finished pushes turned off');
+	const quiet = setup({ foreground: true });
+	quiet.push.register(device());
+	await quiet.push.buildEnded({ id: 'b5', scheme: 'Demo', state: 'succeeded', app: { name: 'Demo', version: '1' } });
+	assert.equal(quiet.sent.length, 0, 'the app is in front');
+});

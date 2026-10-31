@@ -205,12 +205,29 @@ export class PushSender {
 		}
 	}
 
+	/** A build ended (see builds.js): ready to install, or failed. Cancelled builds say nothing. */
+	async buildEnded(build) {
+		if (!this.#devices.length || build.state === 'cancelled') return;
+		if (await this.#quiet()) return;
+		const ok = build.state === 'succeeded';
+		const firstError = String(build.error ?? '').split('\n').find((l) => l.trim()) ?? '';
+		await this.#broadcast('finished', {
+			kind: 'build',
+			title: ok ? 'Build ready to install' : 'Build failed',
+			body: ok ? `${build.app?.name ?? build.scheme} ${build.app?.version ?? ''}`.trim() : `${build.scheme}: ${firstError}`,
+			build: build.id,
+			category: 'BUILD',
+			collapseId: `build-${build.id}`,
+			fallback: ok ? 'A build is ready to install' : 'A build failed',
+		});
+	}
+
 	async #broadcast(kind, note) {
 		await Promise.all(this.#devices.filter((d) => d.kinds[kind]).map((d) => this.#send(d, note)));
 	}
 
-	async #send(device, { kind, title, body, session, request, question, options, category, collapseId, priority, silent, fallback }) {
-		const secret = { kind, title, body, session, request, question, options };
+	async #send(device, { kind, title, body, session, request, build, question, options, category, collapseId, priority, silent, fallback }) {
+		const secret = { kind, title, body, session, request, build, question, options };
 		const aps = { alert: { title: 'Code Remote', body: fallback }, 'mutable-content': 1 };
 		if (category) aps.category = category;
 		if (session) aps['thread-id'] = session;

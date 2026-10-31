@@ -20,7 +20,9 @@ import {
 import { WebSocketServer } from 'ws';
 import { AgentHub } from './agents.js';
 import { listCommands } from './commands.js';
+import { BuildRunner, listSchemes } from './builds.js';
 import { listHistory } from './history.js';
+import { InstallLinks } from './install-links.js';
 import * as Git from './git.js';
 import { TunnelHandoff } from './handoff.js';
 import { LANDING_HTML } from './landing.js';
@@ -140,6 +142,8 @@ async function readJson(req) {
  * @param {string} [opts.codexCommand]  the Codex executable that sessions started here run
  * @param {string} [opts.codexHome]  Codex's own folder, where it caches the models it offers
  * @param {string} [opts.home]  the user's home folder, where the coding agents keep their commands
+ * @param {BuildRunner} [opts.builds]  builds of Xcode projects in the shared folder (one is made when absent)
+ * @param {string} [opts.xcodebuild]  the xcodebuild that builds and `GET /api/builds/schemes` run
  * @param {(agent: string) => Promise<boolean>} [opts.pluginInstalled]  whether that coding agent
  *        has the Code Remote plugin (default: asks its `plugin list`)
  * @param {AgentHub} [opts.agents]  coding-agent sessions (one is made when absent)
@@ -164,6 +168,8 @@ export function createAgentServer({
 	codexCommand = 'codex',
 	codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
 	home = os.homedir(),
+	xcodebuild = 'xcodebuild',
+	builds = new BuildRunner({ xcodebuild }),
 	pluginInstalled = null,
 	agents = new AgentHub(),
 	pushStore = null,
@@ -185,6 +191,7 @@ export function createAgentServer({
 	let foregroundAt = 0;
 	const clientInForeground = () => Date.now() - foregroundAt < 30_000;
 	const push = new PushSender({ hub: agents, store: pushStore, foreground: clientInForeground, ...pushOptions });
+	builds.on('ended', (build) => push.buildEnded(build).catch(() => {}));
 	// Agents whose approvals block the terminal (Codex) ask there while someone uses the computer,
 	// unless a client shows this machine: then the person is on the phone and answers there.
 	if (!agents.presenceSet) {
@@ -314,6 +321,9 @@ export function createAgentServer({
 		}
 	}
 
+	// Install links go out through the preview tunnel, so agents without one can't make them.
+	const installs = preview ? new InstallLinks({ preview }) : null;
+
 	/** The commands and skill mentions `session`'s coding agent accepts (see commands.js). */
 	function sessionCommands(session) {
 		return listCommands({ agent: session.agent, cwd: session.cwd || sandbox.root, home, codexHome });
@@ -365,6 +375,9 @@ export function createAgentServer({
 			if (p) ports.push({ ...p, port });
 		}
 		ports.sort((a, b) => a.port - b.port);
+		// Install links of a build, shared while they live; stopping it ends them.
+		const install = installs?.sharing ? forwarded.get(installs.port) : null;
+		if (install) ports.push({ ...install, install: true });
 		return { ports, token: issued?.token ?? null, expiresAt: issued?.expiresAt ?? null };
 	}
 
@@ -607,6 +620,10 @@ export function createAgentServer({
 
 		[Routes.previewClose]: async (url) => {
 			const port = previewPort(url.searchParams.get('port'), server.address()?.port);
+			if (installs && port === installs.port) {
+				await installs.stop();
+				return previews();
+			}
 			const proxy = proxies.get(port);
 			// The proxy keeps running so its log can still be read; the tunnel no longer reaches it.
 			if (proxy) await preview.unforward(proxy.port);
@@ -627,6 +644,11 @@ export function createAgentServer({
 		},
 
 		[Routes.previewUnshare]: async (url) => {
+			const asked = previewPort(url.searchParams.get('port'), server.address()?.port);
+			if (installs && asked === installs.port) {
+				await installs.stop();
+				return previews();
+			}
 			const proxy = proxies.get(previewPort(url.searchParams.get('port'), server.address()?.port));
 			try {
 				if (proxy) await preview.unshare(proxy.port);
@@ -685,6 +707,35 @@ export function createAgentServer({
 			if (!session) throw new HttpError(404, 'no such session');
 			const found = await listHistory({ agent: session.agent, cwd: session.cwd || sandbox.root, home, codexHome });
 			return { sessions: found.filter((h) => h.id !== session.id) };
+		},
+
+		[Routes.buildsSchemes]: async (url) => listSchemes(await sandbox.resolve(url.searchParams.get('path')), { xcodebuild }),
+
+		[Routes.buildsStart]: async (url, req) => {
+			const { path: folder, scheme, configuration } = await readJson(req);
+			return builds.start({ folder: await sandbox.resolve(folder), scheme, configuration });
+		},
+
+		[Routes.buildsCurrent]: async (url) => {
+			const build = builds.current(parseInt(url.searchParams.get('after'), 10) || 0);
+			if (!build) throw new HttpError(404, 'no build yet');
+			return build;
+		},
+
+		[Routes.buildsCancel]: async () => {
+			builds.cancel();
+			return {};
+		},
+
+		[Routes.buildsInstall]: async () => {
+			if (!installs) throw new HttpError(409, 'installing needs the tunnel: start the agent with `coderemote up`');
+			const artifact = builds.artifact();
+			if (!artifact) throw new HttpError(409, 'there is no successful build to install');
+			try {
+				return await installs.create(artifact);
+			} catch (e) {
+				throw e instanceof HttpError ? e : new HttpError(502, e.message);
+			}
 		},
 
 		[Routes.agentsLaunch]: async (url, req) => {
@@ -975,6 +1026,7 @@ export function createAgentServer({
 	}
 
 	server.on('close', () => {
+		installs?.close();
 		clearInterval(sweep);
 		clearInterval(previewTimer);
 		sessions.killAll();

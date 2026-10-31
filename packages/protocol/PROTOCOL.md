@@ -198,7 +198,7 @@ Agents running without a tunnel, and agents from before these routes, answer 404
 
 | Route | Request | Response |
 | --- | --- | --- |
-| `GET /api/preview` | | `{ ports: [{ port, url, sharedUntil }], token, expiresAt }` |
+| `GET /api/preview` | | `{ ports: [{ port, url, sharedUntil, install? }], token, expiresAt }` |
 | `POST /api/preview` | `{ port }` | same; forwards the port (502 when the tunnel can't) |
 | `DELETE /api/preview?port=` | | same; stops forwarding it, and sharing it |
 | `POST /api/preview/share` | `{ port, hours }` | same; anyone with the port's `url` can open it, without signing in, for 1-720 hours (404 when the port isn't forwarded) |
@@ -470,6 +470,42 @@ in `~/.coderemote/hook-secret` and never leaves the computer, so paired devices 
 events (401). For `PermissionRequest` the response holds until the request resolves, and its
 body is the hook's output (empty when the computer should decide); other events answer `{}`.
 
+## Builds
+
+Builds an Xcode project in the shared folder for the developer's own devices and installs it on
+the phone over the air. It needs Xcode on the computer, signed in to an account that can sign for
+the project's team, and a phone in that team's development profile (one the app was run on from
+Xcode). Agents from before these routes answer 404.
+
+| Route | Request | Response |
+| --- | --- | --- |
+| `GET /api/builds/schemes?path=` | | `{ container, kind, schemes }`: the `.xcworkspace` (`kind: "workspace"`) or else `.xcodeproj` directly in that folder; 404 when there is neither |
+| `POST /api/builds` | `{ path, scheme, configuration? }` | build; starts archiving (`configuration` defaults to `Debug`); 409 while another build runs |
+| `GET /api/builds/current?after=` | | build, with `log` and `next`; 404 before any build |
+| `POST /api/builds/cancel` | | `{}`; 409 when no build runs |
+| `POST /api/builds/install` | | `{ url, expiresAt }`; 409 without a successful build, or without a tunnel |
+
+A build is `{ id, path, scheme, configuration, state, step, startedAt, endedAt, error, app }`.
+`state` is `running`, `succeeded`, `failed` or `cancelled`; `step` is `archiving` or `exporting`.
+It archives for generic iOS devices, then exports a development-signed `.ipa`, letting Xcode
+manage signing (`-allowProvisioningUpdates`). `error` says why a build failed: its compiler errors
+(`file:line:col: error: …`, at most 20), else xcodebuild's own errors or last lines, led by what to
+do in Xcode when signing was the problem. `app` is `{ bundleId, version, name, size }` once it
+succeeded. `log` holds xcodebuild's output lines after line `after` (the last 5,000 are kept);
+pass `next` as `after` to get only new ones. Only the latest build is kept. When a build ends
+(but isn't cancelled), registered devices get a `build` push.
+
+`url` is an `itms-services://` link to install the latest successful build; opening it on the
+phone asks to install the app. iOS fetches its manifest and `.ipa` without any headers, so they
+are served without authentication at a random path through the preview tunnel (see
+[Preview](#preview); forwarding them restarts the preview host, so other previews drop for a few
+seconds). A link works for 10 minutes or until its `.ipa` has been downloaded once; then its path
+answers 404, and the share ends when no link is left. Each call makes a new link. While links
+live, the share is listed by `GET /api/preview` with `install: true` (its `port` is the agent's
+own install server); `DELETE /api/preview?port=` or `DELETE /api/preview/share?port=` on it ends
+every link at once. Agents started
+with `coderemote serve` have no tunnel and answer 409.
+
 ## Push
 
 Notifications on the phone when a session needs an answer or finishes a long turn, through a
@@ -489,15 +525,16 @@ back in every push so the app can pick the key. `kinds` is `{ requests: bool, fi
 Registrations are kept across restarts in `~/.coderemote/push/<port>.json` and deleted by
 `coderemote rotate-token`, or when APNs reports the token gone.
 
-The agent pushes for a new request, when a turn that ran 60 seconds or more ends, and to replace
+The agent pushes for a new request, when a turn that ran 60 seconds or more ends, when a build ends, and to replace
 the notification of a request resolved elsewhere (same `apns-collapse-id`, the request id). It
 pushes nothing while the computer's user was active in the last 2 minutes (macOS only) or a
 client's presence is fresh.
 
 Every push has a generic `aps.alert`, `mutable-content: 1`, a `category` (`PERMISSION`,
-`QUESTION`, `DONE` or none), `thread-id` (the session id), and two custom keys: `k`, the
+`QUESTION`, `DONE`, `BUILD` or none), `thread-id` (the session id, when there is one), and two custom keys: `k`, the
 `keyId`, and `e`, base64 of a 12-byte nonce, the AES-256-GCM ciphertext and its 16-byte tag. The
-plaintext is JSON `{ kind, title, body, session, request?, question?, options? }` (`kind`:
-`request`, `finished`, `resolved` or `test`). `question` and `options` (its labels) come with a
+plaintext is JSON `{ kind, title, body, session, request?, build?, question?, options? }` (`kind`:
+`request`, `finished`, `resolved`, `build` or `test`; a `build` note carries the build's `id` as
+`build`, comes with category `BUILD`, and follows the `finished` setting, see [Builds](#builds)). `question` and `options` (its labels) come with a
 request that is one single-choice question, which can be answered from the notification; so the
 relay and APNs never see a command, prompt or session title.
