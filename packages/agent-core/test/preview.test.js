@@ -2,6 +2,7 @@
 // proxy's local address as the "public" URL, so requests to it take the path a relay's would.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -60,8 +61,20 @@ after(async () => {
 	await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
-async function agent() {
-	return listen(createAgentServer({ token, root: tmpRoot, preview }));
+async function agent(opts = {}) {
+	return listen(createAgentServer({ token, root: tmpRoot, preview, ...opts }));
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Polls the agent until the previewed ports are `want`, or fails after `ms`. */
+async function previewedPorts(server, want, ms = 3000) {
+	const deadline = Date.now() + ms;
+	for (;;) {
+		const ports = (await api(server, 'GET', '/api/preview')).json.ports.map((p) => p.port);
+		if (JSON.stringify(ports) === JSON.stringify(want) || Date.now() > deadline) return ports;
+		await sleep(50);
+	}
 }
 
 async function api(server, method, route, body) {
@@ -191,4 +204,45 @@ test('agents without a tunnel have no previews', async () => {
 	assert.equal((await api(server, 'POST', '/api/preview', { port: 5173 })).status, 404);
 	assert.equal((await api(server, 'DELETE', '/api/preview?port=5173')).status, 404);
 	assert.equal((await api(server, 'GET', '/api/preview/requests?port=5173')).status, 404);
+});
+
+test('stops previewing a dev server that stopped, after a grace period', async () => {
+	const server = await agent({ previewSweep: { checkMs: 50, graceMs: 400 } });
+	const stopping = await devServer();
+	const restarting = await devServer();
+	const [gone, back] = [stopping.address().port, restarting.address().port];
+	await api(server, 'POST', '/api/preview', { port: gone });
+	await api(server, 'POST', '/api/preview', { port: back });
+
+	stopping.close();
+	stopping.closeAllConnections();
+	// A dev server that restarts itself within the grace period keeps its preview.
+	restarting.close();
+	restarting.closeAllConnections();
+	await sleep(150);
+	const again = http.createServer((req, res) => res.end('back'));
+	await new Promise((r) => again.listen(back, '127.0.0.1', r));
+	servers.push(again);
+
+	assert.deepEqual(await previewedPorts(server, [back]), [back], 'the stopped one goes');
+	await sleep(600);
+	assert.deepEqual(await previewedPorts(server, [back]), [back], 'the restarted one stays');
+	// Its request log outlives the preview, as after Stop Preview.
+	assert.equal((await api(server, 'GET', `/api/preview/requests?port=${gone}`)).status, 200);
+	await api(server, 'DELETE', `/api/preview?port=${back}`);
+});
+
+test('stopping a previewed dev server from the Ports tab ends its preview without the wait', async () => {
+	const server = await agent({ previewSweep: { checkMs: 60_000, graceMs: 60_000, killedMs: 100 } });
+	const child = spawn(process.execPath, ['-e', "require('http').createServer().listen(0, '127.0.0.1', function () { console.log('PORT=' + this.address().port) })"]);
+	let out = '';
+	for await (const chunk of child.stdout) if ((out += chunk).includes('\n')) break;
+	const port = Number(out.match(/PORT=(\d+)/)[1]);
+	try {
+		await api(server, 'POST', '/api/preview', { port });
+		assert.equal((await api(server, 'POST', '/api/ports/kill', { pid: child.pid })).status, 200);
+		assert.deepEqual(await previewedPorts(server, []), []);
+	} finally {
+		child.kill('SIGKILL');
+	}
 });

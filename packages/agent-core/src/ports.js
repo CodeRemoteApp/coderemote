@@ -3,6 +3,7 @@
 // Windows asks netstat and the process list (see windowsListeners).
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import { isWindows } from './platform.js';
 import { HttpError } from './sandbox.js';
@@ -172,16 +173,38 @@ function sessionOf(pid, table, shells) {
 	return null;
 }
 
-/** Stops a process that is listening on a port right now; anything else is refused. */
+/**
+ * Stops a process that is listening on a port right now; anything else is refused.
+ * @returns {Promise<number[]>} the ports it was listening on
+ */
 export async function killListener(pid, { force = false, shells } = {}) {
 	if (!Number.isInteger(pid) || pid <= 1) throw new HttpError(400, 'pid must be a process id');
 	if (pid === process.pid) throw new HttpError(403, 'the agent cannot stop itself');
-	const ports = await listPorts(shells);
-	if (!ports.some((p) => p.pid === pid)) throw new HttpError(404, 'no listening process with that pid');
+	const ports = (await listPorts(shells)).filter((p) => p.pid === pid).map((p) => p.port);
+	if (!ports.length) throw new HttpError(404, 'no listening process with that pid');
 	try {
 		process.kill(pid, force ? 'SIGKILL' : 'SIGTERM');
 	} catch (e) {
 		if (e.code === 'ESRCH') throw new HttpError(404, 'no listening process with that pid');
 		throw e;
 	}
+	return ports;
+}
+
+/**
+ * Whether something accepts connections on `port` here, on 127.0.0.1 or ::1 alike (as the
+ * preview proxy reaches it). A connection that doesn't answer in time counts as listening: a busy
+ * server is still there.
+ */
+export function isListening(port, timeout = 2000) {
+	return new Promise((resolve) => {
+		const socket = net.connect({ host: 'localhost', port, timeout });
+		const done = (up) => {
+			socket.destroy();
+			resolve(up);
+		};
+		socket.once('connect', () => done(true));
+		socket.once('timeout', () => done(true));
+		socket.once('error', () => done(false));
+	});
 }

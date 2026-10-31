@@ -21,7 +21,7 @@ import { AgentHub } from './agents.js';
 import * as Git from './git.js';
 import { TunnelHandoff } from './handoff.js';
 import { LANDING_HTML } from './landing.js';
-import { killListener, listPorts } from './ports.js';
+import { isListening, killListener, listPorts } from './ports.js';
 import { PushSender, userActiveHere } from './push.js';
 import { detail, InspectingProxy } from './inspector.js';
 import { capture, commandExists, interactiveShell, isWindows } from './platform.js';
@@ -107,6 +107,9 @@ async function readJson(req) {
  * @param {{ load: () => object[], save: (devices: object[]) => void } | null} [opts.pushStore]
  *        keeps push registrations across restarts; without it they last until the agent stops
  * @param {object} [opts.pushOptions]  passed to PushSender (tests stub the relay and presence)
+ * @param {{ checkMs?: number, graceMs?: number, killedMs?: number }} [opts.previewSweep]  how often
+ *        previews are checked for a dev server that stopped, and how long one may stay silent
+ *        (after a stop from the Ports tab: how long until it is checked)
  */
 export function createAgentServer({
 	token,
@@ -124,6 +127,7 @@ export function createAgentServer({
 	agents = new AgentHub(),
 	pushStore = null,
 	pushOptions = {},
+	previewSweep = {},
 }) {
 	const handoff = new TunnelHandoff({ token, mint: tunnelToken });
 	const sandbox = new Sandbox(root);
@@ -317,6 +321,47 @@ export function createAgentServer({
 		return { ports, token: issued?.token ?? null, expiresAt: issued?.expiresAt ?? null };
 	}
 
+	// A preview whose dev server stopped (killed from the Ports tab, its terminal closed, Ctrl+C,
+	// a crash) still holds one of the preview tunnel's 10 ports, and a public link to whatever
+	// listens there next. Once nothing has listened on it for graceMs it stops being previewed;
+	// the wait lets a dev server that restarts itself keep its preview. The proxy and its request
+	// log stay, as after Stop Preview.
+	const { checkMs = 5_000, graceMs = 30_000, killedMs = 1_500 } = previewSweep;
+	/** Dev server port -> when it was first found not listening. */
+	const silentSince = new Map();
+	let sweeping = false;
+
+	/** Stops previewing `ports` that nothing listens on, at once (`now`) or after graceMs. */
+	async function sweepPreviews(ports = [...proxies.keys()], now = false) {
+		const forwarded = new Set(preview.list().map((p) => p.port));
+		for (const port of ports) {
+			const proxy = proxies.get(port);
+			if (!proxy || !forwarded.has(proxy.port) || (await isListening(port))) {
+				silentSince.delete(port);
+				continue;
+			}
+			if (!silentSince.has(port)) silentSince.set(port, Date.now());
+			if (!now && Date.now() - silentSince.get(port) < graceMs) continue;
+			silentSince.delete(port);
+			try {
+				await preview.unforward(proxy.port);
+			} catch {}
+		}
+	}
+
+	const previewTimer =
+		preview &&
+		setInterval(async () => {
+			if (sweeping || !proxies.size) return;
+			sweeping = true;
+			try {
+				await sweepPreviews();
+			} finally {
+				sweeping = false;
+			}
+		}, checkMs);
+	previewTimer?.unref();
+
 	/** Shell pid -> terminal session id, to tell which listeners were started from the app. */
 	function shellPids() {
 		return new Map(sessions.list().map((s) => [s.pid, s.id]));
@@ -466,7 +511,9 @@ export function createAgentServer({
 
 		[Routes.portsKill]: async (url, req) => {
 			const { pid, force } = await readJson(req);
-			await killListener(pid, { force: force === true, shells: shellPids() });
+			const ports = await killListener(pid, { force: force === true, shells: shellPids() });
+			// Stopped on purpose, so no restart to wait for: once it has gone, so does its preview.
+			if (preview) setTimeout(() => sweepPreviews(ports, true).catch(() => {}), killedMs).unref();
 			return {};
 		},
 
@@ -842,6 +889,7 @@ export function createAgentServer({
 
 	server.on('close', () => {
 		clearInterval(sweep);
+		clearInterval(previewTimer);
 		sessions.killAll();
 		for (const proxy of proxies.values()) proxy.close();
 	});
