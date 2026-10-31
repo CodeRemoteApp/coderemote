@@ -254,8 +254,12 @@ export class AgentHub extends EventEmitter {
 		if (!this.#sessions.has(event.session_id)) {
 			// The placeholder started in that terminal. Codex doesn't pass the terminal to its plugin
 			// hooks, so its only placeholder in the same folder stands in for it.
+			// After `/clear`, Claude Code goes on in the same terminal under a new id: that one too.
+			const cleared = event.hook_event_name === 'SessionStart' && event.source === 'clear' && terminal;
 			const candidates = [...this.#sessions.values()].filter((p) =>
-				p.starting && (terminal ? p.terminal === terminal : p.agent === agent && p.cwd === event.cwd),
+				cleared
+					? p.terminal === terminal && p.agent === agent
+					: p.starting && (terminal ? p.terminal === terminal : p.agent === agent && p.cwd === event.cwd),
 			);
 			if (candidates.length === 1) {
 				replaced = candidates[0];

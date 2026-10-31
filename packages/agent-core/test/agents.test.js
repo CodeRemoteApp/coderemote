@@ -234,3 +234,21 @@ test('a session launched from the app waits for a prompt once it starts', async 
 	await h.handle(ev('SessionStart', { source: 'compact' }));
 	assert.equal(h.session('s1').state, 'running', 'a compaction mid-turn leaves the turn running');
 });
+
+test('/clear goes on under a new id in the same terminal, which replaces the old session', async () => {
+	const { h, messages } = hub();
+	h.launched({ id: 'placeholder', terminal: 'term-1', cwd: base.cwd });
+	await h.handle(ev('SessionStart', { source: 'startup' }), { terminal: 'term-1' });
+	await h.handle(ev('UserPromptSubmit', { prompt: 'Hello' }), { terminal: 'term-1' });
+	await h.handle(ev('SessionEnd', { reason: 'clear' }), { terminal: 'term-1' });
+	await h.handle(ev('SessionStart', { session_id: 's2', source: 'clear' }), { terminal: 'term-1' });
+
+	assert.equal(h.session('s1'), null);
+	assert.deepEqual([h.session('s2').state, h.session('s2').terminal], ['idle', 'term-1']);
+	assert.deepEqual(h.timeline('s2').entries, []);
+	assert.ok(messages.some((m) => m.type === 'session_removed' && m.session === 's1' && m.replacedBy === 's2'));
+	// Elsewhere, a cleared session started outside Code Remote replaces nothing.
+	await h.handle(ev('SessionStart', { session_id: 'x1', source: 'startup' }));
+	await h.handle(ev('SessionStart', { session_id: 'x2', source: 'clear' }));
+	assert.ok(h.session('x1') && h.session('x2'));
+});
