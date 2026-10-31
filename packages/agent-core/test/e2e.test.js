@@ -106,6 +106,7 @@ test('landing page is public and carries no machine details', async () => {
 test('info', async () => {
 	const info = await api('GET', '/api/info');
 	assert.equal(info.protocol, 4);
+	assert.equal(info.minClientProtocol, 4);
 	assert.equal(info.root, root);
 	assert.equal(info.home, undefined, 'the home folder is not exposed');
 });

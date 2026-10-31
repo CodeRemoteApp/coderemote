@@ -99,6 +99,7 @@ function listen(token, port, root, tunnelToken, preview, status) {
 		hookBin: fs.realpathSync(process.argv[1]),
 		pushStore: pushStore(PUSH_DIR, port),
 		uploadsDir: UPLOADS_DIR,
+		version: VERSION,
 	});
 	return new Promise((resolve, reject) => {
 		server.once('error', reject);

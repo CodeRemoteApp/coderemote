@@ -41,6 +41,11 @@ All of these must hold; otherwise stop and report what to fix:
   always of a commit that's already pushed.
 - The tag doesn't exist on the remote either: `git ls-remote --tags <remote> <tag>` is empty.
 - `npm test` passes locally (the workflow runs it again, but failing here saves a round trip).
+- `MIN_CLIENT_PROTOCOL` in `packages/protocol/index.js` hasn't gone up since `<previous>`
+  (`git diff <previous> HEAD -- packages/protocol/index.js`). If it has, agents of this release
+  tell every client older than it to update, so a client release that speaks the new protocol must
+  already be installable by its users. Stop and ask the user to confirm that before tagging.
+  `PROTOCOL_VERSION` going up alone is fine: older clients keep working.
 
 ## 3. Tag and push
 

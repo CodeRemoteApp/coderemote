@@ -6,6 +6,12 @@
 // v4: sign-in handoff and tunnel token renewal for private tunnels.
 export const PROTOCOL_VERSION = 4;
 
+// The oldest client protocol this agent still serves, reported in `GET /api/info`. A client older
+// than this asks its user to update instead of failing on routes it doesn't know. Raise it only
+// when a change leaves older clients unable to work, and only once a client release that speaks
+// the new protocol is out (see PROTOCOL.md, Compatibility).
+export const MIN_CLIENT_PROTOCOL = 4;
+
 export const PAIRING_SCHEME = 'vsremote';
 
 export const Routes = Object.freeze({

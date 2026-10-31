@@ -10,6 +10,7 @@ import {
 	AgentsClientMessage,
 	HOOK_SECRET_HEADER,
 	PROTOCOL_VERSION,
+	MIN_CLIENT_PROTOCOL,
 	PAIRING_SCHEME,
 	Routes,
 	TERMINAL_WS_PATH,
@@ -107,6 +108,7 @@ async function readJson(req) {
  * @param {{ load: () => object[], save: (devices: object[]) => void } | null} [opts.pushStore]
  *        keeps push registrations across restarts; without it they last until the agent stops
  * @param {object} [opts.pushOptions]  passed to PushSender (tests stub the relay and presence)
+ * @param {string | null} [opts.version]  the CLI's version, reported in `/api/info`
  * @param {{ checkMs?: number, graceMs?: number, killedMs?: number }} [opts.previewSweep]  how often
  *        previews are checked for a dev server that stopped, and how long one may stay silent
  *        (after a stop from the Ports tab: how long until it is checked)
@@ -128,6 +130,7 @@ export function createAgentServer({
 	pushStore = null,
 	pushOptions = {},
 	previewSweep = {},
+	version = null,
 }) {
 	const handoff = new TunnelHandoff({ token, mint: tunnelToken });
 	const sandbox = new Sandbox(root);
@@ -396,6 +399,8 @@ export function createAgentServer({
 	const routes = {
 		[Routes.info]: async () => ({
 			protocol: PROTOCOL_VERSION,
+			minClientProtocol: MIN_CLIENT_PROTOCOL,
+			version,
 			hostname: os.hostname(),
 			platform: os.platform(),
 			root: sandbox.root,

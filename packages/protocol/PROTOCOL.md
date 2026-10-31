@@ -18,6 +18,29 @@ Every request carries:
 The agent prints a QR code for `vsremote://pair?url=<https base url>&token=<token>`.
 `coderemote rotate-token` invalidates every paired device.
 
+## Compatibility
+
+`GET /api/info` answers `protocol` (the version this agent speaks), `minClientProtocol` (the
+oldest client protocol it still serves) and `version` (the CLI's version, `null` in a source
+checkout). A client compares them with its own protocol:
+
+- below `minClientProtocol`: the client is too old for this agent and asks its user to update the
+  client, instead of calling routes that changed;
+- `protocol` below the oldest agent the client supports: the agent is too old and the client asks
+  its user to run `coderemote update` on that computer.
+
+Agents from before these fields answer neither `minClientProtocol` nor `version`; clients treat a
+missing `minClientProtocol` as compatible. The check is per agent: one outdated computer doesn't
+block the others.
+
+So that every client, however old, can still read it, `GET /api/info` never changes
+incompatibly: its fields keep their names and types, and new ones are only added.
+
+`minClientProtocol` is raised only when a change leaves older clients unable to work (a route
+removed or changed incompatibly, a message they would misread), never for additions they can
+ignore, and only after a client release that speaks the new protocol is available, or clients
+would be told to update to a version that doesn't exist yet.
+
 ## Tunnel sign-in
 
 A private tunnel's relay answers before the agent does:
@@ -85,7 +108,7 @@ with 400 (bad input), 401, 403 (outside the shared folder, `EACCES`/`EPERM`), 40
 
 | Route | Request | Response |
 | --- | --- | --- |
-| `GET /api/info` | | `{ protocol, hostname, platform, root, user, shell }` |
+| `GET /api/info` | | `{ protocol, minClientProtocol, version, hostname, platform, root, user, shell }` (see [Compatibility](#compatibility)) |
 | `GET /api/fs/list?path=` | | `{ path, entries: [{ name, type, size, mtime, target? }] }` |
 | `GET /api/fs/stat?path=` | | `{ path, name, type, size, mtime, target? }` |
 | `GET /api/fs/read?path=` | | raw bytes |
