@@ -292,6 +292,9 @@ export class AgentHub extends EventEmitter {
 
 		switch (event.hook_event_name) {
 			case 'SessionStart':
+				// Launched from the app, it showed as running until it reported; started now, it
+				// waits for a prompt unless one is already in progress.
+				if (s.state === 'running' && s.turnStartedAt == null) s.state = 'idle';
 				break;
 			case 'UserPromptSubmit': {
 				const text = typeof event.prompt === 'string' ? event.prompt : '';

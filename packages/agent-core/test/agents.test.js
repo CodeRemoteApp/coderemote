@@ -222,3 +222,15 @@ test('an interrupted turn becomes idle when Claude Code reports it', async () =>
 	await h.handle(ev('Notification', { notification_type: 'idle_prompt', message: 'waiting for input' }));
 	assert.equal(h.session('s1').state, 'idle');
 });
+
+test('a session launched from the app waits for a prompt once it starts', async () => {
+	const { h } = hub();
+	h.launched({ id: 's1', terminal: 'term-1', cwd: base.cwd });
+	assert.equal(h.session('s1').state, 'running', 'starting up');
+	await h.handle(ev('SessionStart', { source: 'startup' }), { terminal: 'term-1' });
+	assert.equal(h.session('s1').state, 'idle');
+
+	await h.handle(ev('UserPromptSubmit', { prompt: 'hi' }));
+	await h.handle(ev('SessionStart', { source: 'compact' }));
+	assert.equal(h.session('s1').state, 'running', 'a compaction mid-turn leaves the turn running');
+});
