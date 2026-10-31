@@ -19,6 +19,7 @@ import {
 } from '@vsremote/protocol';
 import { WebSocketServer } from 'ws';
 import { AgentHub } from './agents.js';
+import { listCommands } from './commands.js';
 import * as Git from './git.js';
 import { TunnelHandoff } from './handoff.js';
 import { LANDING_HTML } from './landing.js';
@@ -55,7 +56,6 @@ const PASTE_START = '\x1b[200~';
 const PASTE_END = '\x1b[201~';
 // Keystrokes a client may send to a session, by name; anything else goes through the terminal.
 const KEYS = { interrupt: '\x1b', cycle_mode: '\x1b[Z' };
-const COMMANDS = ['/compact', '/clear', '/model'];
 
 /** Text without control characters (an ESC could end the paste early), newlines and tabs kept. */
 function typeable(text) {
@@ -102,6 +102,7 @@ async function readJson(req) {
  * @param {string} [opts.claudeCommand]  the Claude Code executable that sessions started here run
  * @param {string} [opts.codexCommand]  the Codex executable that sessions started here run
  * @param {string} [opts.codexHome]  Codex's own folder, where it caches the models it offers
+ * @param {string} [opts.home]  the user's home folder, where the coding agents keep their commands
  * @param {(agent: string) => Promise<boolean>} [opts.pluginInstalled]  whether that coding agent
  *        has the Code Remote plugin (default: asks its `plugin list`)
  * @param {AgentHub} [opts.agents]  coding-agent sessions (one is made when absent)
@@ -125,6 +126,7 @@ export function createAgentServer({
 	claudeCommand = 'claude',
 	codexCommand = 'codex',
 	codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+	home = os.homedir(),
 	pluginInstalled = null,
 	agents = new AgentHub(),
 	pushStore = null,
@@ -273,6 +275,11 @@ export function createAgentServer({
 		} catch {
 			return [];
 		}
+	}
+
+	/** The commands and skill mentions `session`'s coding agent accepts (see commands.js). */
+	function sessionCommands(session) {
+		return listCommands({ agent: session.agent, cwd: session.cwd || sandbox.root, home, codexHome });
 	}
 
 	function hookAuthorized(req) {
@@ -612,6 +619,12 @@ export function createAgentServer({
 			return { claude, plugin: Boolean(plugin), codex, codexPlugin: Boolean(codexPlugin), codexModels: codex ? await codexModels() : [] };
 		},
 
+		[Routes.agentsCommands]: async (url) => {
+			const session = agents.session(url.searchParams.get('session') ?? '');
+			if (!session) throw new HttpError(404, 'no such session');
+			return { commands: await sessionCommands(session) };
+		},
+
 		[Routes.agentsLaunch]: async (url, req) => {
 			const { agent = 'claude', cwd, model, permissionMode, approvalPolicy, resume, cols, rows } = await readJson(req);
 			if (approvalPolicy !== undefined && !['on-request', 'never'].includes(approvalPolicy)) {
@@ -698,14 +711,21 @@ export function createAgentServer({
 		},
 
 		[Routes.agentsKeys]: async (url, req) => {
-			const { session: id, action, command } = await readJson(req);
+			const { session: id, action, command, args } = await readJson(req);
 			const allowed = agents.session(typeof id === 'string' ? id : '')?.capabilities?.keys;
-			if (allowed && !allowed.includes(action === 'command' ? command : action)) {
+			if (action !== 'command' && allowed && !allowed.includes(action)) {
 				throw new HttpError(400, `this session takes ${allowed.join(', ')}`);
 			}
 			if (action === 'command') {
-				if (!COMMANDS.includes(command)) throw new HttpError(400, `command must be one of ${COMMANDS.join(', ')}`);
-				await typeInto(typingTarget(id, { whileWaiting: false }).term, command);
+				if (typeof command !== 'string') throw new HttpError(400, 'command must be a string');
+				if (args !== undefined && (typeof args !== 'string' || args.length > 100_000)) throw new HttpError(400, 'args must be a string');
+				const { session, term } = typingTarget(id, { whileWaiting: false });
+				// The fixed commands of `capabilities.keys` stay valid for apps that predate the list.
+				const listed = (await sessionCommands(session)).some((c) => c.kind === 'command' && c.name === command);
+				if (!listed && !session.capabilities?.keys?.includes(command)) {
+					throw new HttpError(400, `${command} is not a command this session takes`);
+				}
+				await typeInto(term, typeable(args?.trim() ? `${command} ${args.trim()}` : command));
 			} else if (Object.hasOwn(KEYS, action)) {
 				typingTarget(id, { whileWaiting: true }).term.write(KEYS[action]);
 			} else {

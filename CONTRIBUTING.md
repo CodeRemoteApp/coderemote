@@ -70,6 +70,9 @@ In Claude Code, `/release` does all of it: picks the next patch version (or the 
 pushed and that tests pass, pushes the tag and creates the
 GitHub release. See `.claude/skills/release/`.
 
+Before a release, check the built-in command tables in `packages/agent-core/src/commands.js`
+against the current Claude Code and Codex (their `/` menus), since both add and drop commands.
+
 ## Install scripts
 
 `install.sh` (macOS, Linux) and `install.ps1` (Windows PowerShell 5.1 and later) are served

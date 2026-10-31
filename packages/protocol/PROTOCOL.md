@@ -259,7 +259,8 @@ are forgotten 24 hours after they end.
 | `GET /api/agents/setup` | | `{ claude, plugin, codex, codexPlugin, codexModels }`: whether Claude Code, Codex and their Code Remote plugins are installed, and the models Codex offers, see [Starting sessions](#starting-sessions) |
 | `POST /api/agents/sessions` | `{ agent?, cwd?, model?, permissionMode?, resume?, cols?, rows? }` | `{ terminal, session }`; starts Claude Code, see [Starting sessions](#starting-sessions) |
 | `POST /api/agents/prompt` | `{ session, text, attachments? }` | `{ prompt }`; see [Prompts and keys](#prompts-and-keys) |
-| `POST /api/agents/keys` | `{ session, action, command? }` | `{}` |
+| `GET /api/agents/commands?session=` | | `{ commands: [command] }`; 404 for an unknown session, see [Commands](#commands) |
+| `POST /api/agents/keys` | `{ session, action, command?, args? }` | `{}` |
 | `POST /api/agents/stop` | `{ session }` | `{}`; see [Stopping and forgetting](#stopping-and-forgetting) |
 | `POST /api/agents/forget` | `{ session }` | `{}`; see [Stopping and forgetting](#stopping-and-forgetting) |
 | `POST /api/agents/uploads` | the file's bytes | `{ id, name, type, size }`; see [Uploads](#uploads) |
@@ -344,8 +345,38 @@ because the terminal had a menu open.
 `POST /api/agents/keys` presses keys the agent knows by name, among the session's
 `capabilities.keys` (Codex has no `cycle_mode` or `/clear`): `interrupt` (Esc, which also backs
 out of a dialog and works while the session waits), `cycle_mode` (Shift+Tab, the next permission
-mode), or `command` with `command` one of `/compact`, `/clear` or `/model`. Anything else is 400;
-the terminal itself remains for the rest.
+mode), or `command`: `command` is a `"command"` entry of the session's [commands](#commands) (or one of
+`capabilities.keys`), entered as a prompt is, with `args` (a string, control characters dropped)
+after a space. Anything else is 400; the terminal itself remains for the rest. Built-in commands
+don't come back as `prompt_confirmed`; custom commands and skills do arrive as prompt entries.
+Older agents take only `/compact`, `/clear` and `/model` and ignore `args`.
+
+### Commands
+
+`GET /api/agents/commands?session=` lists what the session's coding agent accepts, read from the
+files the agent itself reads on this computer, so a client can suggest them. Each command is
+`{ name, kind, description, argumentHint, source, interactive }`:
+
+- `name` is exactly what is typed. `kind` is `"command"` (starts with `/` and runs when entered,
+  see [Prompts and keys](#prompts-and-keys)) or `"mention"` (starts with `$` and goes inside a
+  prompt, which is sent as usual).
+- `source` is `"builtin"`, `"user"`, `"project"` or `"plugin"`.
+- `interactive` is true for commands that open a menu or dialog in the terminal, which needs
+  keys a client can't send; clients offer to open the terminal for those.
+- `description` and `argumentHint` come from the file's frontmatter. The rest of the file is
+  never sent.
+
+Claude Code: its built-in commands; commands in `~/.claude/commands` and `<cwd>/.claude/commands`
+(subfolders joined with `:`); skills in `~/.claude/skills` and `<cwd>/.claude/skills` (except
+`user-invocable: false`); skills synced from claude.ai as `/anthropic-skills:<name>`; and commands
+and skills of enabled plugins as `/<plugin>:<name>`. Project entries win over user ones.
+
+Codex: its built-in commands, and skills as mentions: `~/.codex/skills` (with `.system`) as
+`$<name>`, `.agents/skills` in the session's folder and its parents up to the repository root,
+and installed plugins as `$<plugin>:<name>` unless `config.toml` turns the plugin off.
+
+Built-ins come first, the rest sorted by name. Older agents answer 404; clients then offer
+`capabilities.keys`.
 
 ### Stopping and forgetting
 

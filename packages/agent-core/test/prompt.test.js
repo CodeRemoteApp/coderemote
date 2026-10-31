@@ -24,6 +24,9 @@ before(async () => {
 	root = path.join(tmp, 'share');
 	uploads = path.join(tmp, 'uploads');
 	await fs.mkdir(root);
+	await fs.mkdir(path.join(root, '.claude', 'commands'), { recursive: true });
+	await fs.writeFile(path.join(root, '.claude', 'commands', 'deploy.md'), '---\ndescription: Ship it\nargument-hint: [env]\n---\nDeploy to $ARGUMENTS\n');
+	await fs.mkdir(path.join(tmp, 'home'));
 	// Takes the terminal raw and records every byte typed into it.
 	let fake = path.join(tmp, 'claude');
 	if (isWindows) {
@@ -36,7 +39,7 @@ before(async () => {
 		await fs.writeFile(fake, `#!/bin/sh\nstty raw -echo\nexec cat > "${tmp}/typed-$$"\n`, { mode: 0o755 });
 	}
 	hub = new AgentHub({ transcript: async () => [] });
-	server = createAgentServer({ token, root, hookSecret, uploadsDir: uploads, claudeCommand: fake, pluginInstalled: async () => true, agents: hub });
+	server = createAgentServer({ token, root, hookSecret, uploadsDir: uploads, claudeCommand: fake, home: path.join(tmp, 'home'), pluginInstalled: async () => true, agents: hub });
 	await new Promise((r) => server.listen(0, '127.0.0.1', r));
 	baseUrl = `http://127.0.0.1:${server.address().port}`;
 });
@@ -48,6 +51,11 @@ after(async () => {
 	server.close();
 	await fs.rm(tmp, { recursive: true, force: true });
 });
+
+async function get(route) {
+	const res = await fetch(`${baseUrl}${route}`, { headers: { authorization: `Bearer ${token}` } });
+	return { status: res.status, body: await res.json() };
+}
 
 async function post(route, body, headers = {}) {
 	const res = await fetch(`${baseUrl}${route}`, {
@@ -142,8 +150,26 @@ test('keys: each action types exactly its bytes; anything else is refused', asyn
 	await post('/api/agents/keys', { session: s.id, action: 'command', command: '/compact' });
 	const want = '\x1b\x1b[Z\x1b[200~/compact\x1b[201~\r';
 	assert.equal(await s.typed(want.length), want);
-	assert.equal((await post('/api/agents/keys', { session: s.id, action: 'command', command: '/exit' })).status, 400);
+	assert.equal((await post('/api/agents/keys', { session: s.id, action: 'command', command: '/not-a-command' })).status, 400);
+	assert.equal((await post('/api/agents/keys', { session: s.id, action: 'command', command: '$a-mention' })).status, 400);
 	assert.equal((await post('/api/agents/keys', { session: s.id, action: 'rm -rf' })).status, 400);
+});
+
+test('commands: a session lists its commands and runs any of them with arguments', async () => {
+	assert.equal((await get('/api/agents/commands?session=nope')).status, 404);
+	const s = await session();
+	const { status, body } = await get(`/api/agents/commands?session=${s.id}`);
+	assert.equal(status, 200);
+	const names = Object.fromEntries(body.commands.map((c) => [c.name, c]));
+	assert.equal(names['/clear'].source, 'builtin');
+	assert.deepEqual(names['/deploy'], { name: '/deploy', kind: 'command', description: 'Ship it', argumentHint: '[env]', source: 'project', interactive: false });
+	assert.ok(!JSON.stringify(body).includes('$ARGUMENTS'));
+
+	assert.equal((await post('/api/agents/keys', { session: s.id, action: 'command', command: '/deploy', args: 7 })).status, 400);
+	assert.equal((await post('/api/agents/keys', { session: s.id, action: 'command', command: '/deploy', args: ' staging\x1b ' })).status, 200);
+	assert.equal((await post('/api/agents/keys', { session: s.id, action: 'command', command: '/context' })).status, 200);
+	const want = '\x1b[200~/deploy staging\x1b[201~\r\x1b[200~/context\x1b[201~\r';
+	assert.equal(await s.typed(want.length), want);
 });
 
 test('uploads: names cannot leave the folder; oversized files are refused', async () => {

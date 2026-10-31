@@ -54,6 +54,7 @@ export const Routes = Object.freeze({
 	agentsAnswer: 'POST /api/agents/answer',
 	agentsLaunch: 'POST /api/agents/sessions',
 	agentsSetup: 'GET /api/agents/setup',
+	agentsCommands: 'GET /api/agents/commands',
 	agentsPrompt: 'POST /api/agents/prompt',
 	agentsKeys: 'POST /api/agents/keys',
 	agentsStop: 'POST /api/agents/stop',

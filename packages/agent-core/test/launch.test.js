@@ -225,10 +225,10 @@ test('starts Codex with its own flags; its first event replaces the placeholder'
 	const real = hub.session('01a180e0-codex');
 	assert.deepEqual([real.agent, real.terminal, real.capabilities.approvals], ['codex', body.terminal, 'presence']);
 
-	// Codex has no Shift+Tab mode cycling or /clear.
+	// Codex has no Shift+Tab mode cycling, and none of Claude Code's own commands.
 	const key = (b) => fetch(`${url}/api/agents/keys`, { method: 'POST', headers: auth, body: JSON.stringify({ session: real.id, ...b }) });
 	assert.equal((await key({ action: 'cycle_mode' })).status, 400);
-	assert.equal((await key({ action: 'command', command: '/clear' })).status, 400);
+	assert.equal((await key({ action: 'command', command: '/context' })).status, 400);
 	assert.equal((await key({ action: 'interrupt' })).status, 200);
 	assert.equal((await fetch(`${url}/api/agents/sessions`, { method: 'POST', headers: auth, body: JSON.stringify({ agent: 'gemini' }) })).status, 400);
 	await codex.killAllSessions();
