@@ -20,6 +20,7 @@ import {
 import { WebSocketServer } from 'ws';
 import { AgentHub } from './agents.js';
 import { listCommands } from './commands.js';
+import { listHistory } from './history.js';
 import * as Git from './git.js';
 import { TunnelHandoff } from './handoff.js';
 import { LANDING_HTML } from './landing.js';
@@ -56,6 +57,42 @@ const PASTE_START = '\x1b[200~';
 const PASTE_END = '\x1b[201~';
 // Keystrokes a client may send to a session, by name; anything else goes through the terminal.
 const KEYS = { interrupt: '\x1b', cycle_mode: '\x1b[Z' };
+
+// Types players need to recognize a file by (anything else is served as octet-stream).
+const MEDIA_TYPES = {
+	'.mp4': 'video/mp4',
+	'.m4v': 'video/x-m4v',
+	'.mov': 'video/quicktime',
+	'.webm': 'video/webm',
+	'.mp3': 'audio/mpeg',
+	'.m4a': 'audio/mp4',
+	'.aac': 'audio/aac',
+	'.wav': 'audio/wav',
+	'.caf': 'audio/x-caf',
+};
+
+/**
+ * The single byte range a `Range` header asks for, as `{ start, end }` (inclusive), null to send
+ * the whole file (no header, several ranges, or one this doesn't parse), or `'unsatisfiable'`.
+ */
+export function byteRange(header, size) {
+	const m = /^bytes=(\d*)-(\d*)$/.exec(String(header ?? '').trim());
+	if (!m || (m[1] === '' && m[2] === '')) return null;
+	let start;
+	let end;
+	if (m[1] === '') {
+		// The last N bytes.
+		const n = Number(m[2]);
+		if (n === 0) return 'unsatisfiable';
+		start = Math.max(0, size - n);
+		end = size - 1;
+	} else {
+		start = Number(m[1]);
+		end = m[2] === '' ? size - 1 : Math.min(Number(m[2]), size - 1);
+	}
+	if (start >= size || start > end) return 'unsatisfiable';
+	return { start, end };
+}
 
 /** Text without control characters (an ESC could end the paste early), newlines and tabs kept. */
 function typeable(text) {
@@ -434,7 +471,25 @@ export function createAgentServer({
 			const p = await sandbox.resolve(url.searchParams.get('path'));
 			const stat = await fs.stat(p);
 			if (!stat.isFile()) throw new HttpError(400, 'not a file');
-			res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': stat.size });
+			const type = MEDIA_TYPES[path.extname(p).toLowerCase()] ?? 'application/octet-stream';
+			// One byte range, so a video plays while it downloads and can be scrubbed.
+			const range = byteRange(req.headers.range, stat.size);
+			if (range === 'unsatisfiable') {
+				res.writeHead(416, { 'content-range': `bytes */${stat.size}`, 'accept-ranges': 'bytes' });
+				res.end();
+				return;
+			}
+			if (range) {
+				res.writeHead(206, {
+					'content-type': type,
+					'content-length': range.end - range.start + 1,
+					'content-range': `bytes ${range.start}-${range.end}/${stat.size}`,
+					'accept-ranges': 'bytes',
+				});
+				await pipeline(createReadStream(p, range), res);
+				return;
+			}
+			res.writeHead(200, { 'content-type': type, 'content-length': stat.size, 'accept-ranges': 'bytes' });
 			await pipeline(createReadStream(p), res);
 		},
 
@@ -623,6 +678,13 @@ export function createAgentServer({
 			const session = agents.session(url.searchParams.get('session') ?? '');
 			if (!session) throw new HttpError(404, 'no such session');
 			return { commands: await sessionCommands(session) };
+		},
+
+		[Routes.agentsHistory]: async (url) => {
+			const session = agents.session(url.searchParams.get('session') ?? '');
+			if (!session) throw new HttpError(404, 'no such session');
+			const found = await listHistory({ agent: session.agent, cwd: session.cwd || sandbox.root, home, codexHome });
+			return { sessions: found.filter((h) => h.id !== session.id) };
 		},
 
 		[Routes.agentsLaunch]: async (url, req) => {

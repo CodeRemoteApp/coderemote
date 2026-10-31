@@ -172,6 +172,19 @@ test('commands: a session lists its commands and runs any of them with arguments
 	assert.equal(await s.typed(want.length), want);
 });
 
+test('history: earlier conversations of the session\'s folder, without the session itself', async () => {
+	assert.equal((await get('/api/agents/history?session=nope')).status, 404);
+	const s = await session();
+	const dir = path.join(tmp, 'home', '.claude', 'projects', path.resolve(root).replace(/[^a-zA-Z0-9]/g, '-'));
+	await fs.mkdir(dir, { recursive: true });
+	const said = (text) => `${JSON.stringify({ type: 'user', message: { role: 'user', content: text } })}\n`;
+	await fs.writeFile(path.join(dir, 'earlier.jsonl'), said('An earlier task'));
+	await fs.writeFile(path.join(dir, `${s.id}.jsonl`), said('This very session'));
+	const { status, body } = await get(`/api/agents/history?session=${s.id}`);
+	assert.equal(status, 200);
+	assert.deepEqual(body.sessions.map((h) => [h.id, h.title]), [['earlier', 'An earlier task']]);
+});
+
 test('uploads: names cannot leave the folder; oversized files are refused', async () => {
 	const evil = await post('/api/agents/uploads', 'x', { 'x-filename': '../../.ssh/authorized_keys' });
 	assert.equal(evil.body.name, 'authorized_keys');

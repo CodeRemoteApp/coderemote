@@ -111,7 +111,7 @@ with 400 (bad input), 401, 403 (outside the shared folder, `EACCES`/`EPERM`), 40
 | `GET /api/info` | | `{ protocol, minClientProtocol, version, hostname, platform, root, user, shell }` (see [Compatibility](#compatibility)) |
 | `GET /api/fs/list?path=` | | `{ path, entries: [{ name, type, size, mtime, target? }] }` |
 | `GET /api/fs/stat?path=` | | `{ path, name, type, size, mtime, target? }` |
-| `GET /api/fs/read?path=` | | raw bytes |
+| `GET /api/fs/read?path=` | | raw bytes; one `Range: bytes=…` gets 206 with that part (416 past the end), so media streams; video and audio files carry their media type |
 | `PUT /api/fs/write?path=` | raw bytes | entry; written atomically via temp file + rename |
 | `POST /api/fs/mkdir?path=` | | `{}` (recursive) |
 | `POST /api/fs/rename` | `{ from, to }` | `{}` |
@@ -123,13 +123,13 @@ with 400 (bad input), 401, 403 (outside the shared folder, `EACCES`/`EPERM`), 40
 ## Git
 
 Repositories are found by scanning the shared folder up to 4 levels deep (hidden folders,
-`node_modules`, build output and nested repositories are skipped). `repo` is a repository's
+`node_modules` and build output are skipped; repositories inside another one are found too). `repo` is a repository's
 absolute path; file paths are relative to it and must stay inside it. Git never prompts:
 pull/push use the machine's existing credentials or fail. Git failures return 409 with git's message.
 
 | Route | Request | Response |
 | --- | --- | --- |
-| `GET /api/git/repos` | | `{ repos: [{ path, name, branch }] }` |
+| `GET /api/git/repos` | | `{ repos: [{ path, name, branch, changes, ahead, behind }] }`: `changes` is the number of changed files, `ahead`/`behind` the commits to push/pull (null when git can't tell; older agents omit them) |
 | `GET /api/git/status?repo=` | | `{ branch, upstream, ahead, behind, files: [{ path, index, worktree, origPath?, conflicted? }] }` |
 | `GET /api/git/diff?repo=&path=&staged=1&untracked=1` | | `{ text, truncated }` |
 | `POST /api/git/stage` | `{ repo, files }` | status |
@@ -260,6 +260,7 @@ are forgotten 24 hours after they end.
 | `POST /api/agents/sessions` | `{ agent?, cwd?, model?, permissionMode?, resume?, cols?, rows? }` | `{ terminal, session }`; starts Claude Code, see [Starting sessions](#starting-sessions) |
 | `POST /api/agents/prompt` | `{ session, text, attachments? }` | `{ prompt }`; see [Prompts and keys](#prompts-and-keys) |
 | `GET /api/agents/commands?session=` | | `{ commands: [command] }`; 404 for an unknown session, see [Commands](#commands) |
+| `GET /api/agents/history?session=` | | `{ sessions: [earlier] }`; 404 for an unknown session, see [History](#history) |
 | `POST /api/agents/keys` | `{ session, action, command?, args? }` | `{}` |
 | `POST /api/agents/stop` | `{ session }` | `{}`; see [Stopping and forgetting](#stopping-and-forgetting) |
 | `POST /api/agents/forget` | `{ session }` | `{}`; see [Stopping and forgetting](#stopping-and-forgetting) |
@@ -290,7 +291,7 @@ latest 500 of each session. Each is `{ seq, time, kind, ... }`:
 | `tool_result` | `toolUseId`, `name`, `output` (string), `error` (bool), `truncated` (bool), `duration` (ms, or null) |
 | `request` | `request` (the request object below) |
 | `request_resolved` | `request` (id), `outcome`: `allowed`, `denied`, `answered`, `withdrawn`, `expired` or `deferred`; `by`: `phone`, `computer` or `agent` |
-| `turn_end` | `duration` (ms) |
+| `turn_end` | `duration` (ms); `error: true` and `text` (the agent's message) when the turn failed, e.g. Codex with a model the account can't use |
 
 `output` keeps the first 16 KB of a tool result; `truncated` says there was more.
 
@@ -377,6 +378,17 @@ and installed plugins as `$<plugin>:<name>` unless `config.toml` turns the plugi
 
 Built-ins come first, the rest sorted by name. Older agents answer 404; clients then offer
 `capabilities.keys`.
+
+### History
+
+`GET /api/agents/history?session=` lists up to 50 earlier conversations of the session's coding
+agent in the session's folder, most recent first, without the session itself, so a client can
+offer what `/resume` would: each is `{ id, title, updatedAt, branch, size }`. `id` is what
+`POST /api/agents/sessions` takes as `resume`; `title` is the name the agent gave it (or the first
+prompt); `updatedAt` is in milliseconds; `branch` is the git branch it was on, or null; `size` is
+the bytes of its transcript. They are read from the agent's own files (Claude Code's
+`~/.claude/projects`, Codex's `~/.codex/sessions`); conversations with no prompt are left out.
+Older agents answer 404.
 
 ### Stopping and forgetting
 

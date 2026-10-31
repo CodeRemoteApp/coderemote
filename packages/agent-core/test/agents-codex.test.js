@@ -174,3 +174,55 @@ test('the rollout is followed from where it ended, across partly written lines',
 	tail.stop();
 	assert.deepEqual(seen, ['new']);
 });
+
+test('a turn that failed ends from the rollout, with its error; Stop does not end it twice', async () => {
+	let turnEnd;
+	const h = hub({ rolloutTail: (file, onItem, onTurnEnd) => ((turnEnd = onTurnEnd), { poll: async () => {}, stop() {} }) });
+	await h.handle(ev.start, { agent: 'codex' });
+	await h.handle(ev.prompt, { agent: 'codex' });
+	assert.equal(h.session(common.session_id).state, 'running');
+	turnEnd("The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.");
+	assert.equal(h.session(common.session_id).state, 'idle');
+	await h.handle(ev.stop, { agent: 'codex' });
+	const ends = h.timeline(common.session_id).entries.filter((e) => e.kind === 'turn_end');
+	assert.equal(ends.length, 1);
+	assert.equal(ends[0].error, true);
+	assert.match(ends[0].text, /not supported/);
+});
+
+test('a turn that ended normally waits for Stop, and ends without it if it never comes', async (t) => {
+	t.mock.timers.enable({ apis: ['setTimeout'] });
+	let turnEnd;
+	const h = hub({ rolloutTail: (file, onItem, onTurnEnd) => ((turnEnd = onTurnEnd), { poll: async () => {}, stop() {} }) });
+	await h.handle(ev.start, { agent: 'codex' });
+	await h.handle(ev.prompt, { agent: 'codex' });
+	turnEnd(null);
+	assert.equal(h.session(common.session_id).state, 'running');
+	t.mock.timers.tick(3000);
+	assert.equal(h.session(common.session_id).state, 'idle');
+	const ends = h.timeline(common.session_id).entries.filter((e) => e.kind === 'turn_end');
+	assert.deepEqual(ends.map((e) => e.error), [undefined]);
+	// Stop in time: the rollout's end gives way to it.
+	await h.handle(ev.prompt, { agent: 'codex' });
+	turnEnd(null);
+	await h.handle(ev.stop, { agent: 'codex' });
+	t.mock.timers.tick(3000);
+	assert.equal(h.timeline(common.session_id).entries.filter((e) => e.kind === 'turn_end').length, 2);
+});
+
+test('the rollout reports how turns end', async () => {
+	const { RolloutTail } = await import('../src/codex-rollout.js');
+	const fs = await import('node:fs/promises');
+	const os = await import('node:os');
+	const path = await import('node:path');
+	const file = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'rollout-')), 'r.jsonl');
+	await fs.writeFile(file, '');
+	const ends = [];
+	const tail = new RolloutTail(file, () => {}, (error) => ends.push(error));
+	await tail.poll();
+	const done = (payload) => JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', last_agent_message: null, ...payload } });
+	await fs.appendFile(file, `${done({ error: { message: 'Model not supported' } })}\n${done({})}\n`);
+	await tail.poll();
+	tail.stop();
+	assert.deepEqual(ends, ['Model not supported', null]);
+});

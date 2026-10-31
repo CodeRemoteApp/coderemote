@@ -1,7 +1,7 @@
 // Codex's hooks report the prompt, tools and final reply, but not what Codex says in between or
-// what a patch did. Its rollout file (the hook's `transcript_path`) has both, as `item_completed`
-// events. The format is Codex's own and undocumented, so this follows only those items and
-// ignores anything else.
+// what a patch did, nor a turn that failed (Stop doesn't run then). Its rollout file (the hook's
+// `transcript_path`) has them, as `item_completed` and `task_complete` events. The format is
+// Codex's own and undocumented, so this follows only those and ignores anything else.
 import fs from 'node:fs/promises';
 
 const POLL = 1000;
@@ -27,17 +27,22 @@ export function codexItem(item) {
 	return null;
 }
 
-/** Follows a rollout file from its current end, calling `onItem` with each completed item. */
+/**
+ * Follows a rollout file from its current end, calling `onItem` with each completed item and
+ * `onTurnEnd` with the error message of each turn that ends (null when it ended normally).
+ */
 export class RolloutTail {
 	#file;
 	#offset = null;
 	#partial = '';
 	#timer = null;
 	#onItem;
+	#onTurnEnd;
 
-	constructor(file, onItem) {
+	constructor(file, onItem, onTurnEnd = () => {}) {
 		this.#file = file;
 		this.#onItem = onItem;
+		this.#onTurnEnd = onTurnEnd;
 		this.#timer = setInterval(() => this.poll().catch(() => {}), POLL);
 		this.#timer.unref?.();
 	}
@@ -64,7 +69,12 @@ export class RolloutTail {
 				} catch {
 					continue;
 				}
-				if (record?.type === 'event_msg' && record.payload?.type === 'item_completed') this.#onItem(record.payload.item);
+				if (record?.type !== 'event_msg') continue;
+				if (record.payload?.type === 'item_completed') this.#onItem(record.payload.item);
+				else if (record.payload?.type === 'task_complete') {
+					const message = record.payload.error?.message;
+					this.#onTurnEnd(typeof message === 'string' && message.trim() ? message.trim() : null);
+				}
 			}
 		} finally {
 			await handle.close();

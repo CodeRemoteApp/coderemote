@@ -13,6 +13,8 @@ const MAX_TITLE = 80;
 const ENDED_TTL = 24 * 60 * 60 * 1000;
 const REQUEST_TTL = 60 * 60 * 1000;
 const START_TIMEOUT = 15 * 1000;
+// How long a turn Codex's rollout says ended waits for Stop before it ends without it.
+const STOP_GRACE = 3 * 1000;
 // A request held for the phone blocks a Codex terminal, so it is held for less long.
 const SEQUENTIAL_REQUEST_TTL = 10 * 60 * 1000;
 
@@ -153,7 +155,7 @@ export class AgentHub extends EventEmitter {
 		transcript = readTranscript,
 		startTimeout = START_TIMEOUT,
 		present = async () => false,
-		rolloutTail = (file, onItem) => new RolloutTail(file, onItem),
+		rolloutTail = (file, onItem, onTurnEnd) => new RolloutTail(file, onItem, onTurnEnd),
 	} = {}) {
 		super();
 		this.#now = now;
@@ -277,7 +279,7 @@ export class AgentHub extends EventEmitter {
 		}
 		await s.ready;
 		if (s.agent === 'codex' && !s.tail && typeof event.transcript_path === 'string') {
-			s.tail = this.#rolloutTail(event.transcript_path, (item) => this.#fromRollout(s, item));
+			s.tail = this.#rolloutTail(event.transcript_path, (item) => this.#fromRollout(s, item), (error) => this.#rolloutTurnEnd(s, error));
 			s.tail.poll?.().catch(() => {});
 		}
 		if (replaced) {
@@ -370,11 +372,9 @@ export class AgentHub extends EventEmitter {
 				if (last && !turnEntries.some((e) => e.kind === 'assistant' && e.text.trim() === last)) {
 					this.#entry(s, { kind: 'assistant', text: last });
 				}
-				s.streaming.clear();
-				const duration = s.turnStartedAt ? now - s.turnStartedAt : 0;
-				s.turnStartedAt = null;
-				s.state = s.requests.size ? 'waiting' : 'idle';
-				this.#entry(s, { kind: 'turn_end', duration });
+				// Codex's rollout may have ended the turn already (see #rolloutTurnEnd).
+				if (s.turnStartedAt == null && s.entries.at(-1)?.kind === 'turn_end') break;
+				this.#endTurn(s, now);
 				break;
 			}
 			case 'Interrupt':
@@ -538,6 +538,32 @@ export class AgentHub extends EventEmitter {
 	}
 
 	/** Something Codex said or a tool's result, from its rollout, unless the hooks told it already. */
+	#endTurn(s, now, error = null) {
+		s.streaming.clear();
+		const duration = s.turnStartedAt ? now - s.turnStartedAt : 0;
+		s.turnStartedAt = null;
+		s.state = s.requests.size ? 'waiting' : 'idle';
+		this.#entry(s, { kind: 'turn_end', duration, ...(error ? { error: true, text: error } : {}) });
+	}
+
+	/**
+	 * Codex's rollout says a turn ended. Stop doesn't run when it failed (an unsupported model, a
+	 * lost connection), so a failed turn ends here, with its error. One that ended normally is
+	 * left to Stop, which carries the last reply, unless Stop never comes (its hook failed).
+	 */
+	#rolloutTurnEnd(s, error) {
+		if (s.turnStartedAt == null) return;
+		const started = s.turnStartedAt;
+		const end = () => {
+			if (s.turnStartedAt !== started) return;
+			this.#endTurn(s, this.#now(), error);
+			s.lastActivityAt = this.#now();
+			this.#emitSession(s);
+		};
+		if (error) end();
+		else setTimeout(end, STOP_GRACE).unref?.();
+	}
+
 	#fromRollout(s, item) {
 		const fields = codexItem(item);
 		if (!fields) return;

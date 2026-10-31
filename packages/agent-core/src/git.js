@@ -30,7 +30,10 @@ export function git(cwd, args, { timeout = 30_000, okCodes = [0], maxBuffer = 16
 	});
 }
 
-/** Repositories under `root` (including `root` itself), nearest first. Nested repos are not entered. */
+/**
+ * Repositories under `root` (including `root` itself), nearest first. A repository's folders are
+ * searched too, so repositories kept inside another one (a workspace of repos, submodules) show.
+ */
 export async function findRepos(root) {
 	const repos = [];
 	async function walk(dir, depth) {
@@ -40,10 +43,7 @@ export async function findRepos(root) {
 		} catch {
 			return;
 		}
-		if (entries.some((e) => e.name === '.git')) {
-			repos.push(dir);
-			return;
-		}
+		if (entries.some((e) => e.name === '.git')) repos.push(dir);
 		if (depth >= MAX_SCAN_DEPTH) return;
 		const subdirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.') && !SKIP_DIRS.has(e.name));
 		await Promise.all(subdirs.map((e) => walk(path.join(dir, e.name), depth + 1)));
@@ -55,8 +55,19 @@ export async function findRepos(root) {
 			path: repo,
 			name: repo === root ? path.basename(root) : path.relative(root, repo),
 			branch: await currentBranch(repo),
+			...(await summary(repo)),
 		})),
 	);
+}
+
+/** How many files changed, and commits to push and pull; nulls when git can't tell. */
+async function summary(repo) {
+	try {
+		const { files, ahead, behind } = await status(repo);
+		return { changes: files.length, ahead, behind };
+	} catch {
+		return { changes: null, ahead: null, behind: null };
+	}
 }
 
 async function currentBranch(repo) {

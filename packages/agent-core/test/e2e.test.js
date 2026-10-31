@@ -124,6 +124,29 @@ test('file explorer round trip', async () => {
 	const read = await api('GET', '/api/fs/read', { query: { path: file }, raw: true });
 	assert.equal(await read.text(), 'xin chào');
 
+	// Players read a file in byte ranges.
+	const clip = path.join(dir, 'clip.mp4');
+	await api('PUT', '/api/fs/write', { query: { path: clip }, body: '0123456789' });
+	const ranged = (range) => {
+		const url = new URL('/api/fs/read', baseUrl);
+		url.searchParams.set('path', clip);
+		return fetch(url, { headers: { ...headers(), range } });
+	};
+	const part = await ranged('bytes=2-5');
+	assert.equal(part.status, 206);
+	assert.equal(part.headers.get('content-range'), 'bytes 2-5/10');
+	assert.equal(part.headers.get('content-type'), 'video/mp4');
+	assert.equal(await part.text(), '2345');
+	assert.equal(await (await ranged('bytes=-3')).text(), '789');
+	assert.equal(await (await ranged('bytes=8-')).text(), '89');
+	const past = await ranged('bytes=20-');
+	assert.equal(past.status, 416);
+	assert.equal(past.headers.get('content-range'), 'bytes */10');
+	const whole = await ranged('bytes=0-1,4-5');
+	assert.equal(whole.status, 200);
+	assert.equal(whole.headers.get('accept-ranges'), 'bytes');
+	assert.equal(await whole.text(), '0123456789');
+
 	const renamed = path.join(dir, 'renamed.txt');
 	await api('POST', '/api/fs/rename', { body: JSON.stringify({ from: file, to: renamed }) });
 	const stat = await api('GET', '/api/fs/stat', { query: { path: renamed } });
@@ -258,10 +281,18 @@ test('git: finds repos, stages, commits and reads history', async () => {
 		gitIn(repo, 'config', 'core.autocrlf', 'false');
 	}
 	await fs.mkdir(path.join(parent, 'node_modules', 'dep', '.git'), { recursive: true });
+	// A repository kept inside another one, like a workspace of repos or a submodule.
+	const plugin = path.join(app, 'extra');
+	await fs.mkdir(plugin, { recursive: true });
+	gitIn(plugin, 'init', '-q', '-b', 'main');
 
 	const { repos } = await api('GET', '/api/git/repos');
 	const found = repos.map((r) => r.path);
 	assert.ok(found.includes(app) && found.includes(lib), 'both repos are found');
+	assert.ok(found.indexOf(plugin) > found.indexOf(app), 'the nested repo is found, after the one holding it');
+	// The nested repo is an untracked folder of the one holding it; neither has an upstream.
+	assert.deepEqual(['changes', 'ahead', 'behind'].map((k) => repos.find((r) => r.path === app)[k]), [1, 0, 0]);
+	await fs.rm(plugin, { recursive: true, force: true });
 	assert.ok(!found.some((p) => p.includes('node_modules')), 'node_modules is skipped');
 	assert.equal(repos.find((r) => r.path === lib).name, path.relative(root, lib));
 
