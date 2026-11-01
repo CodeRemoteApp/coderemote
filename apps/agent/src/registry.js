@@ -11,13 +11,23 @@ export class AgentRegistry {
 	register({ port, root, url }) {
 		fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
 		const file = this.#file(port);
-		fs.writeFileSync(file, JSON.stringify({ pid: process.pid, port, root, url, startedAt: Date.now() }), { mode: 0o600 });
+		// Registering again (the tunnel connected later) keeps when this agent started.
+		let startedAt = Date.now();
+		try {
+			const previous = JSON.parse(fs.readFileSync(file, 'utf8'));
+			if (previous.pid === process.pid) startedAt = previous.startedAt;
+		} catch {}
+		fs.writeFileSync(file, JSON.stringify({ pid: process.pid, port, root, url, startedAt }), { mode: 0o600 });
 		const cleanup = () => {
 			try {
 				if (JSON.parse(fs.readFileSync(file, 'utf8')).pid === process.pid) fs.rmSync(file);
 			} catch {}
 		};
-		process.on('exit', cleanup);
+		if (!this.cleanups) this.cleanups = new Set();
+		if (!this.cleanups.has(file)) {
+			this.cleanups.add(file);
+			process.on('exit', cleanup);
+		}
 		return cleanup;
 	}
 

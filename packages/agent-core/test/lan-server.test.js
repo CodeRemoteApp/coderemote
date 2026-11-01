@@ -20,6 +20,7 @@ let lan;
 let server;
 let local;
 let lanPort;
+let hostedUrl = null;
 
 before(async () => {
 	if (skip) return;
@@ -31,6 +32,8 @@ before(async () => {
 		hookSecret,
 		lan,
 		lanAddresses: () => ['192.168.1.5'],
+		agentId: 'c'.repeat(32),
+		tunnelUrl: () => hostedUrl,
 		tunnelToken: async () => ({ token: 'tunnel-1', expiresAt: Date.now() + 3_600_000 }),
 	});
 	await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -122,6 +125,17 @@ test('tunnel tokens, tunnel management, previews and install links are refused o
 	// Still answered over loopback, where the tunnel delivers (after the relay's sign-in).
 	const renewed = await fetch(new URL(at(Routes.tunnelToken), local), { method: 'POST', headers: auth });
 	assert.equal(renewed.status, 200);
+});
+
+test('/api/info reports the agent id, and the tunnel once it is hosted', { skip }, async () => {
+	const before = JSON.parse((await lanRequest(infoPath, { headers: auth })).text);
+	assert.equal(before.agentId, 'c'.repeat(32));
+	assert.equal(before.tunnel, null);
+	hostedUrl = 'https://x-31580.asse.devtunnels.ms';
+	const after = JSON.parse((await lanRequest(infoPath, { headers: auth })).text);
+	assert.deepEqual(after.tunnel, { url: hostedUrl });
+	assert.equal(after.agentId, before.agentId);
+	hostedUrl = null;
 });
 
 test('without a LAN listener, /api/info says lan: null', { skip }, async () => {

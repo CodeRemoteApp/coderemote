@@ -6,7 +6,7 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { createAgentServer, isWindows } from '@vsremote/agent-core';
 import { pairingUrl } from '@vsremote/protocol';
-import { ensureHookSecret, hostAppFrom, hookTarget, readHookSecret, runHook } from '../src/hook.js';
+import { ensureHookSecret, hookTarget, readHookSecret, runHook } from '../src/hook.js';
 
 let dir;
 let project;
@@ -60,40 +60,17 @@ test('delivers events and prints nothing for them', async () => {
 	assert.equal(server.agents.session('s').title, 'hello');
 });
 
+test('skips a run the agent started itself', async () => {
+	const out = await runHook({ input: event({ hook_event_name: 'UserPromptSubmit', session_id: 'drafting', prompt: 'commit msg' }), agents: agents(), secret, env: { CODEREMOTE_NO_HOOK: '1' } });
+	assert.equal(out, '');
+	assert.equal(server.agents.session('drafting'), null);
+});
+
 test('prints the phone’s decision for a PermissionRequest', async () => {
 	const opened = new Promise((r) => server.agents.on('message', (m) => m.type === 'request' && r(m.request)));
 	const out = runHook({ input: event({ hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'ls' } }), agents: agents(), secret, env: {} });
 	server.agents.answer({ request: (await opened).id, behavior: 'deny', message: 'not now' });
 	assert.deepEqual(JSON.parse(await out), { hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: 'not now' } } });
-});
-
-test('finds the app a session runs in among its ancestors', () => {
-	const ps = [
-		'    1     0 /sbin/launchd',
-		'  500     1 /Applications/Visual Studio Code.app/Contents/MacOS/Electron',
-		'  600   500 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)',
-		'  700   600 /bin/zsh',
-		'  800   700 claude',
-		'  900     1 tmux',
-		'  901   900 claude',
-	].join('\n');
-	assert.equal(hostAppFrom(ps, 800), '/Applications/Visual Studio Code.app');
-	assert.equal(hostAppFrom(ps, 901), null);
-	assert.equal(hostAppFrom(ps, 4242), null);
-});
-
-test('tells the agent the app for sessions outside its terminals, on the events that need it', async () => {
-	let asked = 0;
-	const findApp = async () => (asked++, '/Applications/iTerm.app');
-	const input = (name) => JSON.stringify({ session_id: 'app-s', transcript_path: '/nope', cwd: project, hook_event_name: name, prompt: 'hi' });
-	await runHook({ input: input('Notification'), agents: agents(), secret, env: {}, findApp });
-	assert.equal(asked, 0, 'not for every event');
-	assert.equal(server.agents.host('app-s').app, null);
-	await runHook({ input: input('UserPromptSubmit'), agents: agents(), secret, env: {}, findApp });
-	assert.deepEqual(server.agents.host('app-s'), { terminal: null, app: '/Applications/iTerm.app' });
-	const env = { CODEREMOTE_AGENT_PORT: String(server.address().port), CODEREMOTE_TERM_ID: 'gone' };
-	await runHook({ input: input('UserPromptSubmit'), agents: agents(), secret, env, findApp });
-	assert.equal(asked, 1, 'not in one of the agent’s terminals');
 });
 
 test('fails open: no agent, a folder nobody shares, a wrong secret, bad input', async () => {

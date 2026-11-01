@@ -8,14 +8,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import qrcode from 'qrcode-terminal';
-import { createAgentServer, execCommand, isWindows, lanCertificate, spawnCommand } from '@vsremote/agent-core';
+import { createAgentServer, execCommand, isWindows, lanAddresses, lanCertificate, spawnCommand } from '@vsremote/agent-core';
 import { ensureDevtunnel } from '../src/devtunnel.js';
 import { ensureHookSecret, readHookSecret, runHook, writeHookLauncher } from '../src/hook.js';
 import { PreviewTunnel } from '../src/preview.js';
 import { pushStore } from '../src/push-store.js';
 import { AgentRegistry } from '../src/registry.js';
-import { findTunnel, forgetTunnel, formatTunnels, listTunnels, makeRoom, ownUse, signedInUser, tunnelLimitHelp } from '../src/tunnels.js';
+import { ensureAgentId, findTunnel, forgetTunnel, formatTunnels, rememberTunnelUrl, listTunnels, makeRoom, ownUse, signedInUser, tunnelLimitHelp } from '../src/tunnels.js';
 import { MACHINE_LABEL, tunnelDelete, tunnelStatus } from '../src/tunnel-status.js';
+import { NotSignedIn, relayReachable, retryTunnel } from '../src/tunnel-retry.js';
 import { availableUpdate, fetchLatest, installCommand, isNewer } from '../src/update.js';
 import pkg from '../package.json' with { type: 'json' };
 import { Redactor, filterRequests, formatDetail, formatList, redactDetail } from '../src/requests.js';
@@ -90,7 +91,7 @@ function portFree(port) {
 	});
 }
 
-function listen(token, port, root, tunnelToken, preview, status, remover, lan) {
+function listen(token, port, root, tunnelToken, preview, status, remover, lan, agentId, tunnelUrl) {
 	const hookSecret = ensureHookSecret(CONFIG_DIR);
 	writeHookLauncher(CONFIG_DIR, { script: fs.realpathSync(process.argv[1]) });
 	const server = createAgentServer({
@@ -107,6 +108,8 @@ function listen(token, port, root, tunnelToken, preview, status, remover, lan) {
 		uploadsDir: UPLOADS_DIR,
 		version: VERSION,
 		lan,
+		agentId,
+		tunnelUrl,
 	});
 	return new Promise((resolve, reject) => {
 		server.once('error', reject);
@@ -265,11 +268,8 @@ async function ensureTunnel(cfg, port, anonymous) {
 	let created = await devtunnel(...createArgs);
 	if (!created.ok) {
 		const room = await makeRoom(devtunnel);
-		if (room?.full) {
-			spinner.fail();
-			console.error(`\n${tunnelLimitHelp(room.full, cfg)}`);
-			process.exit(1);
-		}
+		// Thrown, not exited: an agent bringing its tunnel up later keeps serving the LAN.
+		if (room?.full) throw Object.assign(new Error(tunnelLimitHelp(room.full, cfg)), { code: 'ETUNNELLIMIT' });
 		if (room?.freed) {
 			spinner.update(`(deleted ${room.freed.length} idle preview tunnel${room.freed.length > 1 ? 's' : ''} to make room)`);
 			if (room.freed.filter((id) => forgetTunnel(cfg, id)).length) saveConfig(cfg);
@@ -316,22 +316,40 @@ function hostTunnel(tunnelId, port) {
 	});
 }
 
-function printPairing(url, token, access, vscodeUrl) {
-	const pair = pairingUrl({ url, token });
+/**
+ * The addresses the QR carries: every IPv4 one and the first IPv6 one, at most 3. macOS keeps
+ * several temporary IPv6 addresses that would only make the code denser; /api/info has them all.
+ */
+function qrAddresses(addresses) {
+	const v4 = addresses.filter((a) => !a.includes(':'));
+	const v6 = addresses.filter((a) => a.includes(':')).slice(0, 1);
+	return [...v4, ...v6].slice(0, 3);
+}
+
+/**
+ * `url`: the tunnel's address, or null for an agent that never had one and started offline.
+ * `lan`: what lets the app pin the agent and reach it on this network straight from the QR.
+ */
+function printPairing(url, token, access, vscodeUrl, lan) {
+	const pair = pairingUrl({ url, token, lan });
 	if (access) console.log(`  Access:  ${access}`);
 	// Labels line up whether or not the VS Code row is there.
 	const label = (name) => `${name}:`.padEnd(vscodeUrl ? 9 : 4);
 	console.log('');
 	if (vscodeUrl) console.log(`  ${label('VS Code')}  ${vscodeUrl}`);
-	console.log(`  ${label('Web')}  ${webUrl({ url, token })}`);
+	// A browser can't pin the LAN certificate: the web link needs the tunnel.
+	if (url) console.log(`  ${label('Web')}  ${webUrl({ url, token })}`);
 	console.log(`  ${label('App')}  ${pair}\n`);
+	if (!url) console.log('  No tunnel yet: pair the Code Remote app on this Wi-Fi (an app too old for that calls this link invalid).\n');
 	if (vscodeUrl) console.log('  VS Code opens in the browser after signing in with the account of `code tunnel`.');
-	console.log('  Scan with the iPhone Camera, or open either link on the phone:\n');
+	console.log(`  Scan with the iPhone Camera, or open ${url ? 'either link' : 'the link'} on the phone:\n`);
 	qrcode.generate(pair, { small: true });
 	console.log(
 		anonymous
 			? '\n  The links contain your access token. Anyone with them can use this machine.'
-			: '\n  The links contain your access token; the phone or browser must also sign in as you.',
+			: url
+				? '\n  The links contain your access token; the phone or browser must also sign in as you.'
+				: '\n  The link contains your access token; away from this network the phone must also sign in as you.',
 	);
 	console.log('  Run `coderemote rotate-token` to revoke every paired device.\n');
 }
@@ -374,7 +392,9 @@ async function startVSCodeTunnel() {
 const USAGE = `Usage: coderemote <command> [options]
 
   up                   share this folder through a dev tunnel and print the pairing QR;
-                       the phone or browser must sign in with your dev tunnels account
+                       the phone or browser must sign in with your dev tunnels account.
+                       Without internet it serves the local network only and connects
+                       the tunnel once it can
   serve                share this folder on 127.0.0.1 only (no tunnel)
   status               list running agents and their terminal sessions
   kill <id>... | --all kill terminal sessions (an id prefix is enough)
@@ -505,9 +525,14 @@ async function start({ tunnel }) {
 		if (got.error) lan = { error: got.error };
 		else lanCert = got;
 	}
+	const hadAgentId = cfg.agentIds?.[port];
+	const agentId = ensureAgentId(cfg, port);
+	if (agentId !== hadAgentId) saveConfig(cfg);
+	// Reported in /api/info while hosted; an agent started offline sets it once it connects.
+	let hostedUrl = null;
 	spinner.start('Starting agent');
 	try {
-		server = await listen(cfg.token, port, root, tunnelToken, preview, status, remover, lanCert);
+		server = await listen(cfg.token, port, root, tunnelToken, preview, status, remover, lanCert, agentId, () => hostedUrl);
 	} catch (e) {
 		spinner.fail();
 		if (e.code !== 'EADDRINUSE') throw e;
@@ -525,32 +550,94 @@ async function start({ tunnel }) {
 	let child;
 	let access;
 	let url = `http://127.0.0.1:${port}`;
-	if (tunnel) {
-		spinner.succeed();
+	let later = null;
+
+	/**
+	 * Signs in (only when `interactive`: in the background there's no one to open a browser for),
+	 * creates or updates the tunnel and hosts it. Sets the agent's tunnel state; returns the URL.
+	 */
+	async function connectTunnel({ interactive }) {
 		await resolveDevtunnel();
-		spinner.start('Checking dev tunnels sign-in');
-		const user = await tunnelUser();
+		if (interactive) spinner.start('Checking dev tunnels sign-in');
+		let user;
+		if (interactive) user = await tunnelUser();
+		else {
+			user = signedInUser(await devtunnel('user', 'show'));
+			if (!user) throw new NotSignedIn();
+		}
 		account = user;
-		spinner.succeed();
-		// Connecting to the relay is the slow part; update the tunnel's settings meanwhile.
-		spinner.start('Connecting to the relay');
+		if (interactive) {
+			spinner.succeed();
+			// Connecting to the relay is the slow part; update the tunnel's settings meanwhile.
+			spinner.start('Connecting to the relay');
+		}
 		const known = cfg.tunnels?.[port];
 		let hosting = known ? hostTunnel(known, port) : null;
 		hosting?.catch(() => {});
-		tunnelId = await ensureTunnel(cfg, port, anonymous);
-		if (tunnelId !== known) {
+		let id;
+		try {
+			id = await ensureTunnel(cfg, port, anonymous);
+		} catch (e) {
+			hosting?.then((h) => h.child.kill(), () => {});
+			throw e;
+		}
+		if (id !== known) {
 			// The saved tunnel was gone and a new one was created.
 			hosting?.then((h) => h.child.kill(), () => {});
-			hosting = hostTunnel(tunnelId, port);
+			hosting = hostTunnel(id, port);
 		}
-		({ child, url } = await hosting);
+		const hosted = await hosting;
+		tunnelId = id;
+		child = hosted.child;
+		url = hosted.url;
+		hostedUrl = url;
+		status?.invalidate?.();
+		// Offline later, the QR still names it (its URL can't be worked out from the tunnel id).
+		if (rememberTunnelUrl(cfg, port, url)) saveConfig(cfg);
 		access = anonymous
 			? 'anyone with the link (no sign-in, --allow-anonymous)'
 			: `sign-in required as ${user}`;
+		return url;
+	}
+
+	let offline = false;
+	if (tunnel) {
+		spinner.succeed();
+		// Without internet the agent still serves the local network, and connects its tunnel later.
+		if (lan.port) {
+			spinner.start('Checking the internet');
+			offline = !(await relayReachable());
+		}
+		if (!offline) {
+			try {
+				await connectTunnel({ interactive: true });
+			} catch (e) {
+				spinner.fail();
+				if (e.code !== 'ETUNNELLIMIT') throw e;
+				console.error(`\n${e.message}`);
+				process.exit(1);
+			}
+		} else {
+			spinner.fail();
+			url = cfg.tunnelUrls?.[port] ?? null;
+			later = retryTunnel({
+				reachable: () => relayReachable(),
+				connect: () => connectTunnel({ interactive: false }),
+				onSignedOut: () => console.log('\n  Internet is back, but no one is signed in to dev tunnels: run `coderemote login`.'),
+				onError: (e) => console.log(`\n  Couldn't connect the tunnel yet (${e.message.split('\n')[0]}); retrying.`),
+			});
+			later.done.then((connected) => {
+				registry.register({ port, root, url: connected });
+				console.log(`\n  Tunnel connected: ${connected}`);
+				console.log(`  Web:  ${webUrl({ url: connected, token: cfg.token })}`);
+				console.log('  Phones paired on this network pick it up on their own; sign in on them to use it away from here.\n');
+			});
+		}
 	}
 	spinner.succeed();
-	registry.register({ port, root, url });
+	registry.register({ port, root, url: url ?? `http://127.0.0.1:${port}` });
 	const shutdown = async () => {
+		later?.stop();
 		child?.kill();
 		advertiser?.kill();
 		// Previews get a new tunnel every run, so this one would only take up a slot of the account's 10.
@@ -565,11 +652,13 @@ async function start({ tunnel }) {
 	process.on('SIGHUP', shutdown);
 	// Last resort for any other way out (an uncaught error): never leave the tunnel host behind.
 	process.on('exit', () => {
+		later?.stop();
 		child?.kill();
 		advertiser?.kill();
 		preview?.stop();
 	});
-	return { url, access, lan };
+	const lanLink = lan.port ? { agentId, port: lan.port, addresses: qrAddresses(lanAddresses()), fingerprint: lanCert.fingerprint } : null;
+	return { url, access, lan, offline, lanLink };
 }
 
 // The plugin's marketplace is this repository; --marketplace points at a checkout to try changes.
@@ -772,14 +861,15 @@ switch (cmd) {
 			spinner.fail();
 			throw e;
 		}
-		const { url, access, lan } = started;
-		const vscodeUrl = rest.includes('--web') ? await startVSCodeTunnel() : null;
+		const { url, access, lan, offline, lanLink } = started;
+		const vscodeUrl = rest.includes('--web') && !offline ? await startVSCodeTunnel() : null;
 		console.log(`\n  Sharing: ${root}`);
+		if (offline) console.log('  Tunnel:  not connected (no internet); phones on this network can pair and connect. It connects on its own once the internet is back.');
 		if (lan.port) {
 			console.log(`  LAN:     on (port ${lan.port}); phones on this network connect directly`);
 			if (process.platform === 'darwin') console.log('           If macOS asks whether node may accept incoming connections, choose Allow.');
 		} else if (lan.error) console.log(`  LAN:     off (${lan.error}); phones connect through the tunnel`);
-		printPairing(url, cfg.token, access, vscodeUrl);
+		printPairing(url, cfg.token, access, vscodeUrl, lanLink);
 		const newer = await update;
 		if (newer) {
 			const c = (code, s) => (process.stdout.isTTY ? `\x1b[${code}m${s}\x1b[0m` : s);

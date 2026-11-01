@@ -25,6 +25,7 @@ import { BuildRunner, listSchemes } from './builds.js';
 import { listHistory } from './history.js';
 import { InstallLinks } from './install-links.js';
 import * as Git from './git.js';
+import { draftCommitMessage } from './commit-message.js';
 import { TunnelHandoff } from './handoff.js';
 import { LANDING_HTML } from './landing.js';
 import { lanAddresses as defaultLanAddresses } from './lan.js';
@@ -180,6 +181,8 @@ async function readJson(req) {
  * @param {{ key: string, cert: string, fingerprint: string } | null} [opts.lan]  the certificate
  *        `listenLan()` serves devices on the local network with; without one there is no LAN listener
  * @param {() => string[]} [opts.lanAddresses]  where devices on the network reach this computer
+ * @param {string | null} [opts.agentId]  this agent's lasting identity, reported in `/api/info`
+ * @param {() => string | null} [opts.tunnelUrl]  the tunnel's public URL while it is hosted
  * @param {{ checkMs?: number, graceMs?: number, killedMs?: number }} [opts.previewSweep]  how often
  *        previews are checked for a dev server that stopped, and how long one may stay silent
  *        (after a stop from the Ports tab: how long until it is checked)
@@ -208,6 +211,8 @@ export function createAgentServer({
 	version = null,
 	lan = null,
 	lanAddresses = defaultLanAddresses,
+	agentId = null,
+	tunnelUrl = () => null,
 }) {
 	const handoff = new TunnelHandoff({ token, mint: tunnelToken });
 	const sandbox = new Sandbox(root);
@@ -501,6 +506,9 @@ export function createAgentServer({
 			user: os.userInfo().username,
 			// On Windows, terminals run PowerShell whatever $SHELL (Git Bash sets one) says.
 			shell: isWindows ? interactiveShell().file : process.env.SHELL || null,
+			agentId,
+			// Null until the tunnel is hosted (an agent started offline connects it later).
+			tunnel: tunnelUrl() ? { url: tunnelUrl() } : null,
 		}),
 
 		[Routes.fsList]: async (url) => {
@@ -633,6 +641,29 @@ export function createAgentServer({
 		[Routes.gitCommit]: async (url, req) => {
 			const { repo: r, message } = await readJson(req);
 			return Git.commit(await repoOf(r), message);
+		},
+
+		[Routes.gitCommitMessage]: async (url, req) => {
+			const { repo: r, agent: wanted } = await readJson(req);
+			const repo = await repoOf(r);
+			if (wanted !== undefined && !(wanted in launchers)) throw new HttpError(400, 'unknown agent');
+			const candidates = wanted ? [wanted] : ['claude', 'codex'];
+			let agent = null;
+			for (const a of candidates) {
+				if (await installed(a)) {
+					agent = a;
+					break;
+				}
+			}
+			if (!agent) {
+				throw Object.assign(new HttpError(409, 'Drafting a commit message needs Claude Code or Codex installed on the computer.'), {
+					code: 'ENOAGENT',
+				});
+			}
+			// Codex lists its models fastest first; the user's configured one may be a slow one, or
+			// one their plan doesn't offer.
+			const codexModel = agent === 'codex' ? ((await codexModels())[0]?.id ?? null) : null;
+			return draftCommitMessage(repo, agent, { claudeCommand, codexCommand, codexModel });
 		},
 
 		[Routes.gitLog]: async (url) => ({
@@ -997,8 +1028,6 @@ export function createAgentServer({
 		if (!hookAuthorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
 		plugins[url.searchParams.get('agent') || 'claude'] = { installed: true, checkedAt: Date.now() };
 		const terminal = url.searchParams.get('terminal');
-		// The computer's app the coding agent runs in, as the hook found it (an app bundle path).
-		const app = url.searchParams.get('app');
 		// The hook is killed when the computer answers first, which closes this connection.
 		const closed = new AbortController();
 		res.on('close', () => {
@@ -1008,7 +1037,6 @@ export function createAgentServer({
 			const output = await agents.handle(await readJson(req), {
 				agent: url.searchParams.get('agent') || 'claude',
 				terminal: terminal && sessions.get(terminal) ? terminal : null,
-				app: app && app.length <= 1024 && /\.app$/.test(app) ? app : null,
 				signal: closed.signal,
 			});
 			if (res.destroyed) return;

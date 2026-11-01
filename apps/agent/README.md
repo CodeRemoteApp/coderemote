@@ -80,6 +80,11 @@ the tunnel by itself when it leaves the network, or when the direct connection i
 Wi-Fi often is). `coderemote up --no-lan` turns this off; `"lan": false` in
 `~/.coderemote/config.json` makes that the default.
 
+No internet on the computer (the router or the provider is down)? `coderemote up` still starts,
+serving the local network only, and its QR pairs the app on the same Wi-Fi. The tunnel connects
+on its own once the internet is back, without a restart; sign in on the phone then, and it keeps
+working away from home.
+
 ## Security
 
 Remote shell access is serious, so access is locked down by default:

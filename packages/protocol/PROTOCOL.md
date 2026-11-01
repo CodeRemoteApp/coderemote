@@ -16,7 +16,20 @@ Every request carries:
 
 ## Pairing
 
-The agent prints a QR code for `vsremote://pair?url=<https base url>&token=<token>`.
+The agent prints a QR code for
+
+```
+vsremote://pair?url=<https base url>&token=<token>[&id=<agentId>&lan=<port>&addr=<a,b,...>&fp=<fingerprint>]
+```
+
+`url` is the tunnel's address. The LAN parameters are there while the agent's
+[LAN listener](#local-network) is open: `id` the agent's identity, `lan` the listener's port,
+`addr` its addresses, `fp` its certificate's fingerprint. A client pins `fp` straight from the QR:
+it was read off the computer's own screen, as the token was. An agent that has never had a
+tunnel and starts without internet prints a link without `url`; clients then reach it on the
+local network only, until `/api/info` reports a tunnel. A link has `token` and either `url` or
+all four LAN parameters; clients refuse anything else.
+
 `coderemote rotate-token` invalidates every paired device.
 
 ## Compatibility
@@ -154,7 +167,13 @@ entries `fp` (the first 16 hex characters of `fingerprint`) and `proto` (the pro
 so a client that knows the fingerprint finds the agent when the tunnel is out of reach. The TXT
 record never carries the token or the shared folder.
 
-Adding `lan` didn't change the protocol version: clients that don't know it ignore it.
+`agentId` is the agent's identity: 32 hex characters, made once per agent port and kept across
+restarts and token rotations, so a client that pairs again recognizes the machine. `tunnel` is
+`{ url }` while the agent hosts its tunnel, else `null`: an agent started without internet runs on
+the local network only and connects its tunnel once it can, without restarting.
+
+Adding `lan`, `agentId` and `tunnel` didn't change the protocol version: clients that don't know
+them ignore them.
 
 ## Shared folder
 
@@ -172,7 +191,7 @@ with 400 (bad input), 401, 403 (outside the shared folder, `EACCES`/`EPERM`), 40
 
 | Route | Request | Response |
 | --- | --- | --- |
-| `GET /api/info` | | `{ protocol, minClientProtocol, version, hostname, platform, root, user, shell, lan }` (see [Compatibility](#compatibility), [Local network](#local-network)) |
+| `GET /api/info` | | `{ protocol, minClientProtocol, version, hostname, platform, root, user, shell, lan, agentId, tunnel }` (see [Compatibility](#compatibility), [Local network](#local-network)) |
 | `GET /api/fs/list?path=` | | `{ path, entries: [{ name, type, size, mtime, target? }] }` |
 | `GET /api/fs/stat?path=` | | `{ path, name, type, size, mtime, target? }` |
 | `GET /api/fs/read?path=` | | raw bytes; one `Range: bytes=…` gets 206 with that part (416 past the end), so media streams; video and audio files carry their media type |
@@ -237,12 +256,22 @@ pull/push use the machine's existing credentials or fail. Git failures return 40
 | `POST /api/git/unstage` | `{ repo, files }` | status |
 | `POST /api/git/discard` | `{ repo, files }` | status; untracked files are deleted |
 | `POST /api/git/commit` | `{ repo, message }` | `{ hash, short, subject, author, date, refs }` |
+| `POST /api/git/commit-message` | `{ repo, agent? }` | `{ message, agent, staged }`: a drafted message (see below). Added within v4: older agents answer 404 |
 | `GET /api/git/log?repo=&limit=` | | `{ commits: [commit] }` |
 | `GET /api/git/show?repo=&commit=` | | `{ text, truncated }` |
 | `POST /api/git/pull` | `{ repo }` | `{ output }` (fast-forward only) |
 | `POST /api/git/push` | `{ repo }` | `{ output }` |
 
 `index`/`worktree` are porcelain letters: `.` unchanged, `M`, `A`, `D`, `R`, `?` untracked.
+
+`commit-message` drafts a message with a coding agent installed on the computer, on the user's
+own plan: Claude Code (`claude -p`, Haiku, no tools, no saved session), else Codex (`codex exec
+--ephemeral`, read-only). `agent` (`claude` or `codex`) picks one. It describes the staged changes,
+or every change when nothing is staged (`staged` says which), and follows the style of the
+repository's recent commit subjects; lockfiles and other generated files are left out of the diff,
+which is cut at 24k characters. Nothing is committed. 409 `ENOAGENT` when neither agent is
+installed, 409 when there is nothing to commit, 502 when the agent fails, 504 after 2 minutes.
+The agent's hooks are skipped (`CODEREMOTE_NO_HOOK=1`), so the run never shows as a session.
 
 ## Terminal
 
@@ -523,7 +552,9 @@ empty.
 
 For `approvals: "parallel"` sessions the prompt stays open on the computer too: whichever side
 answers first wins. When the computer
-answers, the request resolves as `withdrawn` by `computer`; a request nobody answers within an
+answers, the request resolves as `withdrawn` by `computer`. So does one answered somewhere the
+agent can't see (Claude's own remote control): the asking tool's `PostToolUse`, a new prompt, or the
+turn ending withdraws it. A request nobody answers within an
 hour resolves as `expired` and is left to the computer.
 
 For `approvals: "presence"` sessions (Codex) the computer's prompt appears only once the agent
@@ -563,11 +594,8 @@ counts as showing everything. Added without a protocol bump.
 
 ### Hook delivery
 
-`POST /api/agents/hook?agent=claude&terminal=<id>&app=<path>` carries a hook event's JSON input as the body
-(`agent=codex` for Codex, whose hook payloads use the same field names). `app` is the macOS app
-bundle the coding agent runs in (`/Applications/iTerm.app`), which `coderemote hook` finds among its
-ancestor processes for `SessionStart`, `UserPromptSubmit` and `PermissionRequest` when the session
-isn't in one of the agent's terminals; optional. Codex runs plugin hooks
+`POST /api/agents/hook?agent=claude&terminal=<id>` carries a hook event's JSON input as the body
+(`agent=codex` for Codex, whose hook payloads use the same field names). Codex runs plugin hooks
 with a bare environment: none of the variables above reach them, so its plugin finds the CLI
 through `~/.coderemote/bin/hook` (written by each agent when it starts) and the event is routed by
 folder only; a Codex session then takes over the one Codex placeholder in its folder, if there is
@@ -634,10 +662,8 @@ Registrations are kept across restarts in `~/.coderemote/push/<port>.json` and d
 
 The agent pushes for a new request, when a turn that ran 60 seconds or more ends, when a build ends, and to replace
 the notification of a request resolved elsewhere (same `apns-collapse-id`, the request id). It
-pushes nothing about a session while a client's fresh presence names that session, or while
-someone works in it on the computer: the session runs in a terminal of the computer's own (not one
-of the agent's), the computer had input in the last 30 seconds, and the app the session runs in is
-in front (macOS only; where that app isn't known, recent input alone counts). Nothing about builds
+pushes nothing about a session while a client's fresh presence names that session, and nothing
+ever about a session started outside Code Remote (not in one of the agent's terminals). Nothing about builds
 while a client's presence has `builds: true`.
 
 Every push has a generic `aps.alert`, `mutable-content: 1`, a `category` (`PERMISSION`,

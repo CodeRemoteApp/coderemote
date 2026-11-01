@@ -176,6 +176,25 @@ test('the computer answering first withdraws the request', async () => {
 	assert.throws(() => h.answer({ request: request.id, behavior: 'allow' }), { status: 409 });
 });
 
+test('a request answered where the agent can’t see is withdrawn once the session goes on', async () => {
+	const { h, messages } = hub();
+	const question = ev('PermissionRequest', { tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'Archive?', options: [] }] } });
+	const asked = await open(h, question);
+	await h.handle(ev('PostToolUse', { tool_name: 'AskUserQuestion', tool_input: {}, tool_response: 'Archive' }));
+	assert.equal(await asked.output, null);
+	assert.equal(h.requests().length, 0);
+	assert.ok(messages.some((m) => m.type === 'request_resolved' && m.request === asked.request.id && m.outcome === 'withdrawn'));
+
+	// Another tool finishing says nothing about this one; the turn ending does.
+	const allowed = await open(h);
+	await h.handle(ev('PostToolUse', { tool_name: 'Read', tool_input: {}, tool_response: '' }));
+	assert.equal(h.requests().length, 1);
+	await h.handle(ev('Stop'));
+	assert.equal(await allowed.output, null);
+	assert.equal(h.requests().length, 0);
+	assert.equal(h.session('s1').state, 'idle');
+});
+
 test('a request nobody answers expires and leaves it to the computer', async () => {
 	const { h } = hub({ requestTtl: 20 });
 	const { output } = await open(h);

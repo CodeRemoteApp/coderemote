@@ -34,6 +34,8 @@ export const Routes = Object.freeze({
 	gitUnstage: 'POST /api/git/unstage',
 	gitDiscard: 'POST /api/git/discard',
 	gitCommit: 'POST /api/git/commit',
+	// Added within v4: older agents answer 404.
+	gitCommitMessage: 'POST /api/git/commit-message',
 	gitLog: 'GET /api/git/log',
 	gitShow: 'GET /api/git/show',
 	gitPull: 'POST /api/git/pull',
@@ -116,6 +118,23 @@ export function webUrl({ url, token }) {
 	return `${url}/#token=${encodeURIComponent(token)}`;
 }
 
-export function pairingUrl({ url, token }) {
-	return `${PAIRING_SCHEME}://pair?url=${encodeURIComponent(url)}&token=${encodeURIComponent(token)}`;
+/**
+ * The link the pairing QR encodes. `url` is the tunnel's address (absent while an agent that
+ * never had a tunnel runs offline); `lan`, `{ agentId, port, addresses, fingerprint }`, lets a
+ * client pin the agent's certificate and reach it on the local network straight from the QR.
+ * See PROTOCOL.md, "Pairing".
+ */
+export function pairingUrl({ url = null, token, lan = null }) {
+	if (!url && !lan) throw new Error('a pairing link needs a tunnel URL or the LAN listener');
+	const q = new URLSearchParams();
+	if (url) q.set('url', url);
+	q.set('token', token);
+	if (lan) {
+		q.set('id', lan.agentId);
+		q.set('lan', String(lan.port));
+		q.set('addr', lan.addresses.join(','));
+		q.set('fp', lan.fingerprint);
+	}
+	// encodeURIComponent's escaping, as links from older agents have it (URLSearchParams writes "+").
+	return `${PAIRING_SCHEME}://pair?${q.toString().replace(/\+/g, '%20')}`;
 }

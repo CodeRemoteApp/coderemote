@@ -91,8 +91,6 @@ class AgentSession {
 		this.titled = false;
 		this.state = 'idle';
 		this.terminal = terminal;
-		// The computer's app it runs in (`/Applications/iTerm.app`), when the hook could tell.
-		this.app = null;
 		this.startedAt = now;
 		this.lastActivityAt = now;
 		this.endedAt = null;
@@ -246,10 +244,10 @@ export class AgentHub extends EventEmitter {
 		return this.#sessions.get(id)?.toJSON() ?? null;
 	}
 
-	/** Where a session runs: one of the agent's terminals, or an app on the computer (or neither known). */
+	/** Where a session runs: `terminal` is one of the agent's terminals, null for one started outside Code Remote. */
 	host(id) {
 		const s = this.#sessions.get(id);
-		return s ? { terminal: s.terminal, app: s.app } : null;
+		return s ? { terminal: s.terminal } : null;
 	}
 
 	timeline(id, after = 0) {
@@ -264,7 +262,7 @@ export class AgentHub extends EventEmitter {
 	 * request is answered (null when the computer should decide), `{}` for everything else.
 	 * Aborting `signal` (the hook was killed because the computer answered) withdraws the request.
 	 */
-	async handle(raw, { agent = 'claude', terminal = null, app = null, signal } = {}) {
+	async handle(raw, { agent = 'claude', terminal = null, signal } = {}) {
 		if (!raw || typeof raw.session_id !== 'string' || !raw.session_id) {
 			throw new HttpError(400, 'hook event without session_id');
 		}
@@ -308,7 +306,6 @@ export class AgentHub extends EventEmitter {
 			this.emit('message', { type: 'session_removed', session: replaced.id, replacedBy: s.id });
 		}
 		if (terminal && !s.terminal) s.terminal = terminal;
-		if (app) s.app = app;
 		s.starting = false;
 		s.lastActivityAt = now;
 		if (s.state === 'ended' && event.hook_event_name !== 'SessionEnd') {
@@ -316,6 +313,8 @@ export class AgentHub extends EventEmitter {
 			s.state = 'idle';
 			s.endedAt = null;
 		}
+		// Before the event's own effect, which may end the turn (resolving makes a waiting session run).
+		this.#withdrawAnsweredElsewhere(s, event);
 
 		switch (event.hook_event_name) {
 			case 'SessionStart':
@@ -414,6 +413,28 @@ export class AgentHub extends EventEmitter {
 		}
 		this.#emitSession(s);
 		return {};
+	}
+
+	/**
+	 * Claude Code kills a waiting PermissionRequest hook when its own dialog is answered, but not
+	 * always when the answer comes from somewhere else (Claude's remote control on another device),
+	 * so the request would stay open. The session going on proves it was answered: the asking tool
+	 * ran (PostToolUse), or the turn moved on or ended.
+	 */
+	#withdrawAnsweredElsewhere(s, event) {
+		if (!s.requests.size) return;
+		const name = event.hook_event_name;
+		let stale = [];
+		if (name === 'PostToolUse' || name === 'PostToolUseFailure') {
+			const oldest = [...s.requests.values()].find((p) => p.request.tool === (event.tool_name ?? null));
+			if (oldest) stale = [oldest];
+		} else if (
+			['UserPromptSubmit', 'Stop', 'StopFailure', 'Interrupt'].includes(name) ||
+			(name === 'Notification' && event.notification_type === 'idle_prompt')
+		) {
+			stale = [...s.requests.values()];
+		}
+		for (const pending of stale) this.#resolve(pending, null, 'withdrawn', 'computer');
 	}
 
 	/** The terminal a session ran in exited: whatever ran in it is over. */

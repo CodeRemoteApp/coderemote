@@ -10,8 +10,6 @@ import { HttpError } from './sandbox.js';
 const run = promisify(execFile);
 const FINISHED_AFTER = 60 * 1000;
 const ACTIVE_WITHIN = 2 * 60;
-// Typing in the session's own app this recently means the person is at it: no push.
-const AT_SESSION_WITHIN = 30;
 
 /** Seconds since the last keyboard or mouse input on this Mac; null where that can't be known. */
 async function macIdleSeconds() {
@@ -29,32 +27,6 @@ async function macIdleSeconds() {
 export async function userActiveHere() {
 	const idle = await macIdleSeconds();
 	return idle !== null && idle < ACTIVE_WITHIN;
-}
-
-/** The bundle path of the app in front on this Mac (`/Applications/iTerm.app`); null elsewhere. */
-export async function frontAppHere() {
-	if (os.platform() !== 'darwin') return null;
-	try {
-		const { stdout: asn } = await run('lsappinfo', ['front'], { timeout: 2000 });
-		if (!asn.trim()) return null;
-		const { stdout } = await run('lsappinfo', ['info', asn.trim()], { timeout: 2000 });
-		return stdout.match(/bundle path="([^"]+)"/)?.[1] ?? null;
-	} catch {
-		return null;
-	}
-}
-
-/**
- * Whether someone at this computer is working in `session` (from `AgentHub.host`), so a push
- * about it would only repeat what they see: it runs in a terminal of the computer's own (not one
- * of the agent's, which only clients show), input came in the last 30 seconds, and the app it runs
- * in is in front. When that app isn't known (tmux, Linux), recent input alone counts.
- */
-export async function atSessionHere(session, { idle = macIdleSeconds, front = frontAppHere } = {}) {
-	if (!session || session.terminal) return false;
-	const seconds = await idle();
-	if (seconds === null || seconds >= AT_SESSION_WITHIN) return false;
-	return !session.app || (await front()) === session.app;
 }
 
 /** `base64(nonce ‖ ciphertext ‖ tag)` of `data` as JSON under AES-256-GCM. */
@@ -117,7 +89,6 @@ export class PushSender {
 	#store;
 	#hub;
 	#shows;
-	#atSession;
 	#fetch;
 	// Requests a notification went out for, so their resolution can replace it.
 	#notified = new Set();
@@ -128,15 +99,12 @@ export class PushSender {
 	 * @param {{ load: () => object[], save: (devices: object[]) => void }} [opts.store]
 	 * @param {(what: { session?: string, builds?: boolean }) => boolean} [opts.shows]  whether a
 	 *        client shows that session (or the builds) right now
-	 * @param {(host: { terminal: string | null, app: string | null } | null) => Promise<boolean>} [opts.atSession]
-	 *        whether someone at the computer is working in the session running there
 	 */
-	constructor({ hub, store = null, shows = () => false, atSession = atSessionHere, fetch = globalThis.fetch }) {
+	constructor({ hub, store = null, shows = () => false, fetch = globalThis.fetch }) {
 		this.#hub = hub;
 		this.#store = store;
 		this.#devices = store?.load() ?? [];
 		this.#shows = shows;
-		this.#atSession = atSession;
 		this.#fetch = fetch;
 		hub.on('message', (msg) => this.#follow(msg).catch(() => {}));
 	}
@@ -174,22 +142,23 @@ export class PushSender {
 		this.#store?.save(this.#devices);
 	}
 
-	/** No push about a session someone is looking at, on a client or at the computer. */
-	async #quiet(what) {
+	/**
+	 * No push about a session a client shows, nor about one started outside Code Remote: that one
+	 * runs in a terminal of the computer's own, so it is followed there (or wherever else it is
+	 * driven from, like Claude's own remote control), not from the phone.
+	 */
+	#quiet(what) {
 		if (this.#shows(what)) return true;
 		if (!what.session) return false;
-		try {
-			return await this.#atSession(this.#hub.host(what.session));
-		} catch {
-			return false;
-		}
+		const host = this.#hub.host(what.session);
+		return !host || !host.terminal;
 	}
 
 	async #follow(msg) {
 		if (!this.#devices.length) return;
 		if (msg.type === 'request') {
 			const { request } = msg;
-			if (await this.#quiet({ session: request.session })) return;
+			if (this.#quiet({ session: request.session })) return;
 			// Answered while we checked: nothing to ask any more.
 			if (!this.#hub.requests().some((r) => r.id === request.id)) return;
 			this.#notified.add(request.id);
@@ -224,7 +193,7 @@ export class PushSender {
 				fallback: 'Answered on your computer',
 			});
 		} else if (msg.type === 'entry' && msg.entry.kind === 'turn_end' && msg.entry.duration >= FINISHED_AFTER) {
-			if (await this.#quiet({ session: msg.session })) return;
+			if (this.#quiet({ session: msg.session })) return;
 			const session = this.#hub.session(msg.session);
 			await this.#broadcast('finished', {
 				kind: 'finished',
@@ -240,7 +209,7 @@ export class PushSender {
 	/** A build ended (see builds.js): ready to install, or failed. Cancelled builds say nothing. */
 	async buildEnded(build) {
 		if (!this.#devices.length || build.state === 'cancelled') return;
-		if (await this.#quiet({ builds: true })) return;
+		if (this.#quiet({ builds: true })) return;
 		const ok = build.state === 'succeeded';
 		const firstError = String(build.error ?? '').split('\n').find((l) => l.trim()) ?? '';
 		await this.#broadcast('finished', {

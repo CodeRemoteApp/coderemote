@@ -1,6 +1,8 @@
 // The Dev Tunnels account's tunnels, for `coderemote tunnels`: which belong to this computer, and
 // keeping the account under its limit. An account may keep 10 tunnels; creating one more fails
 // with "Rate limit exceeded", which reads as if waiting would help.
+import { randomBytes } from 'node:crypto';
+
 export const TUNNEL_LIMIT = 10;
 // Every agent's preview tunnel carries it; nothing is lost by deleting one no host serves.
 export const PREVIEW_LABEL = 'coderemote-preview';
@@ -74,6 +76,8 @@ export function forgetTunnel(cfg, id) {
 		for (const [port, t] of Object.entries(cfg[key] ?? {})) {
 			if (base(t) !== base(id)) continue;
 			delete cfg[key][port];
+			// Its public address goes with it; the agent's identity (`agentIds`) stays.
+			if (key === 'tunnels' && cfg.tunnelUrls) delete cfg.tunnelUrls[port];
 			changed = true;
 		}
 	}
@@ -108,4 +112,24 @@ export function tunnelLimitHelp(tunnels, cfg = {}) {
 		'changes its URL and unpairs its phones.',
 		'  coderemote tunnels delete <tunnel id>...',
 	].join('\n');
+}
+
+/**
+ * The agent on `port`'s identity: 128 random bits, made once and kept across runs and token
+ * rotations, so a phone that pairs again lands on the same machine. Returns it; `cfg` is
+ * changed (and must be saved) when it was just made.
+ */
+export function ensureAgentId(cfg, port) {
+	const known = cfg.agentIds?.[port];
+	if (typeof known === 'string' && /^[0-9a-f]{32}$/.test(known)) return known;
+	const id = randomBytes(16).toString('hex');
+	cfg.agentIds = { ...cfg.agentIds, [port]: id };
+	return id;
+}
+
+/** Remembers the public URL `port`'s tunnel was hosted at; true when that changed `cfg`. */
+export function rememberTunnelUrl(cfg, port, url) {
+	if (!url || cfg.tunnelUrls?.[port] === url) return false;
+	cfg.tunnelUrls = { ...cfg.tunnelUrls, [port]: url };
+	return true;
 }

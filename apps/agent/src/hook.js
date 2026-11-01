@@ -2,7 +2,6 @@
 // hands the event to the agent sharing the session's folder and, for a PermissionRequest,
 // prints the decision the phone made. It must never get in Claude Code's way: whatever goes
 // wrong, it prints nothing and exits 0, which leaves Claude Code as if no hook ran.
-import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -78,44 +77,11 @@ export function hookTarget(agents, cwd, env = process.env) {
 	return match ? { port: match.port, terminal: null } : null;
 }
 
-// Events that tell the agent which app a session runs in: enough to know it before anything is
-// pushed about the session, without walking the process tree for every tool call.
-const HOST_EVENTS = new Set(['SessionStart', 'UserPromptSubmit', 'PermissionRequest']);
-
-/**
- * The app bundle among `pid`'s ancestors in `ps -A -o pid=,ppid=,comm=` output: the outermost
- * `.app` of the first ancestor inside one (`/Applications/Visual Studio Code.app` for its helpers).
- */
-export function hostAppFrom(psOutput, pid) {
-	const parents = new Map();
-	for (const line of psOutput.split('\n')) {
-		const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/);
-		if (m) parents.set(Number(m[1]), { ppid: Number(m[2]), comm: m[3] });
-	}
-	for (let seen = 0, p = parents.get(pid); p && seen < 64; seen++, p = parents.get(p.ppid)) {
-		const at = p.comm.indexOf('.app/');
-		if (at > 0) return p.comm.slice(0, at + 4);
-		if (p.ppid <= 1) break;
-	}
-	return null;
-}
-
-/** The macOS app this hook's coding agent runs in (iTerm, VS Code…); null elsewhere or unknown. */
-function hostApp() {
-	if (process.platform !== 'darwin') return Promise.resolve(null);
-	return new Promise((resolve) => {
-		execFile('ps', ['-A', '-o', 'pid=,ppid=,comm='], { timeout: 1000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
-			resolve(err ? null : hostAppFrom(stdout, process.ppid));
-		});
-	});
-}
-
 /** POSTs the event to the agent; resolves with the response body, or '' on any failure. */
-export function deliverHook({ port, terminal, app = null, agent, secret, body, wait }) {
+export function deliverHook({ port, terminal, agent, secret, body, wait }) {
 	return new Promise((resolve) => {
 		const query = new URLSearchParams({ agent });
 		if (terminal) query.set('terminal', terminal);
-		if (app) query.set('app', app);
 		const req = http.request({
 			host: '127.0.0.1',
 			port,
@@ -145,8 +111,9 @@ export function deliverHook({ port, terminal, app = null, agent, secret, body, w
 }
 
 /** The whole hook: what to print for Claude Code (usually nothing). */
-export async function runHook({ input, agents, secret, agent = 'claude', env = process.env, findApp = hostApp }) {
-	if (!secret) return '';
+export async function runHook({ input, agents, secret, agent = 'claude', env = process.env }) {
+	// A run the agent started itself (drafting a commit message) isn't a session to show.
+	if (!secret || env.CODEREMOTE_NO_HOOK) return '';
 	let event;
 	try {
 		event = JSON.parse(input);
@@ -156,9 +123,7 @@ export async function runHook({ input, agents, secret, agent = 'claude', env = p
 	const target = hookTarget(agents, event?.cwd, env);
 	if (!target) return '';
 	const wait = event.hook_event_name === 'PermissionRequest';
-	// Sessions in the agent's own terminals are only seen on clients; the app matters elsewhere.
-	const app = !target.terminal && HOST_EVENTS.has(event.hook_event_name) ? await findApp() : null;
-	const out = await deliverHook({ ...target, app, agent, secret, body: input, wait });
+	const out = await deliverHook({ ...target, agent, secret, body: input, wait });
 	// Only a PermissionRequest decides anything; other events' `{}` would just be noise.
 	return wait ? out.trim() : '';
 }

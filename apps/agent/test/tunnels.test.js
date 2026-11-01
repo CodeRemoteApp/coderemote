@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
 	PREVIEW_LABEL,
+	ensureAgentId,
+	rememberTunnelUrl,
 	TUNNEL_LIMIT,
 	findTunnel,
 	forgetTunnel,
@@ -82,4 +84,27 @@ test('lists the tunnels with what each is for, and how to delete one', async () 
 	const help = tunnelLimitHelp(many(TUNNEL_LIMIT));
 	assert.match(help, /already has 10 tunnels/);
 	assert.match(help, /coderemote tunnels delete <tunnel id>/);
+});
+
+test('an agent id is made once per port and kept, whatever else changes', () => {
+	const cfg = { token: 'a' };
+	const id = ensureAgentId(cfg, 31580);
+	assert.match(id, /^[0-9a-f]{32}$/);
+	cfg.token = 'rotated';
+	const reloaded = JSON.parse(JSON.stringify(cfg));
+	assert.equal(ensureAgentId(reloaded, 31580), id);
+	assert.notEqual(ensureAgentId(reloaded, 31581), id);
+	// A damaged value is replaced rather than trusted.
+	reloaded.agentIds[31580] = 'nope';
+	assert.match(ensureAgentId(reloaded, 31580), /^[0-9a-f]{32}$/);
+});
+
+test('a tunnel URL is remembered per port and forgotten with its tunnel, not the agent id', () => {
+	const cfg = { tunnels: { 31580: 'joyful-plane-9g8wnjj.asse' } };
+	const id = ensureAgentId(cfg, 31580);
+	assert.equal(rememberTunnelUrl(cfg, 31580, 'https://5mc3cf2g-31580.asse.devtunnels.ms'), true);
+	assert.equal(rememberTunnelUrl(cfg, 31580, 'https://5mc3cf2g-31580.asse.devtunnels.ms'), false);
+	assert.equal(forgetTunnel(cfg, 'joyful-plane-9g8wnjj'), true);
+	assert.equal(cfg.tunnelUrls[31580], undefined);
+	assert.equal(cfg.agentIds[31580], id);
 });

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createDecipheriv, randomBytes } from 'node:crypto';
 import { test } from 'node:test';
 import { AgentHub } from '../src/agents.js';
-import { PushSender, atSessionHere } from '../src/push.js';
+import { PushSender } from '../src/push.js';
 
 const key = randomBytes(32);
 const device = (fields = {}) => ({
@@ -22,16 +22,18 @@ function open(e, k = key) {
 	return JSON.parse(Buffer.concat([decipher.update(raw.subarray(12, raw.length - 16)), decipher.final()]).toString());
 }
 
-function setup({ status = 200, reason, quiet = false, shows = () => false, saved = [] } = {}) {
+function setup({ status = 200, reason, shows = () => false, saved = [] } = {}) {
 	let now = 0;
 	const hub = new AgentHub({ now: () => now, transcript: async () => [] });
+	// Sessions run in one of the agent's terminals unless a test says otherwise.
+	const handle = hub.handle.bind(hub);
+	hub.handle = (event, opts = {}) => handle(event, { terminal: 't1', ...opts });
 	const sent = [];
 	const stored = { devices: saved };
 	const push = new PushSender({
 		hub,
 		store: { load: () => stored.devices, save: (d) => (stored.devices = d) },
 		shows,
-		atSession: async () => quiet,
 		fetch: async (url, init) => {
 			sent.push({ url, body: JSON.parse(init.body), raw: init.body });
 			return new Response(JSON.stringify(reason ? { reason } : {}), { status });
@@ -152,14 +154,23 @@ test('kinds turned off are not sent', async () => {
 	assert.equal(sent.length, 0);
 });
 
-test('nothing is pushed while someone works in that session, at the computer or in the app', async () => {
-	for (const opts of [{ quiet: true }, { shows: ({ session }) => session === 's1' }]) {
-		const { hub, push, sent, settle } = setup(opts);
-		push.register(device());
-		hub.handle(permission);
-		await settle();
-		assert.equal(sent.length, 0);
-	}
+test('nothing is pushed while the app shows that session', async () => {
+	const { hub, push, sent, settle } = setup({ shows: ({ session }) => session === 's1' });
+	push.register(device());
+	hub.handle(permission);
+	await settle();
+	assert.equal(sent.length, 0);
+});
+
+test('nothing is pushed about a session started outside Code Remote', async () => {
+	const { hub, push, sent, settle, tick } = setup();
+	push.register(device());
+	hub.handle(permission, { terminal: null });
+	await hub.handle(ev('UserPromptSubmit', { prompt: 'long' }), { terminal: null });
+	tick(5 * 60_000);
+	await hub.handle(ev('Stop'), { terminal: null });
+	await settle();
+	assert.equal(sent.length, 0);
 });
 
 test('the app showing another session or screen still gets the push', async () => {
@@ -170,18 +181,6 @@ test('the app showing another session or screen still gets the push', async () =
 	await settle();
 	assert.equal(sent.length, 1);
 	assert.deepEqual(seen, [{ session: 's1' }]);
-});
-
-test('someone is at a session on the computer only when it runs in the app in front and they just typed', async () => {
-	const iterm = '/Applications/iTerm.app';
-	const at = (host, idle, front = iterm) => atSessionHere(host, { idle: async () => idle, front: async () => front });
-	assert.equal(await at({ terminal: null, app: iterm }, 5), true);
-	assert.equal(await at({ terminal: null, app: iterm }, 5, '/Applications/Safari.app'), false, 'another app in front');
-	assert.equal(await at({ terminal: null, app: iterm }, 45), false, 'idle for 30 seconds or more');
-	assert.equal(await at({ terminal: null, app: null }, 5, null), true, 'app unknown: recent input counts');
-	assert.equal(await at({ terminal: 't1', app: null }, 0), false, 'the agent’s own terminals show only on clients');
-	assert.equal(await at({ terminal: null, app: iterm }, null), false, 'not a Mac');
-	assert.equal(await at(null, 0), false);
 });
 
 test('a token APNs no longer knows is dropped', async () => {
@@ -224,12 +223,12 @@ test('a build that ends is a finished notification, unless cancelled or someone 
 	push.register(device({ kinds: { finished: false } }));
 	await push.buildEnded({ id: 'b4', scheme: 'Demo', state: 'succeeded', app: { name: 'Demo', version: '1' } });
 	assert.equal(sent.length, 2, 'finished pushes turned off');
-	const quiet = setup({ shows: ({ builds }) => builds === true, quiet: true });
+	const quiet = setup({ shows: ({ builds }) => builds === true });
 	quiet.push.register(device());
 	await quiet.push.buildEnded({ id: 'b5', scheme: 'Demo', state: 'succeeded', app: { name: 'Demo', version: '1' } });
 	assert.equal(quiet.sent.length, 0, 'the app shows the builds');
-	const elsewhere = setup({ shows: ({ session }) => session === 's1', quiet: true });
+	const elsewhere = setup({ shows: ({ session }) => session === 's1' });
 	elsewhere.push.register(device());
 	await elsewhere.push.buildEnded({ id: 'b6', scheme: 'Demo', state: 'succeeded', app: { name: 'Demo', version: '1' } });
-	assert.equal(elsewhere.sent.length, 1, 'the app shows something else; the computer doesn’t matter');
+	assert.equal(elsewhere.sent.length, 1, 'the app shows something else');
 });
