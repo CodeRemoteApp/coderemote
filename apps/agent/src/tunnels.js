@@ -5,6 +5,20 @@ export const TUNNEL_LIMIT = 10;
 // Every agent's preview tunnel carries it; nothing is lost by deleting one no host serves.
 export const PREVIEW_LABEL = 'coderemote-preview';
 
+// `devtunnel user show` exits 0 even when the login has expired, so match the text.
+export const LOGIN_NEEDED = /not logged in|login token expired|login required|please log ?in/i;
+
+/**
+ * The account `devtunnel user show` names, e.g. "thanh (GitHub)", or null when the login is
+ * missing or expired.
+ */
+export function signedInUser(res) {
+	if (!res.ok || LOGIN_NEEDED.test(res.out)) return null;
+	// "Logged in as thanh using GitHub."
+	const m = res.out.match(/Logged in as (\S+) using (\S+?)\.?\s*$/m);
+	return m ? `${m[1]} (${m[2]})` : res.out.trim() || null;
+}
+
 /** "silent-lake-pqv9b80.asse" -> "silent-lake-pqv9b80": ids are given and stored either way. */
 const base = (id) => String(id).split('.')[0];
 

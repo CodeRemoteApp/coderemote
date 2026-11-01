@@ -183,6 +183,18 @@ export class AgentHub extends EventEmitter {
 		s.prompts = s.prompts.filter((p) => this.#now() - p.at < 60_000).slice(-20);
 	}
 
+	/**
+	 * A client pressed Esc in a running session. Claude Code reports no hook for an interrupted
+	 * turn (only an idle notification a minute later), so the turn ends here; a hook that shows
+	 * it still going starts a turn again.
+	 */
+	interrupted(sessionId) {
+		const s = this.#sessions.get(sessionId);
+		if (!s || s.state !== 'running' || s.starting) return;
+		this.#endTurn(s, this.#now());
+		this.#emitSession(s);
+	}
+
 	/** Whether `resume` may reopen a session: only one no process runs any more. */
 	canResume(id) {
 		const s = this.#sessions.get(id);

@@ -50,6 +50,8 @@ export const Routes = Object.freeze({
 	previewRequestsClear: 'DELETE /api/preview/requests',
 	tunnelToken: 'POST /api/tunnel/token',
 	tunnelStatus: 'GET /api/tunnel',
+	// Added within v4: older agents answer 404.
+	tunnelDelete: 'DELETE /api/tunnel',
 	agentsHook: 'POST /api/agents/hook',
 	agentsSessions: 'GET /api/agents/sessions',
 	agentsTimeline: 'GET /api/agents/timeline',

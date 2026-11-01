@@ -14,8 +14,8 @@ import { ensureHookSecret, readHookSecret, runHook, writeHookLauncher } from '..
 import { PreviewTunnel } from '../src/preview.js';
 import { pushStore } from '../src/push-store.js';
 import { AgentRegistry } from '../src/registry.js';
-import { findTunnel, forgetTunnel, formatTunnels, listTunnels, makeRoom, ownUse, tunnelLimitHelp } from '../src/tunnels.js';
-import { MACHINE_LABEL, tunnelStatus } from '../src/tunnel-status.js';
+import { findTunnel, forgetTunnel, formatTunnels, listTunnels, makeRoom, ownUse, signedInUser, tunnelLimitHelp } from '../src/tunnels.js';
+import { MACHINE_LABEL, tunnelDelete, tunnelStatus } from '../src/tunnel-status.js';
 import { availableUpdate, fetchLatest, installCommand, isNewer } from '../src/update.js';
 import pkg from '../package.json' with { type: 'json' };
 import { Redactor, filterRequests, formatDetail, formatList, redactDetail } from '../src/requests.js';
@@ -85,7 +85,7 @@ function portFree(port) {
 	});
 }
 
-function listen(token, port, root, tunnelToken, preview, status) {
+function listen(token, port, root, tunnelToken, preview, status, remover) {
 	const hookSecret = ensureHookSecret(CONFIG_DIR);
 	writeHookLauncher(CONFIG_DIR, { script: fs.realpathSync(process.argv[1]) });
 	const server = createAgentServer({
@@ -94,6 +94,7 @@ function listen(token, port, root, tunnelToken, preview, status) {
 		tunnelToken,
 		preview,
 		tunnelStatus: status,
+		tunnelDelete: remover,
 		hookSecret,
 		// This very CLI, so coding agents in the app's terminals report through the same version.
 		hookBin: fs.realpathSync(process.argv[1]),
@@ -149,9 +150,6 @@ function interactiveLogin(args) {
 	});
 }
 
-// `devtunnel user show` exits 0 even when the login has expired, so match the text.
-const LOGIN_NEEDED = /not logged in|login token expired|login required|please log ?in/i;
-
 /** Runs `devtunnel user login` in this terminal (it opens the browser), or explains how to. */
 async function login(reason) {
 	spinner.stop();
@@ -170,13 +168,11 @@ async function login(reason) {
 /** The signed-in dev tunnels account, e.g. "thanh (GitHub)", logging in first when needed. */
 async function tunnelUser() {
 	let who = await devtunnel('user', 'show');
-	if (!who.ok || LOGIN_NEEDED.test(who.out)) {
+	if (!signedInUser(who)) {
 		await login(who.out || 'not logged in');
 		who = await devtunnel('user', 'show');
 	}
-	// "Logged in as thanh using GitHub."
-	const m = who.out.match(/Logged in as (\S+) using (\S+?)\.?\s*$/m);
-	return m ? `${m[1]} (${m[2]})` : who.out.trim();
+	return signedInUser(who) ?? who.out.trim();
 }
 
 /**
@@ -431,9 +427,22 @@ async function start({ tunnel }) {
 	const status = tunnel
 		? tunnelStatus({ devtunnel, tunnelId: () => tunnelId, account: () => account, anonymous, preview })
 		: null;
+	// The app's Settings › Connections deletes tunnels the account no longer needs through here.
+	const remover = tunnel
+		? tunnelDelete({
+				devtunnel,
+				tunnelId: () => tunnelId,
+				deleted: (id) => {
+					status.invalidate();
+					// Another agent of this computer's: its next `coderemote up` makes a new one.
+					const saved = loadConfig();
+					if (forgetTunnel(saved, id)) saveConfig(saved);
+				},
+			})
+		: null;
 	spinner.start('Starting agent');
 	try {
-		server = await listen(cfg.token, port, root, tunnelToken, preview, status);
+		server = await listen(cfg.token, port, root, tunnelToken, preview, status, remover);
 	} catch (e) {
 		spinner.fail();
 		if (e.code !== 'EADDRINUSE') throw e;

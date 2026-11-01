@@ -76,6 +76,7 @@ the same dev tunnels account. Agents without a tunnel, and agents from before th
 { provider, account, previewPorts,
   tunnel: { id, url, access: "private" | "anonymous", expiration, connections, uploaded, downloaded },
   machines: [{ id, name, url, online, current }],
+  others: [{ id, kind: "preview" | "vscode" | "other", name, online }],
   quota: { used, limit } | null }
 ```
 
@@ -86,11 +87,39 @@ the same dev tunnels account. Agents without a tunnel, and agents from before th
 back every time `coderemote up` starts. `connections` counts clients connected to the tunnel now.
 `machines` are the account's tunnels labelled `coderemote` (every agent labels its own; tunnels from
 older releases are missing until their agent restarts), this one first with `current: true`.
+`others` are the account's remaining tunnels, the ones `quota` counts besides the machines:
+coderemote preview tunnels (`name` is their computer), VS Code's `code tunnel` ones, and other
+tools' (`name` is their description, or null). Empty when the account couldn't be listed; missing
+from agents before it was added (read it as empty).
 `url` is a machine's agent address, the same as in its pairing link, so clients can tell which
 ones they've paired; `online` is whether an agent hosts it now. `quota` counts every tunnel on the
 account, preview tunnels included, against the most it may keep (`null` when they couldn't be
-listed). Tunnels are managed on a computer signed in to the account (`coderemote tunnels`,
-`coderemote tunnels delete <id>`), not through this route. The answer is cached for 15 seconds.
+listed). The answer is cached for 15 seconds.
+
+`DELETE /api/tunnel` (bearer token required, added within v4: older agents answer 404) deletes one
+of the account's tunnels, so a phone can clear out ones nothing uses any more.
+
+```
+{ id, account, force? }  ->  { deleted }
+```
+
+`id` is a tunnel ID as `machines` lists it (with or without the region suffix); `account` is the
+account the client showed, as `GET /api/tunnel` reported it. Before deleting, the agent checks the
+computer's dev tunnels sign-in again. Errors carry `{ error, code }`:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 400 | `EINVAL` | `id` or `account` missing |
+| 403 | `ELOGIN` | the computer's sign-in has expired (`coderemote login` on it) |
+| 409 | `EACCOUNT` | the computer is signed in to another account than `account` |
+| 404 | `ENOTUNNEL` | no such tunnel on the account |
+| 409 | `EOWN` | the agent's own tunnel, which this request runs through: delete it on the computer |
+| 409 | `EONLINE` | an agent serves it right now; send `force: true` to delete it anyway |
+| 502 | `EDEVTUNNEL` | devtunnel failed, with its own words |
+
+Deleting a tunnel an agent uses changes its address, so every phone paired with it pairs again;
+that agent's next `coderemote up` makes a new one. On the computer the same is
+`coderemote tunnels` and `coderemote tunnels delete <id>`.
 
 ## Shared folder
 

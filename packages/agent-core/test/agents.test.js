@@ -223,6 +223,22 @@ test('an interrupted turn becomes idle when Claude Code reports it', async () =>
 	assert.equal(h.session('s1').state, 'idle');
 });
 
+test('pressing Esc from a client ends the running turn right away', async () => {
+	const { h, tick } = hub();
+	await h.handle(ev('UserPromptSubmit', { prompt: 'go' }));
+	tick(5_000);
+	h.interrupted('s1');
+	assert.equal(h.session('s1').state, 'idle');
+	assert.deepEqual(h.timeline('s1').entries.map((e) => e.kind), ['prompt', 'turn_end']);
+	assert.equal(h.timeline('s1').entries[1].duration, 5_000);
+	// Pressed while idle: nothing to end.
+	h.interrupted('s1');
+	assert.equal(h.timeline('s1').entries.length, 2);
+	// Still going after all: the next hook picks the turn back up.
+	await h.handle(ev('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' }, tool_use_id: 't1' }));
+	assert.equal(h.session('s1').state, 'running');
+});
+
 test('a session launched from the app waits for a prompt once it starts', async () => {
 	const { h } = hub();
 	h.launched({ id: 's1', terminal: 'term-1', cwd: base.cwd });

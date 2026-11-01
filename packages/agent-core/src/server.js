@@ -133,6 +133,8 @@ async function readJson(req) {
  *        `token()`); absent without a tunnel
  * @param {() => Promise<object | null>} [opts.tunnelStatus]  the tunnel and the account's other
  *        machines, for `GET /api/tunnel`; absent without a tunnel
+ * @param {(req: object) => Promise<object>} [opts.tunnelDelete]  deletes one of the account's
+ *        tunnels, for `DELETE /api/tunnel`; absent without a tunnel
  * @param {string | null} [opts.hookSecret]  authenticates `coderemote hook` deliveries; without
  *        one the agent takes no hook events
  * @param {string | null} [opts.hookBin]  the CLI that runs `hook`, handed to terminals so a coding
@@ -162,6 +164,7 @@ export function createAgentServer({
 	tunnelToken = async () => null,
 	preview = null,
 	tunnelStatus = null,
+	tunnelDelete = null,
 	hookSecret = null,
 	hookBin = null,
 	uploadsDir = null,
@@ -707,6 +710,12 @@ export function createAgentServer({
 			return status;
 		},
 
+		[Routes.tunnelDelete]: async (url, req) => {
+			if (!tunnelDelete) throw new HttpError(404, 'this agent runs without a tunnel');
+			const { id, account, force } = await readJson(req);
+			return tunnelDelete({ id, account, force: force === true });
+		},
+
 		[Routes.tunnelToken]: async () => {
 			const issued = await handoff.issue();
 			if (!issued) throw new HttpError(404, 'this tunnel is anonymous');
@@ -869,6 +878,7 @@ export function createAgentServer({
 				await typeInto(term, typeable(args?.trim() ? `${command} ${args.trim()}` : command));
 			} else if (Object.hasOwn(KEYS, action)) {
 				typingTarget(id, { whileWaiting: true }).term.write(KEYS[action]);
+				if (action === 'interrupt') agents.interrupted(id);
 			} else {
 				throw new HttpError(400, `action must be one of ${[...Object.keys(KEYS), 'command'].join(', ')}`);
 			}

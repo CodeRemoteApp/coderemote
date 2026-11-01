@@ -198,6 +198,24 @@ test('reports the tunnel status it is given, and 404 without a tunnel', async ()
 	assert.equal((await api(bare, 'GET', '/api/tunnel')).status, 404);
 });
 
+test('deletes an account tunnel through the given remover, passing its errors on', async () => {
+	const asked = [];
+	const tunnelDelete = async (req) => {
+		asked.push(req);
+		if (req.id === 'busy') throw Object.assign(new Error('served'), { status: 409, code: 'EONLINE' });
+		return { deleted: `${req.id}.usw2` };
+	};
+	const server = await listen(createAgentServer({ token, root: tmpRoot, tunnelDelete }));
+	const ok = await api(server, 'DELETE', '/api/tunnel', { id: 'home', account: 'me', force: 'yes' });
+	assert.deepEqual(ok.json, { deleted: 'home.usw2' });
+	assert.deepEqual(asked[0], { id: 'home', account: 'me', force: false });
+	const busy = await api(server, 'DELETE', '/api/tunnel', { id: 'busy', account: 'me' });
+	assert.equal(busy.status, 409);
+	assert.equal(busy.json.code, 'EONLINE');
+	const bare = await listen(createAgentServer({ token, root: tmpRoot }));
+	assert.equal((await api(bare, 'DELETE', '/api/tunnel', { id: 'home', account: 'me' })).status, 404);
+});
+
 test('agents without a tunnel have no previews', async () => {
 	const server = await listen(createAgentServer({ token, root: tmpRoot }));
 	assert.equal((await api(server, 'GET', '/api/preview')).status, 404);
