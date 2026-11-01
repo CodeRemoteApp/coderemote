@@ -1,7 +1,8 @@
 // Windows Defender Firewall keeps phones away from the LAN listener on networks Windows classes
 // Public (a new Wi-Fi often is), and for good after someone chose Cancel on its prompt, which
 // leaves a Block rule for node.exe. The agent can't change either without elevation, so it looks
-// (reading only) and says what to run.
+// (reading only) and says what to run. On a computer whose organization manages the firewall,
+// rules made on it are ignored: then there's nothing to run, only that to say.
 import { execFile } from 'node:child_process';
 import { lanAddresses } from '@vsremote/agent-core';
 
@@ -23,13 +24,18 @@ $blocks = @(Get-NetFirewallRule -Direction Inbound -Action Block -Enabled True |
 		@{ name = $rule.Name; displayName = $rule.DisplayName; profile = [string]$rule.Profile }
 	}
 })
-ConvertTo-Json -Compress -Depth 4 @{ profiles = $profiles; blockRules = $blocks }
+# The effective settings, Group Policy included: AllowLocalFirewallRules False ignores local rules.
+$firewall = @(Get-NetFirewallProfile -PolicyStore ActiveStore | ForEach-Object {
+	@{ name = [string]$_.Name; enabled = [string]$_.Enabled; allowLocalRules = [string]$_.AllowLocalFirewallRules }
+})
+ConvertTo-Json -Compress -Depth 4 @{ profiles = $profiles; blockRules = $blocks; firewall = $firewall }
 `;
 }
 
 /**
  * What the firewall makes of this agent: `{ profiles: [{ alias, category }], blockRules: [{ name,
- * displayName, profile }] }` for the connected networks and the inbound Block rules on `execPath`.
+ * displayName, profile }], firewall: [{ name, enabled, allowLocalRules }] }` for the connected
+ * networks, the inbound Block rules on `execPath`, and the effective firewall profiles.
  * Null off Windows, and when PowerShell is missing, fails or takes longer than `timeoutMs`.
  */
 export function firewallReport({ execPath = process.execPath, timeoutMs = 10_000, run = execFile, platform = process.platform } = {}) {
@@ -44,7 +50,11 @@ export function firewallReport({ execPath = process.execPath, timeoutMs = 10_000
 					if (err) return resolve(null);
 					try {
 						const got = JSON.parse(stdout);
-						resolve({ profiles: [got.profiles ?? []].flat(), blockRules: [got.blockRules ?? []].flat() });
+						resolve({
+							profiles: [got.profiles ?? []].flat(),
+							blockRules: [got.blockRules ?? []].flat(),
+							firewall: [got.firewall ?? []].flat(),
+						});
 					} catch {
 						resolve(null);
 					}
@@ -74,7 +84,16 @@ const covers = (ruleProfile, category) => ruleProfile === 'Any' || ruleProfile.s
 export function firewallAdvice(report, { lanPort, adapters }) {
 	if (!report) return [];
 	const lines = [];
-	const lan = report.profiles.filter((p) => adapters.includes(p.alias));
+	// A network whose firewall profile is off keeps nobody out.
+	const settings = (p) => (report.firewall ?? []).find((f) => f.name === PROFILE_OF[p.category]);
+	const lan = report.profiles.filter((p) => adapters.includes(p.alias) && settings(p)?.enabled !== 'False');
+	if (lan.some((p) => settings(p)?.allowLocalRules === 'False')) {
+		return [
+			"Your organization manages this computer's firewall, and rules set on it are ignored:",
+			"phones on this network may not reach it directly. The app then goes through the tunnel; your IT",
+			`can allow inbound TCP port ${lanPort} from the local network.`,
+		];
+	}
 	const publicOnes = lan.filter((p) => p.category === 'Public');
 	// A Block rule beats every Allow rule; on a Public network, making it Private gets past one for Public.
 	const blocking = report.blockRules.filter((r) => lan.some((p) => p.category !== 'Public' && covers(r.profile, p.category)));

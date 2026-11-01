@@ -58,7 +58,7 @@ test('the report reads PowerShell JSON, single values included, and is null on a
 		platform: 'win32',
 		run: run(JSON.stringify({ profiles: { alias: 'Wi-Fi', category: 'Public' }, blockRules: [] })),
 	});
-	assert.deepEqual(one, { profiles: [{ alias: 'Wi-Fi', category: 'Public' }], blockRules: [] });
+	assert.deepEqual(one, { profiles: [{ alias: 'Wi-Fi', category: 'Public' }], blockRules: [], firewall: [] });
 	assert.equal(await firewallReport({ platform: 'win32', run: run('', new Error('timeout')) }), null);
 	assert.equal(await firewallReport({ platform: 'win32', run: run('not json') }), null);
 	assert.equal(await firewallReport({ platform: 'darwin', run: run('{}') }), null);
@@ -76,4 +76,41 @@ test('the PowerShell script is passed encoded, with the node path quoted', async
 	});
 	assert.equal(args[2], '-EncodedCommand');
 	assert.match(Buffer.from(args[3], 'base64').toString('utf16le'), /\$exe = 'C:\\Users\\O''Neil\\node\.exe'/);
+});
+
+test('a firewall managed by the organization: no commands, which it would ignore, only why', () => {
+	const r = {
+		...report([{ alias: 'Wi-Fi', category: 'Public' }], [nodeBlock('Any')]),
+		firewall: [{ name: 'Public', enabled: 'True', allowLocalRules: 'False' }],
+	};
+	const text = firewallAdvice(r, opts).join('\n');
+	assert.match(text, /organization manages this computer's firewall/);
+	assert.match(text, /port 32580/);
+	assert.doesNotMatch(text, /Set-NetConnectionProfile|netsh|Remove-NetFirewallRule/);
+});
+
+test('local rules allowed or not configured: the usual advice', () => {
+	for (const allowLocalRules of ['True', 'NotConfigured']) {
+		const r = { ...report([{ alias: 'Wi-Fi', category: 'Public' }]), firewall: [{ name: 'Public', enabled: 'True', allowLocalRules }] };
+		assert.match(firewallAdvice(r, opts).join('\n'), /Set-NetConnectionProfile/);
+	}
+});
+
+test('a network whose firewall profile is off needs nothing', () => {
+	const r = {
+		...report([{ alias: 'Wi-Fi', category: 'Public' }], [nodeBlock('Any')]),
+		firewall: [{ name: 'Public', enabled: 'False', allowLocalRules: 'False' }],
+	};
+	assert.deepEqual(firewallAdvice(r, opts), []);
+});
+
+test('the managed check only looks at the profile of the network phones use', () => {
+	const r = {
+		...report([{ alias: 'Wi-Fi', category: 'Private' }]),
+		firewall: [
+			{ name: 'Domain', enabled: 'True', allowLocalRules: 'False' },
+			{ name: 'Private', enabled: 'True', allowLocalRules: 'True' },
+		],
+	};
+	assert.deepEqual(firewallAdvice(r, opts), []);
 });

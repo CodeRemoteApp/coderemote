@@ -94,6 +94,9 @@ netsh advfirewall firewall add rule name="Code Remote LAN 32580" dir=in action=a
 Remove-NetFirewallRule -Name "<rule name>"
 ```
 
+On a company computer whose firewall is managed by Group Policy, rules made on it are ignored;
+`up` says so, and the app uses the tunnel (your IT can allow the LAN port).
+
 No internet on the computer (the router or the provider is down)? `coderemote up` still starts,
 serving the local network only, and its QR pairs the app on the same Wi-Fi. The tunnel connects
 on its own once the internet is back, without a restart; sign in on the phone then, and it keeps
