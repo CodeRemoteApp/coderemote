@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { listHistory } from '../src/history.js';
+import { isWindows } from '../src/platform.js';
 
 const jsonl = (...rows) => rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
 
@@ -15,8 +16,9 @@ async function write(file, text, mtime) {
 
 test('Claude Code: conversations of the folder, newest first, titled by the agent', async () => {
 	const home = await fs.mkdtemp(path.join(os.tmpdir(), 'history-'));
-	const cwd = '/Users/me/My Project+1';
-	const dir = path.join(home, '.claude', 'projects', '-Users-me-My-Project-1');
+	// Claude Code names the folder's directory after its absolute path, the drive included on Windows.
+	const cwd = isWindows ? 'C:\\Users\\me\\My Project+1' : '/Users/me/My Project+1';
+	const dir = path.join(home, '.claude', 'projects', isWindows ? 'C--Users-me-My-Project-1' : '-Users-me-My-Project-1');
 	const user = (content, extra = {}) => ({ type: 'user', message: { role: 'user', content }, gitBranch: 'main', ...extra });
 	await write(path.join(dir, 'a.jsonl'), jsonl(
 		user('<local-command-caveat>x</local-command-caveat>', { isMeta: true }),
