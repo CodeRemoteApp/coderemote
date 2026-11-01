@@ -23,6 +23,8 @@ export const Routes = Object.freeze({
 	fsMkdir: 'POST /api/fs/mkdir',
 	fsRename: 'POST /api/fs/rename',
 	fsDelete: 'DELETE /api/fs',
+	// Added within v4: older agents answer 404.
+	fsSearch: 'GET /api/fs/search',
 	termList: 'GET /api/term',
 	termKill: 'DELETE /api/term',
 	gitRepos: 'GET /api/git/repos',

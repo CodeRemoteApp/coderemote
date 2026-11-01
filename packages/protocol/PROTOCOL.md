@@ -120,6 +120,43 @@ with 400 (bad input), 401, 403 (outside the shared folder, `EACCES`/`EPERM`), 40
 `type` is `dir | file | symlink | other`; for symlinks `target` is the resolved kind or `broken`.
 `mtime` is milliseconds since the epoch.
 
+### Search
+
+`GET /api/fs/search?q=&include=&exclude=&case=1&word=1&regex=1&limit=` searches every file in the
+shared folder, like an editor's Find in Files (added within v4: older agents answer 404).
+
+- `q`: the text to find, literal unless `regex=1` (then a regular expression). `case=1` matches
+  case, `word=1` whole words only. At most 1000 characters.
+- `include`, `exclude`: comma-separated patterns of files to search or skip, matched against the
+  path relative to the root. A pattern without wildcards matches any path containing it (`src/`,
+  `Server`, case-insensitive); a glob (`*`, `**`, `?`, `{a,b}`) matches the path or one of its
+  folders, anywhere unless it starts with `/`. With `include` and no `q`, the answer just lists the
+  files it lets through.
+- `limit`: the most matching lines to return (default 500, at most 2000).
+
+Ignore rules apply (`.gitignore` and the like), `.git` and `node_modules` are always skipped,
+links aren't followed, and binary files and files over 2 MB aren't read. The search uses ripgrep
+when the computer has it. It stops after 15 seconds, or when the request is dropped (a client
+cancels the previous search as the user types).
+
+```json
+{
+  "root": "/Users/me/project",
+  "names": [{ "path": "src/server.js" }],
+  "files": [
+    { "path": "src/server.js", "matches": [{ "line": 12, "text": "const server = …", "ranges": [[6, 12]], "clipped": false }] }
+  ],
+  "truncated": false
+}
+```
+
+Paths are relative to `root`, `/`-separated. `names` are files whose name matches `q` (all files
+`include` lets through without `q`, up to `limit`; otherwise up to 100). `files` hold the matching
+lines, 1-based `line`, at most 100 per file; `text` is the line without its indentation, clipped to
+240 characters around the first match (`clipped`), and `ranges` are `[start, end)` of each match in
+it, in UTF-16 code units. `truncated` says there were more results than returned, or the search ran
+out of time. 400 for a missing query or an invalid regular expression.
+
 ## Git
 
 Repositories are found by scanning the shared folder up to 4 levels deep (hidden folders,

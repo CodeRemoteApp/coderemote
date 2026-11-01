@@ -31,6 +31,7 @@ import { PushSender, userActiveHere } from './push.js';
 import { detail, InspectingProxy } from './inspector.js';
 import { capture, commandExists, interactiveShell, isWindows } from './platform.js';
 import { HttpError, Sandbox } from './sandbox.js';
+import { search } from './search.js';
 import { SessionManager } from './sessions.js';
 import { UploadStore } from './uploads.js';
 
@@ -534,6 +535,29 @@ export function createAgentServer({
 		[Routes.fsDelete]: async (url) => {
 			await fs.rm(await sandbox.resolveChild(url.searchParams.get('path')), { recursive: true });
 			return {};
+		},
+
+		[Routes.fsSearch]: async (url, req, res) => {
+			const q = url.searchParams;
+			const flag = (name) => q.get(name) === '1';
+			// Typing a new query drops the request for the last one; its search stops with it.
+			const gone = new AbortController();
+			res.on('close', () => {
+				if (!res.writableFinished) gone.abort();
+			});
+			const found = await search({
+				root: sandbox.root,
+				query: q.get('q') ?? '',
+				caseSensitive: flag('case'),
+				wholeWord: flag('word'),
+				regex: flag('regex'),
+				include: q.get('include') ?? '',
+				exclude: q.get('exclude') ?? '',
+				limit: Number(q.get('limit')) || undefined,
+				signal: gone.signal,
+			});
+			if (gone.signal.aborted) return undefined;
+			return { root: sandbox.root, ...found };
 		},
 
 		[Routes.gitRepos]: async () => ({ repos: await Git.findRepos(sandbox.root) }),
