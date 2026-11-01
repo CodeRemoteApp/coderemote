@@ -9,10 +9,9 @@ import { after, before, test } from 'node:test';
 import { HOOK_SECRET_HEADER, Routes, TERMINAL_WS_PATH, TUNNEL_HANDOFF_PATH } from '@vsremote/protocol';
 import WebSocket from 'ws';
 import { createAgentServer } from '../src/index.js';
-import { findOpenssl, lanCertificate } from '../src/lan.js';
+import { lanCertificate } from '../src/lan.js';
 import { isWindows } from '../src/platform.js';
 
-const skip = !findOpenssl();
 const token = 'pairing-token';
 const hookSecret = 'hook-secret';
 let tmp;
@@ -23,7 +22,6 @@ let lanPort;
 let hostedUrl = null;
 
 before(async () => {
-	if (skip) return;
 	tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lan-server-'));
 	lan = await lanCertificate(path.join(tmp, 'lan'));
 	server = createAgentServer({
@@ -42,7 +40,6 @@ before(async () => {
 });
 
 after(async () => {
-	if (skip) return;
 	server.killAllSessions();
 	server.close();
 	await fs.rm(tmp, { recursive: true, force: true });
@@ -73,7 +70,7 @@ const auth = { authorization: `Bearer ${token}` };
 const at = (route) => route.split(' ')[1];
 const infoPath = at(Routes.info);
 
-test('the API answers over TLS with the agent certificate and the bearer token', { skip }, async () => {
+test('the API answers over TLS with the agent certificate and the bearer token', async () => {
 	const res = await lanRequest(infoPath, { headers: auth });
 	assert.equal(res.status, 200);
 	assert.equal(res.fp, lan.fingerprint);
@@ -84,11 +81,11 @@ test('the API answers over TLS with the agent certificate and the bearer token',
 	assert.deepEqual(viaLoopback.lan, info.lan);
 });
 
-test('without the token the LAN listener answers 401', { skip }, async () => {
+test('without the token the LAN listener answers 401', async () => {
 	assert.equal((await lanRequest(infoPath)).status, 401);
 });
 
-test('a terminal opens over wss', { skip: skip || isWindows }, async () => {
+test('a terminal opens over wss', { skip: isWindows }, async () => {
 	const ws = new WebSocket(`wss://127.0.0.1:${lanPort}${TERMINAL_WS_PATH}?cols=80&rows=24`, { headers: auth, rejectUnauthorized: false });
 	await new Promise((resolve, reject) => {
 		ws.once('open', resolve);
@@ -103,12 +100,12 @@ function handoffLink() {
 	return `${TUNNEL_HANDOFF_PATH}?${q}`;
 }
 
-test('the sign-in handoff is refused over LAN and still works over loopback', { skip }, async () => {
+test('the sign-in handoff is refused over LAN and still works over loopback', async () => {
 	assert.equal((await lanRequest(handoffLink())).status, 404);
 	assert.equal((await fetch(new URL(handoffLink(), local), { redirect: 'manual' })).status, 302);
 });
 
-test('hook deliveries are refused over LAN, even with the secret', { skip }, async () => {
+test('hook deliveries are refused over LAN, even with the secret', async () => {
 	const [method, route] = Routes.agentsHook.split(' ');
 	const body = JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'lan-hook', cwd: tmp });
 	const headers = { [HOOK_SECRET_HEADER]: hookSecret, 'content-type': 'application/json' };
@@ -117,7 +114,7 @@ test('hook deliveries are refused over LAN, even with the secret', { skip }, asy
 	assert.equal(res.status, 200);
 });
 
-test('tunnel tokens, tunnel management, previews and install links are refused over LAN', { skip }, async () => {
+test('tunnel tokens, tunnel management, previews and install links are refused over LAN', async () => {
 	for (const route of [Routes.tunnelToken, Routes.tunnelStatus, Routes.tunnelDelete, Routes.previewList, Routes.previewOpen, Routes.previewShare, Routes.buildsInstall]) {
 		const [method, path] = route.split(' ');
 		assert.equal((await lanRequest(path, { method, headers: auth })).status, 404, route);
@@ -127,7 +124,7 @@ test('tunnel tokens, tunnel management, previews and install links are refused o
 	assert.equal(renewed.status, 200);
 });
 
-test('/api/info reports the agent id, and the tunnel once it is hosted', { skip }, async () => {
+test('/api/info reports the agent id, and the tunnel once it is hosted', async () => {
 	const before = JSON.parse((await lanRequest(infoPath, { headers: auth })).text);
 	assert.equal(before.agentId, 'c'.repeat(32));
 	assert.equal(before.tunnel, null);
@@ -138,7 +135,7 @@ test('/api/info reports the agent id, and the tunnel once it is hosted', { skip 
 	hostedUrl = null;
 });
 
-test('without a LAN listener, /api/info says lan: null', { skip }, async () => {
+test('without a LAN listener, /api/info says lan: null', async () => {
 	const bare = createAgentServer({ token, root: tmp });
 	await new Promise((r) => bare.listen(0, '127.0.0.1', r));
 	const info = await (await fetch(`http://127.0.0.1:${bare.address().port}${infoPath}`, { headers: auth })).json();

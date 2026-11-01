@@ -80,6 +80,20 @@ the tunnel by itself when it leaves the network, or when the direct connection i
 Wi-Fi often is). `coderemote up --no-lan` turns this off; `"lan": false` in
 `~/.coderemote/config.json` makes that the default.
 
+On Windows, the first `coderemote up` makes Windows Defender Firewall ask whether node may
+accept incoming connections: choose **Allow**. The firewall still keeps phones out on networks
+Windows classes **Public**, which a new Wi-Fi often is, and for good after **Cancel**. `up` checks
+both and prints the fix, for an administrator terminal:
+
+```powershell
+# a network you trust: make it Private
+Set-NetConnectionProfile -InterfaceAlias "Wi-Fi" -NetworkCategory Private
+# or let in only the LAN port, from the local network
+netsh advfirewall firewall add rule name="Code Remote LAN 32580" dir=in action=allow protocol=TCP localport=32580 remoteip=localsubnet
+# after Cancel: remove the Block rule it left (up prints its name)
+Remove-NetFirewallRule -Name "<rule name>"
+```
+
 No internet on the computer (the router or the provider is down)? `coderemote up` still starts,
 serving the local network only, and its QR pairs the app on the same Wi-Fi. The tunnel connects
 on its own once the internet is back, without a restart; sign in on the phone then, and it keeps
@@ -99,7 +113,7 @@ Remote shell access is serious, so access is locked down by default:
   user's permissions.
 - **Encrypted.** All traffic is HTTPS / WSS (TLS 1.2+) to the relay.
 - **Local network.** Direct connections are TLS too, with a certificate the agent makes once.
-  The app learns its fingerprint through the tunnel and pins it, so a device pretending to be
+  The app learns its fingerprint from the QR (or through the tunnel) and pins it, so a device pretending to be
   your computer gets nothing. The pairing token is still required. There is no account sign-in
   on this path, so `--no-lan` is the choice on networks you don't trust.
   `coderemote rotate-token` also replaces the certificate.

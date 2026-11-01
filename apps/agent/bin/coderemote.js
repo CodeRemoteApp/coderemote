@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import qrcode from 'qrcode-terminal';
-import { createAgentServer, execCommand, isWindows, lanAddresses, lanCertificate, spawnCommand } from '@vsremote/agent-core';
+import { createAgentServer, execCommand, isWindows, lanAddresses, lanCertificate, qrAddresses, spawnCommand } from '@vsremote/agent-core';
 import { ensureDevtunnel } from '../src/devtunnel.js';
 import { ensureHookSecret, readHookSecret, runHook, writeHookLauncher } from '../src/hook.js';
 import { PreviewTunnel } from '../src/preview.js';
@@ -22,6 +22,7 @@ import pkg from '../package.json' with { type: 'json' };
 import { Redactor, filterRequests, formatDetail, formatList, redactDetail } from '../src/requests.js';
 import { Spinner } from '../src/spinner.js';
 import { codeTunnelLogin, codeTunnelSignedIn, findCode, hostCodeTunnel } from '../src/vscode-tunnel.js';
+import { firewallAdvice, firewallReport, lanAdapters } from '../src/windows-firewall.js';
 import { LAN_SERVICE_TYPE, PROTOCOL_VERSION, pairingUrl, webUrl } from '@vsremote/protocol';
 
 const run = promisify(execFile);
@@ -317,16 +318,6 @@ function hostTunnel(tunnelId, port) {
 }
 
 /**
- * The addresses the QR carries: every IPv4 one and the first IPv6 one, at most 3. macOS keeps
- * several temporary IPv6 addresses that would only make the code denser; /api/info has them all.
- */
-function qrAddresses(addresses) {
-	const v4 = addresses.filter((a) => !a.includes(':'));
-	const v6 = addresses.filter((a) => a.includes(':')).slice(0, 1);
-	return [...v4, ...v6].slice(0, 3);
-}
-
-/**
  * `url`: the tunnel's address, or null for an agent that never had one and started offline.
  * `lan`: what lets the app pin the agent and reach it on this network straight from the QR.
  */
@@ -543,9 +534,16 @@ async function start({ tunnel }) {
 		process.exit(1);
 	}
 	let advertiser = null;
+	// Windows only: what its firewall makes of phones reaching the LAN port. Looked up while the
+	// rest starts, never waited for.
+	let firewall = null;
 	if (lanCert) {
 		lan = await openLan(server, port);
 		if (lan.port) advertiser = advertiseLan(lan.port, lanCert.fingerprint, port);
+		if (lan.port && isWindows) {
+			const lanPort = lan.port;
+			firewall = firewallReport().then((report) => firewallAdvice(report, { lanPort, adapters: lanAdapters(os.networkInterfaces()) }));
+		}
 	}
 	let child;
 	let access;
@@ -658,7 +656,7 @@ async function start({ tunnel }) {
 		preview?.stop();
 	});
 	const lanLink = lan.port ? { agentId, port: lan.port, addresses: qrAddresses(lanAddresses()), fingerprint: lanCert.fingerprint } : null;
-	return { url, access, lan, offline, lanLink };
+	return { url, access, lan, offline, lanLink, firewall };
 }
 
 // The plugin's marketplace is this repository; --marketplace points at a checkout to try changes.
@@ -861,14 +859,24 @@ switch (cmd) {
 			spinner.fail();
 			throw e;
 		}
-		const { url, access, lan, offline, lanLink } = started;
+		const { url, access, lan, offline, lanLink, firewall } = started;
 		const vscodeUrl = rest.includes('--web') && !offline ? await startVSCodeTunnel() : null;
 		console.log(`\n  Sharing: ${root}`);
 		if (offline) console.log('  Tunnel:  not connected (no internet); phones on this network can pair and connect. It connects on its own once the internet is back.');
 		if (lan.port) {
 			console.log(`  LAN:     on (port ${lan.port}); phones on this network connect directly`);
 			if (process.platform === 'darwin') console.log('           If macOS asks whether node may accept incoming connections, choose Allow.');
+			if (isWindows) console.log('           If Windows asks whether node may accept incoming connections, choose Allow (Private networks).');
 		} else if (lan.error) console.log(`  LAN:     off (${lan.error}); phones connect through the tunnel`);
+		// Shown with the rest when it's in by now, else as soon as it is.
+		const showFirewall = (lines) => {
+			if (lines.length) console.log(`\n${lines.map((l) => `  ${l}`).join('\n')}\n`);
+		};
+		let firewallLines = null;
+		firewall?.then((lines) => (firewallLines = lines));
+		await new Promise((r) => setImmediate(r));
+		if (firewallLines) showFirewall(firewallLines);
+		else firewall?.then(showFirewall);
 		printPairing(url, cfg.token, access, vscodeUrl, lanLink);
 		const newer = await update;
 		if (newer) {

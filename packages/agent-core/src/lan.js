@@ -1,45 +1,23 @@
 // Direct connections on the local network: the agent's self-signed certificate, which clients
-// pin by fingerprint (learned over the tunnel), and the addresses it can be reached at.
-import { execFile } from 'node:child_process';
+// pin by fingerprint (from the QR or learned over the tunnel), and the addresses it can be reached at.
 import { X509Certificate } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { findExecutable, isWindows } from './platform.js';
-
-/** Git for Windows bundles openssl, which most Windows developers have even without it on PATH. */
-const WINDOWS_OPENSSL = ['C:\\Program Files\\Git\\usr\\bin\\openssl.exe', 'C:\\Program Files\\Git\\mingw64\\bin\\openssl.exe'];
-
-/** The openssl to generate the certificate with, or null. */
-export function findOpenssl(env = process.env) {
-	return findExecutable('openssl', env) ?? (isWindows ? WINDOWS_OPENSSL.find((f) => fs.existsSync(f)) ?? null : null);
-}
+import { selfSignedCertificate } from './x509.js';
 
 /** Lowercase hex SHA-256 of a PEM certificate's DER encoding, without separators. */
 export function certFingerprint(pem) {
 	return new X509Certificate(pem).fingerprint256.replace(/:/g, '').toLowerCase();
 }
 
-function generate(openssl, keyFile, certFile) {
-	return new Promise((resolve, reject) => {
-		execFile(
-			openssl,
-			[
-				'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
-				'-days', '3650', '-subj', '/CN=coderemote', '-keyout', keyFile, '-out', certFile,
-			],
-			{ timeout: 30_000 },
-			(err, _stdout, stderr) => (err ? reject(new Error(stderr?.trim() || err.message)) : resolve()),
-		);
-	});
-}
-
 /**
  * The LAN certificate in `dir` (`key.pem`, `cert.pem`), generated on first use and reused after,
- * so paired phones keep trusting it. Resolves `{ key, cert, fingerprint }`, or `{ error }` when
- * none could be made (no openssl, or it failed): the agent then runs without its LAN listener.
+ * so paired phones keep trusting it (one an older version made with openssl too). Resolves
+ * `{ key, cert, fingerprint }`, or `{ error }` when none could be made or saved: the agent then
+ * runs without its LAN listener.
  */
-export async function lanCertificate(dir, { env = process.env } = {}) {
+export async function lanCertificate(dir) {
 	const keyFile = path.join(dir, 'key.pem');
 	const certFile = path.join(dir, 'cert.pem');
 	const load = () => {
@@ -50,29 +28,41 @@ export async function lanCertificate(dir, { env = process.env } = {}) {
 	try {
 		return load();
 	} catch {}
-	const openssl = findOpenssl(env);
-	if (!openssl) return { error: 'openssl was not found' };
 	try {
+		const { key, cert } = selfSignedCertificate();
 		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-		// openssl writes the key with the umask's mode; it's created first so it starts private.
-		fs.writeFileSync(keyFile, '', { mode: 0o600 });
+		fs.writeFileSync(keyFile, key, { mode: 0o600 });
+		// An existing file keeps its mode through writeFileSync.
 		fs.chmodSync(keyFile, 0o600);
-		await generate(openssl, keyFile, certFile);
-		fs.chmodSync(keyFile, 0o600);
+		fs.writeFileSync(certFile, cert);
 		return load();
 	} catch (e) {
-		fs.rmSync(keyFile, { force: true });
-		fs.rmSync(certFile, { force: true });
+		for (const f of [keyFile, certFile]) {
+			try {
+				fs.rmSync(f, { force: true });
+			} catch {}
+		}
 		return { error: `could not create a certificate: ${e.message}` };
 	}
 }
 
-// VPNs, bridges and VM/container networks: a phone on the Wi-Fi never reaches the computer there.
-const VIRTUAL = /^(utun|ipsec|ppp|bridge|docker|br-|veth|vboxnet|vmnet|vEthernet|awdl|llw|anpi|ap\d|gif|stf|tailscale|zt|wg)/i;
+// VPNs, bridges, VM/container networks and hotspots: a phone on the Wi-Fi never reaches the
+// computer there. Windows names its adapters in words: "VirtualBox Host-Only Network",
+// "vEthernet (WSL)", "Local Area Connection* 10" (Wi-Fi Direct, Mobile hotspot; without the star
+// it's the Ethernet port of older Windows).
+const VIRTUAL =
+	/^(utun|ipsec|ppp|bridge|docker|br-|veth|vboxnet|vmnet|vEthernet|awdl|llw|anpi|ap\d|gif|stf|tailscale|zt|wg|VirtualBox|VMware|ZeroTier|Hyper-V|Bluetooth|Local Area Connection\*)/i;
+
+/** 10/8, 172.16/12, 192.168/16: what home and office networks hand out. */
+function privateV4(address) {
+	const [a, b] = address.split('.').map(Number);
+	return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
 
 /**
  * The addresses a device on the same network can reach this computer at: no loopback,
- * link-local or virtual interfaces; IPv4 first, as phones on home Wi-Fi mostly reach those.
+ * link-local or virtual interfaces. Private IPv4 first, then other IPv4 (100.64/10 is mostly a
+ * VPN), then IPv6, as phones on home Wi-Fi mostly reach them in that order; the QR takes the first.
  */
 export function lanAddresses(interfaces = os.networkInterfaces()) {
 	const v4 = [];
@@ -86,5 +76,15 @@ export function lanAddresses(interfaces = os.networkInterfaces()) {
 			if (family === 'IPv6' && !/^fe[89ab]/i.test(a.address)) v6.push(a.address);
 		}
 	}
-	return [...new Set([...v4, ...v6])];
+	return [...new Set([...v4.filter(privateV4), ...v4.filter((a) => !privateV4(a)), ...v6])];
+}
+
+/**
+ * The addresses the QR carries: the first 3 of `addresses`, in their order, with at most one
+ * IPv6 address. macOS keeps several temporary IPv6 addresses that would only make the code
+ * denser; /api/info has them all.
+ */
+export function qrAddresses(addresses) {
+	const firstV6 = addresses.find((a) => a.includes(':'));
+	return addresses.filter((a) => !a.includes(':') || a === firstV6).slice(0, 3);
 }
