@@ -644,26 +644,29 @@ export function createAgentServer({
 		},
 
 		[Routes.gitCommitMessage]: async (url, req) => {
-			const { repo: r, agent: wanted } = await readJson(req);
+			const { repo: r, agent: wanted, model: chosen } = await readJson(req);
 			const repo = await repoOf(r);
-			if (wanted !== undefined && !(wanted in launchers)) throw new HttpError(400, 'unknown agent');
-			const candidates = wanted ? [wanted] : ['claude', 'codex'];
+			if (wanted !== undefined && wanted !== null && !(wanted in launchers)) throw new HttpError(400, 'unknown agent');
+			if (chosen !== undefined && chosen !== null && (typeof chosen !== 'string' || !/^[\w.:\[\]-]{1,100}$/.test(chosen))) {
+				throw new HttpError(400, 'invalid model');
+			}
 			let agent = null;
-			for (const a of candidates) {
+			for (const a of wanted ? [wanted] : ['claude', 'codex']) {
 				if (await installed(a)) {
 					agent = a;
 					break;
 				}
 			}
 			if (!agent) {
-				throw Object.assign(new HttpError(409, 'Drafting a commit message needs Claude Code or Codex installed on the computer.'), {
+				const name = wanted ? launchers[wanted].name : 'Claude Code or Codex';
+				throw Object.assign(new HttpError(409, `Drafting a commit message needs ${name} installed on the computer.`), {
 					code: 'ENOAGENT',
 				});
 			}
-			// Codex lists its models fastest first; the user's configured one may be a slow one, or
-			// one their plan doesn't offer.
-			const codexModel = agent === 'codex' ? ((await codexModels())[0]?.id ?? null) : null;
-			return draftCommitMessage(repo, agent, { claudeCommand, codexCommand, codexModel });
+			// Without a model, Codex takes the first it lists (its fastest): the user's configured
+			// one may be slow, or one their plan doesn't offer.
+			const model = (wanted && chosen) || (agent === 'codex' ? ((await codexModels())[0]?.id ?? null) : null);
+			return draftCommitMessage(repo, agent, { claudeCommand, codexCommand, model });
 		},
 
 		[Routes.gitLog]: async (url) => ({

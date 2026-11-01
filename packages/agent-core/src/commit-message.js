@@ -58,8 +58,9 @@ export function buildPrompt({ stat, diff, untracked }, recentSubjects) {
 	return [
 		'Write a git commit message for the changes below.',
 		'Match the style of this repository\'s recent commits (language, tense, prefixes, capitalisation).',
-		'First line: a summary of at most 72 characters. If the change needs explaining, add a blank line',
-		'and a short body wrapped at 72 characters saying what changed and why. Do not list every file.',
+		'First line: a summary of at most 72 characters. Keep it short: add a body only when the',
+		'summary leaves out something important, and then at most 2 short lines after a blank line.',
+		'Do not list files or restate the diff.',
 		'Reply with the commit message only: no preamble, no quotes, no code fences.',
 		'',
 		'Recent commits:',
@@ -92,7 +93,7 @@ export function draftCommand(agent, { claudeCommand = 'claude', codexCommand = '
 	if (agent === 'claude') {
 		// cmd.exe can't be handed a quote, so Windows relies on CODEREMOTE_NO_HOOK alone.
 		const noHooks = isWindows ? [] : ['--settings', '{"disableAllHooks":true}'];
-		return [claudeCommand, '-p', '--model', 'haiku', '--tools', '', '--no-session-persistence', ...noHooks];
+		return [claudeCommand, '-p', '--model', model || 'haiku', '--tools', '', '--no-session-persistence', ...noHooks];
 	}
 	// The user's MCP servers would only slow the start down (and may need a sign-in).
 	return [
@@ -133,11 +134,11 @@ export function runWithInput(argv, { cwd, input, timeout = TIMEOUT_MS, env = {} 
 }
 
 /**
- * Drafts a message for `repo`'s pending changes with `agent` ('claude' or 'codex'). `codexModel`
- * overrides the model in Codex's config, which may not be one the user's plan offers.
+ * Drafts a message for `repo`'s pending changes with `agent` ('claude' or 'codex') and `model`
+ * (Claude Code's default here is Haiku; Codex's is the one in its config).
  * @returns {Promise<{ message: string, agent: string, staged: boolean }>}
  */
-export async function draftCommitMessage(repo, agent, { claudeCommand, codexCommand, codexModel = null, run = runWithInput } = {}) {
+export async function draftCommitMessage(repo, agent, { claudeCommand, codexCommand, model = null, run = runWithInput } = {}) {
 	const changes = await pendingChanges(repo);
 	const recent = (await hasHead(repo))
 		? (await git(repo, ['log', '-n12', '--no-merges', '--format=%s'])).stdout.split('\n').filter(Boolean)
@@ -148,13 +149,13 @@ export async function draftCommitMessage(repo, agent, { claudeCommand, codexComm
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'coderemote-commit-'));
 		const outFile = path.join(dir, 'message.txt');
 		try {
-			await run(draftCommand('codex', { codexCommand, outFile, model: codexModel }), { cwd: repo, input });
+			await run(draftCommand('codex', { codexCommand, outFile, model }), { cwd: repo, input });
 			text = await fs.readFile(outFile, 'utf8');
 		} finally {
 			await fs.rm(dir, { recursive: true, force: true });
 		}
 	} else {
-		text = await run(draftCommand('claude', { claudeCommand }), { cwd: repo, input });
+		text = await run(draftCommand('claude', { claudeCommand, model }), { cwd: repo, input });
 	}
 	const message = cleanMessage(text);
 	if (!message) throw new HttpError(502, 'the agent returned no message');

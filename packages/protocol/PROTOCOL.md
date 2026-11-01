@@ -256,7 +256,7 @@ pull/push use the machine's existing credentials or fail. Git failures return 40
 | `POST /api/git/unstage` | `{ repo, files }` | status |
 | `POST /api/git/discard` | `{ repo, files }` | status; untracked files are deleted |
 | `POST /api/git/commit` | `{ repo, message }` | `{ hash, short, subject, author, date, refs }` |
-| `POST /api/git/commit-message` | `{ repo, agent? }` | `{ message, agent, staged }`: a drafted message (see below). Added within v4: older agents answer 404 |
+| `POST /api/git/commit-message` | `{ repo, agent?, model? }` | `{ message, agent, staged }`: a drafted message (see below). Added within v4: older agents answer 404 |
 | `GET /api/git/log?repo=&limit=` | | `{ commits: [commit] }` |
 | `GET /api/git/show?repo=&commit=` | | `{ text, truncated }` |
 | `POST /api/git/pull` | `{ repo }` | `{ output }` (fast-forward only) |
@@ -266,7 +266,8 @@ pull/push use the machine's existing credentials or fail. Git failures return 40
 
 `commit-message` drafts a message with a coding agent installed on the computer, on the user's
 own plan: Claude Code (`claude -p`, Haiku, no tools, no saved session), else Codex (`codex exec
---ephemeral`, read-only). `agent` (`claude` or `codex`) picks one. It describes the staged changes,
+--ephemeral`, read-only, its first listed model). `agent` (`claude` or `codex`) picks one, and
+`model` that agent's model (a Claude Code alias such as `opus`, or a Codex model id). It describes the staged changes,
 or every change when nothing is staged (`staged` says which), and follows the style of the
 repository's recent commit subjects; lockfiles and other generated files are left out of the diff,
 which is cut at 24k characters. Nothing is committed. 409 `ENOAGENT` when neither agent is

@@ -111,6 +111,10 @@ test('POST /api/git/commit-message drafts with Claude Code and commits nothing',
 	assert.equal(await fs.readFile(path.join(tmp, 'env'), 'utf8'), '1');
 	if (!isWindows) assert.match(await fs.readFile(path.join(tmp, 'args'), 'utf8'), /--model\nhaiku/);
 	assert.equal(sh('rev-parse', 'HEAD').toString(), head);
+
+	const opus = await post('/api/git/commit-message', { repo, agent: 'claude', model: 'opus' });
+	assert.equal(opus.status, 200, JSON.stringify(opus.body));
+	if (!isWindows) assert.match(await fs.readFile(path.join(tmp, 'args'), 'utf8'), /--model\nopus/);
 });
 
 test('POST /api/git/commit-message refuses a missing agent and a clean tree', async () => {
@@ -118,6 +122,7 @@ test('POST /api/git/commit-message refuses a missing agent and a clean tree', as
 	assert.equal(codex.status, 409);
 	assert.equal(codex.body.code, 'ENOAGENT');
 	assert.equal((await post('/api/git/commit-message', { repo, agent: 'gpt' })).status, 400);
+	assert.equal((await post('/api/git/commit-message', { repo, agent: 'claude', model: 'x; rm -rf /' })).status, 400);
 
 	sh('add', '.');
 	sh('commit', '-q', '-m', 'Second');
