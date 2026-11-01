@@ -490,14 +490,20 @@ WebSocket `GET /api/agents/ws` (bearer token as usual). Server to client, all te
 - `{ "type": "session_removed", "session": id, "replacedBy": id }` when a placeholder gave way to the session Claude Code or Codex reports (see above), or with `replacedBy: null` once a session is forgotten
 - `{ "type": "prompt_confirmed", "session": id, "prompt": id }` (see below)
 
-Client to server: `{ "type": "presence", "foreground": bool }`. Send `true` while the app shows
-this machine and at least every 20 seconds; while one is fresh the agent sends no pushes
-(see [Push](#push)).
+Client to server: `{ "type": "presence", "foreground": bool, "session": id | null, "builds": bool }`.
+Send `foreground: true` while the app shows this machine, at least every 20 seconds and whenever
+what it shows changes: `session` is the session whose chat is open (null when none), `builds`
+whether the builds are on screen. While it is fresh (30 seconds) the agent sends no push about what
+it names (see [Push](#push)). A frame without `session` and `builds` (apps before they were added)
+counts as showing everything. Added without a protocol bump.
 
 ### Hook delivery
 
-`POST /api/agents/hook?agent=claude&terminal=<id>` carries a hook event's JSON input as the body
-(`agent=codex` for Codex, whose hook payloads use the same field names). Codex runs plugin hooks
+`POST /api/agents/hook?agent=claude&terminal=<id>&app=<path>` carries a hook event's JSON input as the body
+(`agent=codex` for Codex, whose hook payloads use the same field names). `app` is the macOS app
+bundle the coding agent runs in (`/Applications/iTerm.app`), which `coderemote hook` finds among its
+ancestor processes for `SessionStart`, `UserPromptSubmit` and `PermissionRequest` when the session
+isn't in one of the agent's terminals; optional. Codex runs plugin hooks
 with a bare environment: none of the variables above reach them, so its plugin finds the CLI
 through `~/.coderemote/bin/hook` (written by each agent when it starts) and the event is routed by
 folder only; a Codex session then takes over the one Codex placeholder in its folder, if there is
@@ -564,8 +570,11 @@ Registrations are kept across restarts in `~/.coderemote/push/<port>.json` and d
 
 The agent pushes for a new request, when a turn that ran 60 seconds or more ends, when a build ends, and to replace
 the notification of a request resolved elsewhere (same `apns-collapse-id`, the request id). It
-pushes nothing while the computer's user was active in the last 2 minutes (macOS only) or a
-client's presence is fresh.
+pushes nothing about a session while a client's fresh presence names that session, or while
+someone works in it on the computer: the session runs in a terminal of the computer's own (not one
+of the agent's), the computer had input in the last 30 seconds, and the app the session runs in is
+in front (macOS only; where that app isn't known, recent input alone counts). Nothing about builds
+while a client's presence has `builds: true`.
 
 Every push has a generic `aps.alert`, `mutable-content: 1`, a `category` (`PERMISSION`,
 `QUESTION`, `DONE`, `BUILD` or none), `thread-id` (the session id, when there is one), and two custom keys: `k`, the

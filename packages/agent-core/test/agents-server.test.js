@@ -124,16 +124,29 @@ test('the hook going away withdraws the request', async () => {
 	ws.close();
 });
 
-test('presence frames mark a client in the foreground', async () => {
+test('presence frames say what a client shows', async () => {
 	const { ws } = await watch();
+	const say = async (frame) => {
+		ws.send(JSON.stringify({ type: 'presence', ...frame }));
+		await new Promise((r) => setTimeout(r, 50));
+	};
 	assert.equal(server.clientInForeground(), false);
-	ws.send(JSON.stringify({ type: 'presence', foreground: true }));
-	await new Promise((r) => setTimeout(r, 50));
+	await say({ foreground: true });
 	assert.equal(server.clientInForeground(), true);
-	ws.send(JSON.stringify({ type: 'presence', foreground: false }));
-	await new Promise((r) => setTimeout(r, 50));
+	assert.equal(server.clientShows({ session: 'any' }), true, 'an older app shows everything');
+	await say({ foreground: true, session: 's1', builds: false });
+	assert.equal(server.clientShows({ session: 's1' }), true);
+	assert.equal(server.clientShows({ session: 's2' }), false);
+	assert.equal(server.clientShows({ builds: true }), false);
+	await say({ foreground: true, session: null, builds: true });
+	assert.equal(server.clientShows({ session: 's1' }), false);
+	assert.equal(server.clientShows({ builds: true }), true);
+	await say({ foreground: false });
 	assert.equal(server.clientInForeground(), false);
+	await say({ foreground: true, session: 's1' });
 	ws.close();
+	await new Promise((r) => setTimeout(r, 50));
+	assert.equal(server.clientShows({ session: 's1' }), false, 'a closed socket shows nothing');
 });
 
 test('terminals tell coding agents where they run, and link sessions to them', async () => {

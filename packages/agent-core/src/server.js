@@ -188,10 +188,14 @@ export function createAgentServer({
 		uploads?.sweep().catch(() => {});
 	}, 10 * 60 * 1000);
 	sweep.unref();
-	// When a client last said it shows this machine; pushes wait while that is recent.
-	let foregroundAt = 0;
-	const clientInForeground = () => Date.now() - foregroundAt < 30_000;
-	const push = new PushSender({ hub: agents, store: pushStore, foreground: clientInForeground, ...pushOptions });
+	// What each client last said it shows of this machine, and when; it counts for 30 seconds.
+	// `all`: an app from before presence named a session shows everything, as far as we know.
+	const presences = new Map();
+	const freshPresences = () => [...presences.values()].filter((p) => Date.now() - p.at < 30_000);
+	const clientInForeground = () => freshPresences().length > 0;
+	const clientShows = ({ session = null, builds = false }) =>
+		freshPresences().some((p) => p.all || (session ? p.session === session : builds && p.builds));
+	const push = new PushSender({ hub: agents, store: pushStore, shows: clientShows, ...pushOptions });
 	builds.on('ended', (build) => push.buildEnded(build).catch(() => {}));
 	// Agents whose approvals block the terminal (Codex) ask there while someone uses the computer,
 	// unless a client shows this machine: then the person is on the phone and answers there.
@@ -951,6 +955,8 @@ export function createAgentServer({
 		if (!hookAuthorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
 		plugins[url.searchParams.get('agent') || 'claude'] = { installed: true, checkedAt: Date.now() };
 		const terminal = url.searchParams.get('terminal');
+		// The computer's app the coding agent runs in, as the hook found it (an app bundle path).
+		const app = url.searchParams.get('app');
 		// The hook is killed when the computer answers first, which closes this connection.
 		const closed = new AbortController();
 		res.on('close', () => {
@@ -960,6 +966,7 @@ export function createAgentServer({
 			const output = await agents.handle(await readJson(req), {
 				agent: url.searchParams.get('agent') || 'claude',
 				terminal: terminal && sessions.get(terminal) ? terminal : null,
+				app: app && app.length <= 1024 && /\.app$/.test(app) ? app : null,
 				signal: closed.signal,
 			});
 			if (res.destroyed) return;
@@ -1044,9 +1051,19 @@ export function createAgentServer({
 			} catch {
 				return;
 			}
-			if (msg.type === AgentsClientMessage.presence) foregroundAt = msg.foreground === true ? Date.now() : 0;
+			if (msg.type !== AgentsClientMessage.presence) return;
+			if (msg.foreground !== true) return presences.delete(ws);
+			presences.set(ws, {
+				at: Date.now(),
+				all: msg.session === undefined && msg.builds === undefined,
+				session: typeof msg.session === 'string' ? msg.session : null,
+				builds: msg.builds === true,
+			});
 		});
-		ws.on('close', () => agents.off('message', send));
+		ws.on('close', () => {
+			agents.off('message', send);
+			presences.delete(ws);
+		});
 	}
 
 	server.on('close', () => {
@@ -1059,8 +1076,9 @@ export function createAgentServer({
 	// server.close() waits for open sockets; callers shutting down kill shells right away.
 	server.killAllSessions = () => sessions.killAll();
 	server.agents = agents;
-	// Whether a client showed this machine in the last 30 seconds.
+	// Whether a client showed this machine in the last 30 seconds, and what of it.
 	server.clientInForeground = clientInForeground;
+	server.clientShows = clientShows;
 	server.push = push;
 	server.agentsUploadPath = (id) => uploadPath(id);
 	return server;
