@@ -68,10 +68,17 @@ opens your browser to sign in with GitHub. Prefer a Microsoft account? Run
   <img src="https://raw.githubusercontent.com/CodeRemoteApp/coderemote/main/docs/images/how-it-works.png" width="760" alt="How it works: the Code Remote app on the iPhone connects over HTTPS/WSS to the Microsoft Dev Tunnels relay; coderemote on your computer (127.0.0.1:31580) connects outbound to the same relay and serves files, git and terminals from the shared folder. Security at each hop: token in the iPhone Keychain, only your account through the relay, token check and one folder on the computer.">
 </p>
 
-`coderemote` starts a small agent that listens on `127.0.0.1` only, and publishes it through
+`coderemote` starts a small agent that listens on `127.0.0.1`, and publishes it through
 a [Microsoft Dev Tunnel](https://learn.microsoft.com/azure/developer/dev-tunnels/overview).
-The tunnel connects outward, so nothing on your network has to be opened, and it works from
-anywhere: cellular, hotel Wi-Fi, behind NAT or a firewall.
+The tunnel connects outward, so it works from anywhere: cellular, hotel Wi-Fi, behind NAT or a
+firewall.
+
+When the phone is on the same network as the computer, the app skips the relay and talks to the
+agent directly, which is much faster. For that, `coderemote up` also listens on the local network,
+over TLS, on its own port (the agent's port + 1000, `32580` by default). The app switches back to
+the tunnel by itself when it leaves the network, or when the direct connection is blocked (guest
+Wi-Fi often is). `coderemote up --no-lan` turns this off; `"lan": false` in
+`~/.coderemote/config.json` makes that the default.
 
 ## Security
 
@@ -86,6 +93,11 @@ Remote shell access is serious, so access is locked down by default:
   escapes are blocked); terminals start there. A terminal is still a real shell with your
   user's permissions.
 - **Encrypted.** All traffic is HTTPS / WSS (TLS 1.2+) to the relay.
+- **Local network.** Direct connections are TLS too, with a certificate the agent makes once.
+  The app learns its fingerprint through the tunnel and pins it, so a device pretending to be
+  your computer gets nothing. The pairing token is still required. There is no account sign-in
+  on this path, so `--no-lan` is the choice on networks you don't trust.
+  `coderemote rotate-token` also replaces the certificate.
 
 `coderemote up --allow-anonymous` skips the account sign-in when you want the pairing token
 alone.
@@ -103,6 +115,7 @@ Found a vulnerability? See the
 coderemote up                    # share this folder through a dev tunnel, print the pairing QR
 coderemote up --allow-anonymous  # same, without the account sign-in (alias --no-auth)
 coderemote up --web              # also run `code tunnel`: open this folder in VS Code on vscode.dev
+coderemote up --no-lan           # phones always go through the tunnel, even on the same Wi-Fi
 coderemote status                # running agents and their terminal sessions
 coderemote kill <id>...          # end terminal sessions (an id prefix from `status` is enough)
 coderemote kill --all            # end every session

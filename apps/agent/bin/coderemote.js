@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import qrcode from 'qrcode-terminal';
-import { createAgentServer, execCommand, isWindows, spawnCommand } from '@vsremote/agent-core';
+import { createAgentServer, execCommand, isWindows, lanCertificate, spawnCommand } from '@vsremote/agent-core';
 import { ensureDevtunnel } from '../src/devtunnel.js';
 import { ensureHookSecret, readHookSecret, runHook, writeHookLauncher } from '../src/hook.js';
 import { PreviewTunnel } from '../src/preview.js';
@@ -21,7 +21,7 @@ import pkg from '../package.json' with { type: 'json' };
 import { Redactor, filterRequests, formatDetail, formatList, redactDetail } from '../src/requests.js';
 import { Spinner } from '../src/spinner.js';
 import { codeTunnelLogin, codeTunnelSignedIn, findCode, hostCodeTunnel } from '../src/vscode-tunnel.js';
-import { pairingUrl, webUrl } from '@vsremote/protocol';
+import { LAN_SERVICE_TYPE, PROTOCOL_VERSION, pairingUrl, webUrl } from '@vsremote/protocol';
 
 const run = promisify(execFile);
 const CONFIG_DIR = path.join(os.homedir(), '.coderemote');
@@ -33,6 +33,10 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const PUSH_DIR = path.join(CONFIG_DIR, 'push');
 // Photos and files sent from the phone to coding-agent sessions.
 const UPLOADS_DIR = path.join(CONFIG_DIR, 'uploads');
+// The certificate of the LAN listener, which paired phones pin; `rotate-token` replaces it.
+const LAN_DIR = path.join(CONFIG_DIR, 'lan');
+// A folder's LAN listener starts looking for a port this far above its agent's.
+const LAN_PORT_OFFSET = 1000;
 const DEFAULT_PORT = 31580;
 // Bundled into the published dist/coderemote.js, whose package.json the release workflow stamps
 // with the tag's version. A source checkout has no real version, so it never checks for updates.
@@ -51,6 +55,7 @@ function loadConfig() {
 		// Devices registered for notifications were paired devices too, and sent these files.
 		fs.rmSync(PUSH_DIR, { recursive: true, force: true });
 		fs.rmSync(UPLOADS_DIR, { recursive: true, force: true });
+		fs.rmSync(LAN_DIR, { recursive: true, force: true });
 	}
 	// Older releases kept one tunnel per machine, made for the default port.
 	if (cfg.tunnelId && !cfg.tunnels) {
@@ -85,7 +90,7 @@ function portFree(port) {
 	});
 }
 
-function listen(token, port, root, tunnelToken, preview, status, remover) {
+function listen(token, port, root, tunnelToken, preview, status, remover, lan) {
 	const hookSecret = ensureHookSecret(CONFIG_DIR);
 	writeHookLauncher(CONFIG_DIR, { script: fs.realpathSync(process.argv[1]) });
 	const server = createAgentServer({
@@ -101,12 +106,60 @@ function listen(token, port, root, tunnelToken, preview, status, remover) {
 		pushStore: pushStore(PUSH_DIR, port),
 		uploadsDir: UPLOADS_DIR,
 		version: VERSION,
+		lan,
 	});
 	return new Promise((resolve, reject) => {
 		server.once('error', reject);
 		// Loopback only: remote access goes exclusively through the tunnel.
 		server.listen(port, '127.0.0.1', () => resolve(server));
 	});
+}
+
+/**
+ * Opens the agent's LAN listener on the port this folder had, or else the first free one from
+ * the agent's port + LAN_PORT_OFFSET that no other folder claimed. Resolves the port, or
+ * `{ error }`: the agent then runs without it.
+ */
+async function openLan(server, agentPort) {
+	const remembered = cfg.lanPorts?.[root];
+	const claimed = new Set(Object.entries(cfg.lanPorts ?? {}).filter(([r]) => r !== root).map(([, p]) => p));
+	const busy = new Set(registry.list().map((a) => a.port));
+	let candidate = remembered ?? agentPort + LAN_PORT_OFFSET;
+	for (let tries = 0; tries < 50; tries++, candidate++) {
+		if (candidate !== remembered && (claimed.has(candidate) || busy.has(candidate))) continue;
+		try {
+			const lanPort = (await server.listenLan(candidate)).address().port;
+			if (lanPort !== remembered) {
+				cfg.lanPorts = { ...cfg.lanPorts, [root]: lanPort };
+				saveConfig(cfg);
+			}
+			return { port: lanPort };
+		} catch (e) {
+			if (e.code !== 'EADDRINUSE') return { error: e.message };
+		}
+	}
+	return { error: 'no free port' };
+}
+
+/**
+ * Advertises the LAN listener over Bonjour (macOS only: `dns-sd` ships with it), so the app
+ * finds this agent even when the relay is out of reach. Returns the advertiser, or null.
+ */
+function advertiseLan(lanPort, fingerprint, agentPort) {
+	if (process.platform !== 'darwin') return null;
+	const host = os.hostname().replace(/\.local$/, '');
+	const name = agentPort === DEFAULT_PORT ? host : `${host} :${agentPort}`;
+	try {
+		const child = spawn(
+			'dns-sd',
+			['-R', name, LAN_SERVICE_TYPE, 'local', String(lanPort), `fp=${fingerprint.slice(0, 16)}`, `proto=${PROTOCOL_VERSION}`],
+			{ stdio: 'ignore' },
+		);
+		child.on('error', () => {});
+		return child;
+	} catch {
+		return null;
+	}
 }
 
 // The Dev Tunnels CLI: the one on PATH, or a copy downloaded into ~/.coderemote/bin on first use.
@@ -351,7 +404,10 @@ Options:
   --allow-anonymous    up: skip the sign-in, the pairing token alone grants access
                        (alias --no-auth)
   --web                up: also run \`code tunnel\` and print a vscode.dev link that opens
-                       this folder in VS Code in the browser (needs VS Code's \`code\`)`;
+                       this folder in VS Code in the browser (needs VS Code's \`code\`)
+  --no-lan             up: don't let phones on the same network connect directly (over TLS,
+                       still with the token); they use the tunnel. "lan": false in
+                       ~/.coderemote/config.json makes it the default, --lan overrides that`;
 
 const HELP_FLAGS = ['help', '--help', '-help', '-h'];
 const argv = process.argv.slice(2);
@@ -440,9 +496,18 @@ async function start({ tunnel }) {
 				},
 			})
 		: null;
+	// Devices on the same network connect directly, unless turned off (`up --no-lan`, `"lan": false`).
+	const lanWanted = tunnel && (rest.includes('--no-lan') ? false : rest.includes('--lan') || cfg.lan !== false);
+	let lanCert = null;
+	let lan = { off: true };
+	if (lanWanted) {
+		const got = await lanCertificate(LAN_DIR);
+		if (got.error) lan = { error: got.error };
+		else lanCert = got;
+	}
 	spinner.start('Starting agent');
 	try {
-		server = await listen(cfg.token, port, root, tunnelToken, preview, status, remover);
+		server = await listen(cfg.token, port, root, tunnelToken, preview, status, remover, lanCert);
 	} catch (e) {
 		spinner.fail();
 		if (e.code !== 'EADDRINUSE') throw e;
@@ -451,6 +516,11 @@ async function start({ tunnel }) {
 		console.error(`See what holds it with: ${isWindows ? `netstat -ano | findstr :${port}` : `lsof -nP -iTCP:${port} -sTCP:LISTEN`}`);
 		console.error('Stop that process, or pick another port with --port.');
 		process.exit(1);
+	}
+	let advertiser = null;
+	if (lanCert) {
+		lan = await openLan(server, port);
+		if (lan.port) advertiser = advertiseLan(lan.port, lanCert.fingerprint, port);
 	}
 	let child;
 	let access;
@@ -482,6 +552,7 @@ async function start({ tunnel }) {
 	registry.register({ port, root, url });
 	const shutdown = async () => {
 		child?.kill();
+		advertiser?.kill();
 		// Previews get a new tunnel every run, so this one would only take up a slot of the account's 10.
 		await preview?.close();
 		await server.killAllSessions();
@@ -495,9 +566,10 @@ async function start({ tunnel }) {
 	// Last resort for any other way out (an uncaught error): never leave the tunnel host behind.
 	process.on('exit', () => {
 		child?.kill();
+		advertiser?.kill();
 		preview?.stop();
 	});
-	return { url, access };
+	return { url, access, lan };
 }
 
 // The plugin's marketplace is this repository; --marketplace points at a checkout to try changes.
@@ -700,9 +772,13 @@ switch (cmd) {
 			spinner.fail();
 			throw e;
 		}
-		const { url, access } = started;
+		const { url, access, lan } = started;
 		const vscodeUrl = rest.includes('--web') ? await startVSCodeTunnel() : null;
 		console.log(`\n  Sharing: ${root}`);
+		if (lan.port) {
+			console.log(`  LAN:     on (port ${lan.port}); phones on this network connect directly`);
+			if (process.platform === 'darwin') console.log('           If macOS asks whether node may accept incoming connections, choose Allow.');
+		} else if (lan.error) console.log(`  LAN:     off (${lan.error}); phones connect through the tunnel`);
 		printPairing(url, cfg.token, access, vscodeUrl);
 		const newer = await update;
 		if (newer) {
@@ -770,6 +846,8 @@ switch (cmd) {
 	case 'rotate-token': {
 		cfg.token = randomBytes(32).toString('base64url');
 		saveConfig(cfg);
+		// Paired phones pinned the LAN certificate; a new one makes them learn it again.
+		fs.rmSync(LAN_DIR, { recursive: true, force: true });
 		// Running agents hold the old token in memory and would keep honoring it, so stop them all.
 		const agents = registry.list();
 		for (const agent of agents) {

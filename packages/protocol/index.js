@@ -82,6 +82,9 @@ export const TUNNEL_AUTH_CALLBACK_HOST = 'tunnel-auth';
 
 export const TERMINAL_WS_PATH = '/api/term/ws';
 
+// Bonjour service the agent's LAN listener is advertised as. See PROTOCOL.md, "Local network".
+export const LAN_SERVICE_TYPE = '_coderemote._tcp';
+
 // Server -> client text frames on the terminal socket. Binary frames carry PTY output.
 export const TerminalServerMessage = Object.freeze({ session: 'session', exit: 'exit' });
 

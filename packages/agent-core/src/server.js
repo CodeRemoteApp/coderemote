@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import tls from 'node:tls';
 import { pipeline } from 'node:stream/promises';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import {
@@ -26,6 +27,7 @@ import { InstallLinks } from './install-links.js';
 import * as Git from './git.js';
 import { TunnelHandoff } from './handoff.js';
 import { LANDING_HTML } from './landing.js';
+import { lanAddresses as defaultLanAddresses } from './lan.js';
 import { isListening, killListener, listPorts } from './ports.js';
 import { PushSender, userActiveHere } from './push.js';
 import { detail, InspectingProxy } from './inspector.js';
@@ -34,6 +36,27 @@ import { HttpError, Sandbox } from './sandbox.js';
 import { search } from './search.js';
 import { SessionManager } from './sessions.js';
 import { UploadStore } from './uploads.js';
+
+/** Marks the sockets that came in through the LAN listener. */
+const OVER_LAN = Symbol('overLan');
+
+/**
+ * Not served over LAN. Through the tunnel these also need the owner's sign-in at the relay;
+ * over LAN the bearer token alone would mint tunnel connect tokens (the handoff, renewals,
+ * previews), change the account's tunnels, or make a port public (previews, install links).
+ * Hooks only come from this computer.
+ */
+function tunnelOnly(method, pathname) {
+	return (
+		pathname === TUNNEL_HANDOFF_PATH ||
+		pathname === '/api/tunnel' ||
+		pathname.startsWith('/api/tunnel/') ||
+		pathname === '/api/preview' ||
+		pathname.startsWith('/api/preview/') ||
+		`${method} ${pathname}` === Routes.buildsInstall ||
+		`${method} ${pathname}` === Routes.agentsHook
+	);
+}
 
 function kindOf(stat) {
 	if (stat.isDirectory()) return 'dir';
@@ -154,6 +177,9 @@ async function readJson(req) {
  *        keeps push registrations across restarts; without it they last until the agent stops
  * @param {object} [opts.pushOptions]  passed to PushSender (tests stub the relay and presence)
  * @param {string | null} [opts.version]  the CLI's version, reported in `/api/info`
+ * @param {{ key: string, cert: string, fingerprint: string } | null} [opts.lan]  the certificate
+ *        `listenLan()` serves devices on the local network with; without one there is no LAN listener
+ * @param {() => string[]} [opts.lanAddresses]  where devices on the network reach this computer
  * @param {{ checkMs?: number, graceMs?: number, killedMs?: number }} [opts.previewSweep]  how often
  *        previews are checked for a dev server that stopped, and how long one may stay silent
  *        (after a stop from the Ports tab: how long until it is checked)
@@ -180,6 +206,8 @@ export function createAgentServer({
 	pushOptions = {},
 	previewSweep = {},
 	version = null,
+	lan = null,
+	lanAddresses = defaultLanAddresses,
 }) {
 	const handoff = new TunnelHandoff({ token, mint: tunnelToken });
 	const sandbox = new Sandbox(root);
@@ -463,6 +491,7 @@ export function createAgentServer({
 
 	const routes = {
 		[Routes.info]: async () => ({
+			...lanInfo(),
 			protocol: PROTOCOL_VERSION,
 			minClientProtocol: MIN_CLIENT_PROTOCOL,
 			version,
@@ -945,6 +974,9 @@ export function createAgentServer({
 			});
 			return res.end(LANDING_HTML);
 		}
+		if (req.socket[OVER_LAN] === true && tunnelOnly(req.method, url.pathname)) {
+			return sendJson(res, 404, { error: 'not found' });
+		}
 		if (req.method === 'GET' && url.pathname === TUNNEL_HANDOFF_PATH) return handoffRedirect(url, res);
 		if (`${req.method} ${url.pathname}` === Routes.agentsHook) return hookDelivery(url, req, res);
 		if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
@@ -1076,7 +1108,44 @@ export function createAgentServer({
 		});
 	}
 
+	// LAN listener: TLS in front of this same server, so every route and socket works unchanged.
+	let lanServer = null;
+	function lanInfo() {
+		const port = lanServer?.listening ? lanServer.address().port : null;
+		return { lan: port ? { port, addresses: lanAddresses(), fingerprint: lan.fingerprint } : null };
+	}
+
+	/**
+	 * Accepts devices on the local network on `port` (0: any free one) over TLS with `opts.lan`'s
+	 * certificate, on every interface. Resolves the TLS server; rejects when it can't listen.
+	 */
+	server.listenLan = (port, host = '::') => {
+		if (!lan) return Promise.reject(new Error('no LAN certificate'));
+		const tlsServer = tls.createServer({ key: lan.key, cert: lan.cert, minVersion: 'TLSv1.2' }, (socket) => {
+			socket[OVER_LAN] = true;
+			server.emit('connection', socket);
+		});
+		// A device that gives up mid-handshake (a probe, a rejected pin) is nothing to report.
+		tlsServer.on('tlsClientError', () => {});
+		return new Promise((resolve, reject) => {
+			tlsServer.once('error', (e) => {
+				// No IPv6 on this computer: IPv4 only.
+				if (host === '::' && (e.code === 'EAFNOSUPPORT' || e.code === 'EADDRNOTAVAIL')) {
+					return resolve(server.listenLan(port, '0.0.0.0'));
+				}
+				reject(e);
+			});
+			tlsServer.listen(port, host, () => {
+				tlsServer.removeAllListeners('error');
+				tlsServer.on('error', () => {});
+				lanServer = tlsServer;
+				resolve(tlsServer);
+			});
+		});
+	};
+
 	server.on('close', () => {
+		lanServer?.close();
 		installs?.close();
 		clearInterval(sweep);
 		clearInterval(previewTimer);

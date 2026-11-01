@@ -1,7 +1,8 @@
 # Code Remote protocol v4
 
-The agent listens on `127.0.0.1` and is reachable remotely only through a Dev Tunnel
-(`https://<tunnel>-<port>.<region>.devtunnels.ms`). The agent's bearer token is always
+The agent listens on `127.0.0.1` and is reachable remotely through a Dev Tunnel
+(`https://<tunnel>-<port>.<region>.devtunnels.ms`), and from the same network through its
+[LAN listener](#local-network). The agent's bearer token is always
 required. By default the tunnel is also private: the relay admits only the dev tunnels account
 that owns it (see [Tunnel sign-in](#tunnel-sign-in)). `coderemote up --allow-anonymous` drops
 that second layer and leaves the token as the only boundary.
@@ -121,6 +122,40 @@ Deleting a tunnel an agent uses changes its address, so every phone paired with 
 that agent's next `coderemote up` makes a new one. On the computer the same is
 `coderemote tunnels` and `coderemote tunnels delete <id>`.
 
+## Local network
+
+Unless started with `--no-lan` (or `"lan": false` in its config), `coderemote up` also accepts
+connections from the local network: TLS on its own port, on every interface, serving the same
+routes and sockets with the same bearer token. `coderemote serve` never does.
+
+The certificate is self-signed and kept across runs (`coderemote rotate-token` replaces it), so
+clients can't check it by name or chain. They pin it instead: `GET /api/info` over the tunnel
+answers
+
+```
+lan: { port, addresses: ["192.168.1.5", ...], fingerprint } | null
+```
+
+`fingerprint` is the lowercase hex SHA-256 of the certificate's DER encoding, `addresses` the
+computer's current non-loopback, non-link-local addresses (IPv4 first), and `null` means there
+is no LAN listener. A client sends a request over the network only after the TLS handshake shows
+that exact certificate, and needs no `X-Tunnel-*` header there.
+
+Over the tunnel, every request also passed the relay's sign-in; over LAN only the bearer token
+guards it. So the LAN listener answers 404 for everything that hands out or uses that second
+factor: `/vsremote/handoff`, `/api/tunnel` and `/api/tunnel/*` (connect token renewal, tunnel
+status and deletion), `/api/preview` and `/api/preview/*` (preview connect tokens, public
+sharing), and `POST /api/builds/install` (a public install link). Hook delivery answers 404 too:
+it's only for coding agents on the computer itself. Clients send those requests through the
+tunnel whatever route they use for the rest.
+
+On macOS the agent also advertises a Bonjour service `_coderemote._tcp` on the LAN port, with TXT
+entries `fp` (the first 16 hex characters of `fingerprint`) and `proto` (the protocol version),
+so a client that knows the fingerprint finds the agent when the tunnel is out of reach. The TXT
+record never carries the token or the shared folder.
+
+Adding `lan` didn't change the protocol version: clients that don't know it ignore it.
+
 ## Shared folder
 
 The agent shares one folder, the directory `coderemote up` runs in (or `--root DIR`).
@@ -137,7 +172,7 @@ with 400 (bad input), 401, 403 (outside the shared folder, `EACCES`/`EPERM`), 40
 
 | Route | Request | Response |
 | --- | --- | --- |
-| `GET /api/info` | | `{ protocol, minClientProtocol, version, hostname, platform, root, user, shell }` (see [Compatibility](#compatibility)) |
+| `GET /api/info` | | `{ protocol, minClientProtocol, version, hostname, platform, root, user, shell, lan }` (see [Compatibility](#compatibility), [Local network](#local-network)) |
 | `GET /api/fs/list?path=` | | `{ path, entries: [{ name, type, size, mtime, target? }] }` |
 | `GET /api/fs/stat?path=` | | `{ path, name, type, size, mtime, target? }` |
 | `GET /api/fs/read?path=` | | raw bytes; one `Range: bytes=…` gets 206 with that part (416 past the end), so media streams; video and audio files carry their media type |
