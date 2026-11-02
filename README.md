@@ -32,12 +32,10 @@ npm install -g coderemote
 cd ~/projects/my-app && coderemote up
 ```
 
-With Homebrew: `brew install coderemoteapp/tap/coderemote`.
-
-No Node.js? The install scripts use yours when there is one (22 or newer), and otherwise
-download Node.js into `~/.coderemote/runtime` for coderemote alone:
+No Node.js? The install scripts download it for coderemote alone:
 
 ```sh
+brew install coderemoteapp/tap/coderemote                                                      # Homebrew
 curl -fsSL https://raw.githubusercontent.com/CodeRemoteApp/coderemote/main/install.sh | sh    # macOS, Linux
 ```
 
@@ -66,8 +64,8 @@ gives the browser the whole machine, not just the shared folder.
 The iOS app is coming to the App Store. This repository holds the open-source side: the CLI,
 the agent and the wire protocol, so you can audit what runs on your computer or build your own
 client.
-Everything about the CLI (commands, requirements, FAQ) is in its
-[npm README](apps/agent/README.md).
+Commands, requirements and FAQ are in the
+[docs](https://coderemoteapp.github.io/web/docs/).
 
 ## Features
 

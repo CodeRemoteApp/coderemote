@@ -27,14 +27,16 @@
 Run one command in a project folder, scan the QR code with your iPhone, and that folder is
 in your pocket:
 
-- **Files:** browse, open, edit, create, rename and delete files in the shared folder
-- **Git:** see changes and diffs, stage, discard, commit, pull, push and read history,
-  across every repository in the folder
-- **Terminal:** a real shell (PTY) with a key bar for Ctrl, Tab, Esc and arrows; sessions
-  keep running when your phone sleeps and pick up where you left off, so `claude`, `vim`,
-  `htop` or a long build survive switching apps
-- **VS Code in the browser (optional):** `coderemote up --web` also starts VS Code's own
-  tunnel and prints a vscode.dev link that opens the folder in the full editor
+- **Files:** browse, open and edit files in the shared folder, create, rename and delete.
+- **Agent chat:** talk to Claude Code and Codex in a proper chat view instead of a raw
+  terminal. Follow what the agent is doing and answer its permission prompts and questions
+  from your phone.
+- **Git:** changes and diffs, stage, commit, pull, push and history, across every repo in the folder.
+- **Terminal:** a real shell that keeps running when your phone sleeps, so `vim`, `htop` or a
+  long build survive switching apps.
+- **Ports:** started a backend or frontend on some local port? The app tunnels that port so you
+  can open it on your phone, to test an API or preview a web UI without deploying.
+- **VS Code in the browser (optional):** `coderemote up --web`.
 
 ## Quick start
 
@@ -43,12 +45,13 @@ npm install -g coderemote
 cd ~/projects/my-app && coderemote up
 ```
 
-With Homebrew: `brew install coderemoteapp/tap/coderemote`.
+Scan the QR code with your iPhone Camera, or the **+** button in the app. The first run
+downloads Microsoft's Dev Tunnels CLI and asks you to sign in with GitHub.
 
-No Node.js? The install scripts use yours when there is one (22 or newer), and otherwise
-download Node.js into `~/.coderemote/runtime` for coderemote alone:
+Other ways to install (the scripts download Node.js when you have none):
 
 ```sh
+brew install coderemoteapp/tap/coderemote                                                      # Homebrew
 curl -fsSL https://raw.githubusercontent.com/CodeRemoteApp/coderemote/main/install.sh | sh    # macOS, Linux
 ```
 
@@ -56,162 +59,21 @@ curl -fsSL https://raw.githubusercontent.com/CodeRemoteApp/coderemote/main/insta
 irm https://raw.githubusercontent.com/CodeRemoteApp/coderemote/main/install.ps1 | iex         # Windows
 ```
 
-Scan the QR code it prints with your iPhone Camera (or the **+** button in the app). Done.
+## Claude Code and Codex
 
-The first run sets itself up: it downloads Microsoft's Dev Tunnels CLI (once, verified) and
-opens your browser to sign in with GitHub. Prefer a Microsoft account? Run
-`coderemote login --microsoft` first.
-
-## How it works
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/CodeRemoteApp/coderemote/main/docs/images/how-it-works.png" width="760" alt="How it works: the Code Remote app on the iPhone connects over HTTPS/WSS to the Microsoft Dev Tunnels relay; coderemote on your computer (127.0.0.1:31580) connects outbound to the same relay and serves files, git and terminals from the shared folder. Security at each hop: token in the iPhone Keychain, only your account through the relay, token check and one folder on the computer.">
-</p>
-
-`coderemote` starts a small agent that listens on `127.0.0.1`, and publishes it through
-a [Microsoft Dev Tunnel](https://learn.microsoft.com/azure/developer/dev-tunnels/overview).
-The tunnel connects outward, so it works from anywhere: cellular, hotel Wi-Fi, behind NAT or a
-firewall.
-
-When the phone is on the same network as the computer, the app skips the relay and talks to the
-agent directly, which is much faster. For that, `coderemote up` also listens on the local network,
-over TLS, on its own port (the agent's port + 1000, `32580` by default). The app switches back to
-the tunnel by itself when it leaves the network, or when the direct connection is blocked (guest
-Wi-Fi often is). `coderemote up --no-lan` turns this off; `"lan": false` in
-`~/.coderemote/config.json` makes that the default.
-
-On Windows, the first `coderemote up` makes Windows Defender Firewall ask whether node may
-accept incoming connections: choose **Allow**. The firewall still keeps phones out on networks
-Windows classes **Public**, which a new Wi-Fi often is, and for good after **Cancel**. `up` checks
-both and prints the fix, for an administrator terminal:
-
-```powershell
-# a network you trust: make it Private
-Set-NetConnectionProfile -InterfaceAlias "Wi-Fi" -NetworkCategory Private
-# or let in only the LAN port, from the local network
-netsh advfirewall firewall add rule name="Code Remote LAN 32580" dir=in action=allow protocol=TCP localport=32580 remoteip=localsubnet
-# after Cancel: remove the Block rule it left (up prints its name)
-Remove-NetFirewallRule -Name "<rule name>"
-```
-
-On a company computer whose firewall is managed by Group Policy, rules made on it are ignored;
-`up` says so, and the app uses the tunnel (your IT can allow the LAN port).
-
-No internet on the computer (the router or the provider is down)? `coderemote up` still starts,
-serving the local network only, and its QR pairs the app on the same Wi-Fi. The tunnel connects
-on its own once the internet is back, without a restart; sign in on the phone then, and it keeps
-working away from home.
-
-## Security
-
-Remote shell access is serious, so access is locked down by default:
-
-- **Your account only.** The tunnel is private: the relay lets through only the GitHub or
-  Microsoft account that runs `coderemote up`. The phone signs in once through the system
-  browser (passkeys and "Sign in with Google" work).
-- **Plus a pairing token.** Every request also needs the random token from the QR code,
-  stored in the iPhone Keychain. `coderemote rotate-token` revokes every paired device.
-- **One folder.** Files and git are confined to the folder you started in (symlink and `..`
-  escapes are blocked); terminals start there. A terminal is still a real shell with your
-  user's permissions.
-- **Encrypted.** All traffic is HTTPS / WSS (TLS 1.2+) to the relay.
-- **Local network.** Direct connections are TLS too, with a certificate the agent makes once.
-  The app learns its fingerprint from the QR (or through the tunnel) and pins it, so a device pretending to be
-  your computer gets nothing. The pairing token is still required. There is no account sign-in
-  on this path, so `--no-lan` is the choice on networks you don't trust.
-  `coderemote rotate-token` also replaces the certificate.
-
-`coderemote up --allow-anonymous` skips the account sign-in when you want the pairing token
-alone.
-
-`--web` runs `code tunnel`, which is VS Code's tunnel, not ours: it signs in with its own
-GitHub account and gives the browser the whole machine, not just the shared folder. It stops
-with `coderemote`, unless a `code tunnel` was already running.
-
-Found a vulnerability? See the
-[security policy](https://github.com/CodeRemoteApp/coderemote/blob/main/SECURITY.md).
-
-## Commands
+Run once to let the app follow and answer your agent sessions:
 
 ```sh
-coderemote up                    # share this folder through a dev tunnel, print the pairing QR
-coderemote up --allow-anonymous  # same, without the account sign-in (alias --no-auth)
-coderemote up --web              # also run `code tunnel`: open this folder in VS Code on vscode.dev
-coderemote up --no-lan           # phones always go through the tunnel, even on the same Wi-Fi
-coderemote status                # running agents and their terminal sessions
-coderemote kill <id>...          # end terminal sessions (an id prefix from `status` is enough)
-coderemote kill --all            # end every session
-coderemote stop                  # stop the agent for this folder (--all: every agent)
-coderemote serve                 # share on 127.0.0.1 only, no tunnel (local testing)
-coderemote requests [PORT]       # requests that reached a previewed port (--grep, --failed, --json)
-coderemote request <ID>          # headers and bodies of one request (--show-secrets, --json)
-coderemote setup claude          # let the app follow and answer Claude Code sessions (--remove)
-coderemote setup codex           # the same for Codex; then trust its hooks once with /hooks
-coderemote rotate-token          # revoke every paired device, stop running agents
-coderemote login                 # sign in again (--microsoft, or --device-code without a browser)
-coderemote update                # install the latest version (`up` says when there's one)
-coderemote help                  # all options
+coderemote setup claude    # Claude Code plugin
+coderemote setup codex     # Codex plugin, then trust its hooks once with /hooks in Codex
 ```
 
-Options: `--root DIR` shares another folder; `--port N` picks the local port (default
-`31580`). The tunnel URL stays the same between runs, so paired phones reconnect on their own.
-
-`setup claude` installs the Code Remote plugin into Claude Code (`claude plugin install
-coderemote@coderemote`). From then on, every Claude Code session in a shared folder shows in
-the app's Agents tab: what it is doing, and its permission prompts and questions, which you can
-answer from the phone while the prompt stays open on the computer too (whichever answers first
-wins). Without a running agent the plugin does nothing. Inside Claude Code the same plugin
-installs with `/plugin install coderemote --marketplace CodeRemoteApp/coderemote`.
-
-`setup codex` does the same for Codex (0.139 or later): it adds this repository as a Codex
-plugin marketplace and installs `coderemote`. Codex runs a plugin's hooks only once you
-trust them, so open Codex afterwards and approve the Code Remote hooks in `/hooks`. Codex shows
-its approval prompt only after the hook declines, so the agent answers there at once while you
-are at the computer (or have the app open), and holds the request for your phone, up to ten
-minutes, only while you're away.
-
-`requests` and `request` read the traffic log of a port you preview from the app, so a coding
-agent in a terminal (Claude Code, Codex, …) can debug with it: run them in the shared folder.
-The log lives in the agent's memory only (the latest 200 requests per port, bodies up to 64 KB).
-Auth headers, cookies and token-like fields are masked; `--show-secrets` prints them, for
-example to reuse a session token in a test.
+Inside Claude Code you can also run `/plugin install coderemote --marketplace CodeRemoteApp/coderemote`.
 
 ## Requirements
 
-- **Node.js 22** or newer on **macOS** or **Windows 10/11** (Linux is expected to work but not
-  yet tested); the install scripts download it when it's missing. On Windows, terminals run
-  PowerShell (`pwsh` when installed).
-- A **GitHub or Microsoft account** to sign in to Dev Tunnels
-- The **Dev Tunnels CLI** is downloaded on first run into `~/.coderemote/bin` (the macOS and
-  Windows builds must carry Microsoft's code signature). A `devtunnel` already on your `PATH` is
-  used instead, or point `CODEREMOTE_DEVTUNNEL` at one.
-- For `--web` only: **VS Code** with its `code` command on your `PATH` (in VS Code, run
-  *Shell Command: Install 'code' command in PATH*), or point `CODEREMOTE_CODE` at one. The first
-  run signs `code tunnel` in with GitHub.
-- On Linux, `node-pty` compiles on install (`python3`, `make`, a C++ compiler:
-  `build-essential` on Debian/Ubuntu), and signing in needs `libsecret` (`libsecret-1-0`)
-- The **Code Remote** iOS app on your iPhone (App Store release coming; see the
-  [website](https://coderemoteapp.github.io/web/))
+- Node.js 22+ on macOS or Windows 10/11 (Linux is expected to work, untested)
+- A GitHub or Microsoft account
+- The **Code Remote** iOS app (App Store release coming)
 
-## FAQ
-
-**Is it an SSH client?** No. Nothing to configure on the computer beyond this one command:
-no SSH server, keys, open ports or dynamic DNS.
-
-**Does it need VS Code?** No. It's inspired by VS Code's remote tunnels but runs on its own.
-
-**Does my code go through a third party?** Traffic passes through Microsoft's Dev Tunnels
-relay, encrypted in transit; Code Remote runs no server of its own and collects nothing.
-
-**What happens when my phone locks?** Terminal sessions keep running on the computer, with
-their recent output. Reopen the app and they reattach.
-
-**Can I share more than one folder?** One at a time for now: `coderemote up` uses one
-tunnel per computer. Share a parent folder to reach several projects; the Git tab finds every
-repository inside it.
-
-## License
-
-[AGPL-3.0-or-later](https://github.com/CodeRemoteApp/coderemote/blob/main/LICENSE).
-"Code Remote" and its icon are trademarks of the project; see
-[TRADEMARKS.md](https://github.com/CodeRemoteApp/coderemote/blob/main/TRADEMARKS.md).
+Commands, options and details are in the [docs](https://coderemoteapp.github.io/web/docs/).
