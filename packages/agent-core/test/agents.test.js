@@ -287,3 +287,118 @@ test('/clear goes on under a new id in the same terminal, which replaces the old
 	await h.handle(ev('SessionStart', { session_id: 'x2', source: 'clear' }));
 	assert.ok(h.session('x1') && h.session('x2'));
 });
+
+test('/clear replaces the session it cleared even when the terminal ran others before', async () => {
+	const { h, messages } = hub();
+	// Claude Code ran and quit in this terminal, then started again.
+	await h.handle(ev('SessionStart', { session_id: 's0', source: 'startup' }), { terminal: 'term-1' });
+	await h.handle(ev('SessionEnd', { session_id: 's0', reason: 'prompt_input_exit' }), { terminal: 'term-1' });
+	await h.handle(ev('SessionStart', { source: 'startup' }), { terminal: 'term-1' });
+	await h.handle(ev('UserPromptSubmit', { prompt: 'Hello' }), { terminal: 'term-1' });
+	await h.handle(ev('SessionEnd', { reason: 'clear' }), { terminal: 'term-1' });
+	await h.handle(ev('SessionStart', { session_id: 's2', source: 'clear' }), { terminal: 'term-1' });
+
+	assert.equal(h.session('s1'), null);
+	assert.equal(h.session('s0').state, 'ended', 'the earlier session stays as it was');
+	assert.ok(messages.some((m) => m.type === 'session_removed' && m.session === 's1' && m.replacedBy === 's2'));
+
+	// Claude Code cuts SessionEnd hooks short on /clear: the cleared session may never hear it end.
+	await h.handle(ev('UserPromptSubmit', { session_id: 's2', prompt: 'Again' }), { terminal: 'term-1' });
+	await h.handle(ev('SessionStart', { session_id: 's3', source: 'clear' }), { terminal: 'term-1' });
+	assert.equal(h.session('s2'), null);
+	assert.ok(messages.some((m) => m.type === 'session_removed' && m.session === 's2' && m.replacedBy === 's3'));
+	assert.equal(h.session('s0').state, 'ended');
+});
+
+test('images a client attached show with the prompt once Claude Code reports it', async () => {
+	const { h, messages } = hub();
+	await h.handle(ev('SessionStart', { source: 'startup' }), { terminal: 'term-1' });
+	h.prompted('s1', { id: 'p1', text: 'What is this?\n/up/a.png', paths: ['/up/a.png'], images: [{ id: 'u1', type: 'image/png' }] });
+	await h.handle(ev('UserPromptSubmit', { prompt: 'What is this?\n[Image #1]' }));
+	const [entry] = h.timeline('s1').entries;
+	assert.deepEqual([entry.text, entry.images], ['What is this?\n[Image #1]', [{ id: 'u1', type: 'image/png' }]]);
+	assert.ok(messages.some((m) => m.type === 'prompt_confirmed' && m.prompt === 'p1'));
+	await h.handle(ev('UserPromptSubmit', { prompt: 'No pictures' }));
+	assert.equal(h.timeline('s1').entries.at(-1).images, undefined);
+});
+
+test('the session list comes back after a restart', async () => {
+	const { h, tick } = hub({ transcript: async () => [] });
+	// In one of the agent's terminals; outside Code Remote; long over; and a Codex one.
+	await h.handle(ev('SessionStart', { source: 'startup' }), { terminal: 'term-1' });
+	await h.handle(ev('UserPromptSubmit', { prompt: 'Fix it' }), { terminal: 'term-1' });
+	await h.handle(ev('SessionStart', { session_id: 'out', source: 'startup' }));
+	await h.handle(ev('UserPromptSubmit', { session_id: 'out', prompt: 'Elsewhere' }));
+	await h.handle(ev('SessionStart', { session_id: 'old', source: 'startup' }));
+	await h.handle(ev('SessionEnd', { session_id: 'old' }));
+	await h.handle(ev('UserPromptSubmit', { session_id: 'cx', prompt: 'Codex here', transcript_path: undefined }), { agent: 'codex' });
+	tick(1000);
+	const saved = JSON.parse(JSON.stringify(h.snapshot()));
+	assert.deepEqual(saved.find((r) => r.id === 's1').entries, [], 'Claude Code sessions read their transcript again');
+
+	let read = 0;
+	const { h: again, tick: later } = hub({ transcript: async () => (read++, [{ time: 1, kind: 'prompt', text: 'Fix it' }]) });
+	later(25 * 60 * 60 * 1000);
+	again.restore([...saved, { id: 'junk' }, null]);
+	assert.deepEqual(
+		again.sessions().map((s) => [s.id, s.state, s.terminal]).sort(),
+		[['cx', 'idle', null], ['out', 'idle', null], ['s1', 'ended', null]],
+		'what ran in its terminals ended with it; one ended over a day ago is gone',
+	);
+	await again.ready('s1');
+	const { entries } = again.timeline('s1');
+	assert.deepEqual(entries.map((e) => [e.kind, e.text]), [['prompt', 'Fix it']]);
+	assert.ok(entries[0].seq > saved.find((r) => r.id === 's1').seq, 'numbers go on from where they were');
+	assert.equal(read, 2);
+	assert.deepEqual(again.timeline('cx').entries.map((e) => e.text), ['Codex here']);
+	assert.equal(again.session('s1').title, 'Fix it');
+	// A restored session goes on with its next hook event.
+	await again.handle(ev('UserPromptSubmit', { session_id: 'out', prompt: 'More' }));
+	assert.equal(again.session('out').state, 'running');
+});
+
+test("the permission mode and model follow the hooks, and the terminal's footer between them", async () => {
+	const { h, messages } = hub({ transcript: async () => [] });
+	h.launched({ id: 's1', terminal: 'term-1', cwd: '/Users/me/project' });
+	await h.handle(ev('SessionStart', { source: 'startup', model: 'claude-opus-4-5' }), { terminal: 'term-1' });
+	// Older Claude Code called manual mode `default`.
+	assert.equal(h.session('s1').permissionMode, 'manual');
+	assert.equal(h.session('s1').model, 'claude-opus-4-5');
+
+	// Shift+Tab reports no hook; the footer redraw shows the mode, blanks drawn as cursor moves.
+	messages.length = 0;
+	h.terminalOutput('term-1', Buffer.from('\r  \x1b[38;2;175;135;255m⏵⏵\x1b[1Caccept\x1b[1Cedits\x1b[1Con\x1b[39m (shift+tab'));
+	assert.equal(h.session('s1').permissionMode, 'acceptEdits');
+	assert.equal(messages.filter((m) => m.type === 'session').length, 1);
+	// A redraw split across chunks, and the same mode again, which says nothing new.
+	h.terminalOutput('term-1', Buffer.from('\r  ⏸ plan mo'));
+	h.terminalOutput('term-1', Buffer.from('de on (shift+tab to cycle)'));
+	h.terminalOutput('term-1', Buffer.from('\r  ⏸ plan mode on'));
+	assert.equal(h.session('s1').permissionMode, 'plan');
+	assert.equal(messages.filter((m) => m.type === 'session').length, 2);
+	// Claude saying the words is not the footer.
+	h.terminalOutput('term-1', Buffer.from('I turned auto mode on for you.'));
+	assert.equal(h.session('s1').permissionMode, 'plan');
+	// Other terminals are not this session's.
+	h.terminalOutput('term-2', Buffer.from('⏵⏵ auto mode on'));
+	assert.equal(h.session('s1').permissionMode, 'plan');
+
+	// The next hook has the last word, and both come back after a restart.
+	await h.handle(ev('UserPromptSubmit', { prompt: 'Go', permission_mode: 'auto' }));
+	assert.equal(h.session('s1').permissionMode, 'auto');
+	const restored = new AgentHub({ transcript: async () => [] });
+	restored.restore(JSON.parse(JSON.stringify(h.snapshot())));
+	assert.deepEqual([restored.session('s1').permissionMode, restored.session('s1').model], ['auto', 'claude-opus-4-5']);
+});
+
+test('waiting for the mode skips footers that still show the old one', async () => {
+	const { h } = hub({ transcript: async () => [] });
+	h.launched({ id: 's1', terminal: 'term-1', cwd: '/Users/me/project' });
+	await h.handle(ev('SessionStart', { source: 'startup' }), { terminal: 'term-1' });
+	const next = h.waitForMode('s1', 1000);
+	// A running session redraws its footer with the spinner.
+	h.terminalOutput('term-1', Buffer.from('⏸ manual mode on'));
+	h.terminalOutput('term-1', Buffer.from('⏵⏵ accept edits on'));
+	assert.equal(await next, 'acceptEdits');
+	assert.equal(await h.waitForMode('s1', 20), null);
+});

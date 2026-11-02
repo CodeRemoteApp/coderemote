@@ -42,8 +42,16 @@ function* entriesOf(record) {
 			}
 		}
 		const text = textOf(content);
-		if (isTyped(text) && content.every((c) => c?.type !== 'tool_result')) yield { time, kind: 'prompt', text };
+		if (content.some((c) => c?.type === 'tool_result')) return;
+		// Images pasted with the prompt, which its text names `[Image #N]`; the hub keeps them as uploads.
+		const images = content
+			.filter((c) => c?.type === 'image' && c.source?.type === 'base64' && typeof c.source.data === 'string')
+			.map((c) => ({ type: c.source.media_type ?? 'image/png', data: c.source.data }));
+		if (isTyped(text) || (images.length && !text.trim())) yield { time, kind: 'prompt', text, ...(images.length ? { images } : {}) };
 	} else if (record.type === 'assistant' && Array.isArray(content)) {
+		// The model that answered, which `/model` may have changed (`<synthetic>`: Claude Code's own notes).
+		const model = record.message?.model;
+		if (typeof model === 'string' && model && model !== '<synthetic>') yield { time, kind: 'model', model };
 		for (const c of content) {
 			if (c?.type === 'text' && c.text?.trim()) yield { time, kind: 'assistant', text: c.text.trimEnd() };
 			// Thinking the model shows (private thinking is stored empty): what it says between
@@ -91,8 +99,11 @@ export async function readTranscript(file, limit = 500) {
 	}
 	// A title only matters as the latest one, which may lie before the entries kept.
 	const all = parse(text);
+	// So does the model, which answers the next turn too.
 	const title = all.findLast((e) => e.kind === 'title');
-	const entries = all.filter((e) => e.kind !== 'title').slice(-limit);
+	const model = all.findLast((e) => e.kind === 'model');
+	const entries = all.filter((e) => e.kind !== 'title' && e.kind !== 'model').slice(-limit);
+	if (model) entries.unshift(model);
 	if (title) entries.unshift(title);
 	entries.end = end;
 	return entries;

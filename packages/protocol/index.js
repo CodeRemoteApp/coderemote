@@ -80,6 +80,8 @@ export const Routes = Object.freeze({
 	agentsStop: 'POST /api/agents/stop',
 	agentsForget: 'POST /api/agents/forget',
 	agentsUpload: 'POST /api/agents/uploads',
+	// Added within v4: older agents answer 404.
+	agentsUploadFile: 'GET /api/agents/uploads',
 	pushDeviceSet: 'PUT /api/push/device',
 	pushDeviceDelete: 'DELETE /api/push/device',
 	pushTest: 'POST /api/push/test',

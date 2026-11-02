@@ -125,3 +125,57 @@ test('a live session picks up shown thinking and a new title from what the trans
 	]);
 	assert.equal(hub.session('l').title, 'Restarting the agent');
 });
+
+test('images pasted with a prompt come back as uploads the hub keeps', async () => {
+	const png = Buffer.from('fake png').toString('base64');
+	const file = await transcriptFile([
+		JSON.stringify({ type: 'user', timestamp: at(1), message: { role: 'user', content: [{ type: 'text', text: '[Image #1] What is this?' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: png } }] } }),
+		JSON.stringify({ type: 'user', timestamp: at(2), message: { role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: png } }] } }),
+	]);
+	const entries = await readTranscript(file);
+	assert.deepEqual(entries.map((e) => [e.text, e.images.map((i) => i.type)]), [['[Image #1] What is this?', ['image/png']], ['', ['image/jpeg']]]);
+
+	const kept = [];
+	const hub = new AgentHub({ keepImage: async (bytes, type) => (kept.push(bytes.toString()), { id: `img-${kept.length}`, type }) });
+	await hub.handle({ session_id: 's', cwd: '/p', transcript_path: file, hook_event_name: 'SessionStart', source: 'resume' });
+	assert.deepEqual(hub.timeline('s').entries.map((e) => e.images), [[{ id: 'img-1', type: 'image/png' }], [{ id: 'img-2', type: 'image/jpeg' }]]);
+	assert.deepEqual(kept, ['fake png', 'fake png']);
+	// Without a place to keep them, the images are left out.
+	const bare = new AgentHub();
+	await bare.handle({ session_id: 's', cwd: '/p', transcript_path: file, hook_event_name: 'SessionStart', source: 'resume' });
+	assert.equal(bare.timeline('s').entries[0].images, undefined);
+});
+
+test('the model that answered last names the session model, before and after it starts', async () => {
+	const reply = (model, text) => ({ type: 'assistant', timestamp: at(2), message: { role: 'assistant', model, content: [{ type: 'text', text }] } });
+	const file = await transcriptFile([reply('claude-sonnet-4-5', 'One.'), reply('claude-opus-4-5', 'Two.'), reply('<synthetic>', 'No response requested.')].map((r) => JSON.stringify(r)));
+	const entries = await readTranscript(file);
+	assert.deepEqual(entries.filter((e) => e.kind === 'model').map((e) => e.model), ['claude-opus-4-5']);
+
+	const hub = new AgentHub();
+	const hook = (name, fields = {}) => hub.handle({ session_id: 'm', cwd: '/p', transcript_path: file, hook_event_name: name, ...fields });
+	await hook('Notification');
+	assert.equal(hub.session('m').model, 'claude-opus-4-5');
+	assert.ok(!hub.timeline('m').entries.some((e) => e.kind === 'model'));
+	// `/model haiku`, then a reply.
+	await fs.appendFile(file, JSON.stringify(reply('claude-haiku-4-5', 'Three.')) + '\n');
+	await hook('Stop', { last_assistant_message: 'Three.' });
+	assert.equal(hub.session('m').model, 'claude-haiku-4-5');
+});
+
+test('paths of attached files read back from a transcript become the prompt files', async () => {
+	const dir = path.join(os.tmpdir(), 'uploads');
+	const id = '0f0e0d0c-1111-2222-3333-444455556666';
+	const file = await transcriptFile([
+		JSON.stringify({ type: 'user', timestamp: at(1), message: { role: 'user', content: `Look at this\n${path.join(dir, '2026-11-02', `${id}-My Video.mov`)}` } }),
+	]);
+	const hub = new AgentHub({ uploadsDir: dir, fileType: (name) => (name.endsWith('.mov') ? 'video/quicktime' : null) });
+	await hub.handle({ session_id: 'f', cwd: '/p', transcript_path: file, hook_event_name: 'Notification' });
+	const [prompt] = hub.timeline('f').entries;
+	assert.equal(prompt.text, 'Look at this');
+	assert.deepEqual(prompt.files, [{ id, name: 'My Video.mov', type: 'video/quicktime' }]);
+	// A path elsewhere is just text.
+	const other = new AgentHub({ uploadsDir: '/somewhere/else' });
+	await other.handle({ session_id: 'f', cwd: '/p', transcript_path: file, hook_event_name: 'Notification' });
+	assert.equal(other.timeline('f').entries[0].files, undefined);
+});

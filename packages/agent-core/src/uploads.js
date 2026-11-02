@@ -1,7 +1,7 @@
 // Files a client sends for coding-agent sessions (screenshots, recordings), kept outside the
 // shared folder so they never end up in a repository: <dir>/<yyyy-mm-dd>/<id>-<name>.
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -15,6 +15,34 @@ const run = promisify(execFile);
 export const UPLOAD_LIMIT = 100 * 1024 * 1024;
 const KEEP = 7 * 24 * 60 * 60 * 1000;
 const ID = /^[0-9a-f-]{36}$/;
+// The images Claude Code takes, and what a prompt's images are told apart by.
+export const IMAGE_EXTENSIONS = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp' };
+
+/** The media type of an image file Claude Code takes, by its name; null for anything else. */
+export function imageType(file) {
+	const ext = path.extname(String(file)).toLowerCase();
+	if (ext === '.jpeg') return 'image/jpeg';
+	return Object.keys(IMAGE_EXTENSIONS).find((t) => IMAGE_EXTENSIONS[t] === ext) ?? null;
+}
+
+/**
+ * Files a client attached to a prompt, which reach Claude Code as their paths on lines of their
+ * own (images it turns into `[Image #N]`; the rest stay paths). Returns the text without those
+ * lines, and the uploads they name as `{ id, name, type }` (`type` from `typeOf(name)`).
+ */
+export function attachedFiles(text, dir, typeOf = () => 'application/octet-stream') {
+	if (!dir || !text.includes(dir)) return { text, files: [] };
+	const root = dir.endsWith(path.sep) ? dir : dir + path.sep;
+	const files = [];
+	const kept = [];
+	for (const line of text.split('\n')) {
+		const rest = line.trim().startsWith(root) ? line.trim().slice(root.length) : null;
+		const m = rest && /^\d{4}-\d{2}-\d{2}[\\/]([0-9a-f-]{36})-(.+)$/.exec(rest);
+		if (m) files.push({ id: m[1], name: m[2], type: typeOf(m[2]) });
+		else kept.push(line);
+	}
+	return files.length ? { text: kept.join('\n').trim(), files } : { text, files };
+}
 
 /** A file name that is safe on disk and still recognisable: no paths, no odd characters. */
 export function safeName(name) {
@@ -80,6 +108,26 @@ export class UploadStore {
 			if (hit) return path.join(this.dir, day, hit);
 		}
 		throw new HttpError(404, 'no such upload (they are kept for 7 days)');
+	}
+
+	/**
+	 * Keeps bytes the agent found itself (an image in a transcript) as an upload, named by their
+	 * content so the same image read again is the same upload. Resolves `{ id, type }`.
+	 */
+	async keep(bytes, type) {
+		const hash = createHash('sha256').update(bytes).digest('hex');
+		const id = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+		const existing = await this.path(id).catch(() => null);
+		if (existing) {
+			// Read again: it stays as long as a fresh upload would.
+			const now = new Date(this.now());
+			await fs.utimes(existing, now, now).catch(() => {});
+			return { id, type };
+		}
+		const day = new Date(this.now()).toISOString().slice(0, 10);
+		await fs.mkdir(path.join(this.dir, day), { recursive: true, mode: 0o700 });
+		await fs.writeFile(path.join(this.dir, day, `${id}-image${IMAGE_EXTENSIONS[type] ?? ''}`), bytes, { mode: 0o600 });
+		return { id, type };
 	}
 
 	/** Deletes uploads older than a week. */

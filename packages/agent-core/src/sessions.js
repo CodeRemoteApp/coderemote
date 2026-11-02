@@ -71,6 +71,7 @@ class TerminalSession {
 			this.bufferedBytes -= this.chunks.shift().length;
 		}
 		for (const ws of this.clients) ws.send(buf, { binary: true });
+		this.onOutput?.(buf);
 	}
 
 	attach(ws) {
@@ -131,9 +132,10 @@ class TerminalSession {
 export class SessionManager {
 	#sessions = new Map();
 
-	/** @param {{ onExit?: (id: string) => void }} [opts] */
-	constructor({ onExit } = {}) {
+	/** @param {{ onExit?: (id: string) => void, onOutput?: (id: string, buf: Buffer) => void }} [opts] */
+	constructor({ onExit, onOutput } = {}) {
 		this.onExit = onExit;
+		this.onOutput = onOutput;
 	}
 
 	create(opts) {
@@ -142,6 +144,7 @@ export class SessionManager {
 			this.#sessions.delete(session.id);
 			this.onExit?.(session.id);
 		};
+		session.onOutput = (buf) => this.onOutput?.(session.id, buf);
 		this.#sessions.set(session.id, session);
 		return session;
 	}

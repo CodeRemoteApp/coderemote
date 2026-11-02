@@ -394,8 +394,11 @@ protocol bump: older agents answer these routes with 404.
 A session reaches the agent that started its terminal (Claude Code inherits
 `CODEREMOTE_AGENT_PORT` and `CODEREMOTE_TERM_ID` from it), else the running agent whose shared
 folder is the longest prefix of its working directory. Sessions in folders no agent shares are
-dropped. Sessions live in the agent's memory only: they are gone when it stops, and ended ones
-are forgotten 24 hours after they end.
+dropped. Ended sessions are forgotten 24 hours after they end. The list outlives the agent (it is
+saved in `~/.coderemote/agent-sessions/<port>.json`): after a restart, sessions that ran in its
+terminals are `ended` (the terminals stopped with it, so they can be resumed), others come back
+`idle` until their next hook event, and Claude Code sessions read their timeline again from the
+transcript (with new `seq` numbers above the old ones), so clients reload it.
 
 | Route | Request | Response |
 | --- | --- | --- |
@@ -411,9 +414,10 @@ are forgotten 24 hours after they end.
 | `POST /api/agents/stop` | `{ session }` | `{}`; see [Stopping and forgetting](#stopping-and-forgetting) |
 | `POST /api/agents/forget` | `{ session }` | `{}`; see [Stopping and forgetting](#stopping-and-forgetting) |
 | `POST /api/agents/uploads` | the file's bytes | `{ id, name, type, size }`; see [Uploads](#uploads) |
+| `GET /api/agents/uploads?id=` | | the upload's bytes, with its media type; 404 once it is gone, see [Uploads](#uploads) |
 
 A session is `{ id, agent, cwd, title, state, terminal, startedAt, lastActivityAt, pending,
-starting, error, capabilities }`.
+starting, error, capabilities, permissionMode, model }`.
 `agent` is `"claude"` or `"codex"`. `capabilities` is `{ approvals, alwaysAllow, keys }`: `approvals`
 `"parallel"` (Claude Code: its own prompt stays open alongside, whichever side answers first wins)
 or `"presence"` (Codex: its own prompt shows only once the agent declines, so the agent holds a
@@ -426,12 +430,18 @@ unresolved requests. `starting` is true for a session started from a client that
 hasn't reported yet; `error` says why such a session ended without starting (else null). Older
 agents omit both. Times are milliseconds since the epoch.
 
+`permissionMode` is Claude Code's permission mode as its `--permission-mode` names it (`manual`,
+`acceptEdits`, `plan`, `auto`, `bypassPermissions`, `dontAsk`), and `model` the model id that
+answered last (or the alias just picked with `/model`); either is null until the agent knows it,
+and older agents omit them. The mode comes from the hooks and, between them, from the footer of
+the session's terminal, so it also follows Shift+Tab pressed at the computer.
+
 Entries are append-only, numbered by `seq` (increasing per session), and the agent keeps the
 latest 500 of each session. Each is `{ seq, time, kind, ... }`:
 
 | `kind` | Fields |
 | --- | --- |
-| `prompt` | `text` |
+| `prompt` | `text`; `images` (optional): `[{ id, type }]`, the images that came with it, as uploads (see [Uploads](#uploads)), which its `text` names `[Image #1]`, `[Image #2]`… in order. Images a client attached, and those in Claude Code's transcript when the agent reads it; older agents omit it. `files` (optional): `[{ id, name, type }]`, the other files a client attached (a video, a PDF), as uploads; Claude Code gets their paths, which `text` leaves out. Older agents omit it and leave the paths in `text` |
 | `assistant` | `text`; `thinking: true` for the thinking Claude Code shows between tool calls (read from its transcript, as the Claude apps show it). A session's `title` is Claude Code's own name for the conversation once it has one, else its first typed prompt (never a `<task-notification>`) |
 | `tool` | `toolUseId`, `name`, `input` |
 | `tool_result` | `toolUseId`, `name`, `output` (string), `error` (bool), `truncated` (bool), `duration` (ms, or null) |
@@ -492,7 +502,9 @@ because the terminal had a menu open.
 `POST /api/agents/keys` presses keys the agent knows by name, among the session's
 `capabilities.keys` (Codex has no `cycle_mode` or `/clear`): `interrupt` (Esc, which also backs
 out of a dialog and works while the session waits), `cycle_mode` (Shift+Tab, the next permission
-mode), or `command`: `command` is a `"command"` entry of the session's [commands](#commands) (or one of
+mode), `set_mode` with `mode` (one of the `permissionMode` values: presses Shift+Tab until the
+session shows that mode and returns `{ session }`, 409 when the mode doesn't come round, such as
+`auto` when Claude Code's settings leave it off; not while the session waits), or `command`: `command` is a `"command"` entry of the session's [commands](#commands) (or one of
 `capabilities.keys`), entered as a prompt is, with `args` (a string, control characters dropped)
 after a space. Anything else is 400; the terminal itself remains for the rest. Built-in commands
 don't come back as `prompt_confirmed`; custom commands and skills do arrive as prompt entries.
@@ -556,6 +568,10 @@ outside the shared folder so they never land in a repository, up to 100 MB each 
 HEIC photos are converted to JPEG on macOS, since Claude Code reads PNG, JPEG, GIF and WebP.
 Sessions started by the agent may read the folder without asking. Uploads are deleted after 7
 days, and by `coderemote rotate-token`.
+
+`GET /api/agents/uploads?id=` returns an upload's bytes, for the `images` and `files` of prompt entries.
+Images the agent finds in a Claude Code transcript are kept as uploads too, with an id derived
+from their content.
 
 ### Requests
 

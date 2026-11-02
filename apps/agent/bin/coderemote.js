@@ -13,6 +13,7 @@ import { ensureDevtunnel } from '../src/devtunnel.js';
 import { ensureHookSecret, readHookSecret, runHook, writeHookLauncher } from '../src/hook.js';
 import { PreviewTunnel } from '../src/preview.js';
 import { pushStore } from '../src/push-store.js';
+import { sessionStore } from '../src/session-store.js';
 import { AgentRegistry } from '../src/registry.js';
 import { ensureAgentId, findTunnel, forgetTunnel, formatTunnels, rememberTunnelUrl, listTunnels, makeRoom, ownUse, signedInUser, tunnelLimitHelp } from '../src/tunnels.js';
 import { MACHINE_LABEL, tunnelDelete, tunnelStatus } from '../src/tunnel-status.js';
@@ -33,6 +34,7 @@ if (!fs.existsSync(CONFIG_DIR) && fs.existsSync(LEGACY_CONFIG_DIR)) fs.renameSyn
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 // Phones registered for notifications, per agent port; `rotate-token` deletes them all.
 const PUSH_DIR = path.join(CONFIG_DIR, 'push');
+const AGENT_SESSIONS_DIR = path.join(CONFIG_DIR, 'agent-sessions');
 // Photos and files sent from the phone to coding-agent sessions.
 const UPLOADS_DIR = path.join(CONFIG_DIR, 'uploads');
 // The certificate of the LAN listener, which paired phones pin; `rotate-token` replaces it.
@@ -106,6 +108,7 @@ function listen(token, port, root, tunnelToken, preview, status, remover, lan, a
 		// This very CLI, so coding agents in the app's terminals report through the same version.
 		hookBin: fs.realpathSync(process.argv[1]),
 		pushStore: pushStore(PUSH_DIR, port),
+		sessionStore: sessionStore(AGENT_SESSIONS_DIR, port),
 		uploadsDir: UPLOADS_DIR,
 		version: VERSION,
 		lan,
@@ -644,6 +647,7 @@ async function start({ tunnel }) {
 		advertiser?.kill();
 		// Previews get a new tunnel every run, so this one would only take up a slot of the account's 10.
 		await preview?.close();
+		server.saveAgentSessions();
 		await server.killAllSessions();
 		server.close();
 		process.exit(0);

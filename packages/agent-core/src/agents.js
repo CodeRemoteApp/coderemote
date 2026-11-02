@@ -6,8 +6,11 @@ import path from 'node:path';
 import { HttpError } from './sandbox.js';
 import { RolloutTail, codexItem } from './codex-rollout.js';
 import { readTranscript, readTranscriptSince } from './transcript.js';
+import { attachedFiles } from './uploads.js';
 
 const MAX_ENTRIES = 500;
+// Entries of a session without a transcript to read them again from, kept across restarts.
+const SAVED_ENTRIES = 200;
 const MAX_TEXT = 16 * 1024;
 const MAX_TITLE = 80;
 const ENDED_TTL = 24 * 60 * 60 * 1000;
@@ -26,7 +29,7 @@ const SEQUENTIAL_REQUEST_TTL = 10 * 60 * 1000;
 export const ADAPTERS = {
 	claude: {
 		name: 'Claude Code',
-		capabilities: { approvals: 'parallel', alwaysAllow: true, keys: ['interrupt', 'cycle_mode', '/compact', '/clear', '/model'] },
+		capabilities: { approvals: 'parallel', alwaysAllow: true, keys: ['interrupt', 'cycle_mode', 'set_mode', '/compact', '/clear', '/model'] },
 		normalize: (e) => e,
 	},
 	codex: {
@@ -81,6 +84,42 @@ function isNotice(prompt) {
 	return prompt.trimStart().startsWith('<task-notification>');
 }
 
+/** Claude Code's permission modes, as `--permission-mode` and its hooks name them. */
+export const PERMISSION_MODES = ['manual', 'acceptEdits', 'plan', 'auto', 'bypassPermissions', 'dontAsk'];
+
+/** A hook's `permission_mode`; older Claude Code called manual `default`. */
+function modeOf(value) {
+	if (value === 'default') return 'manual';
+	return PERMISSION_MODES.includes(value) ? value : null;
+}
+
+// Claude Code's footer names the mode after ⏸ or ⏵⏵ ("⏵⏵ accept edits on (shift+tab to cycle)").
+// Its renderer moves the cursor over blank cells instead of writing spaces.
+const FOOTER_MODES = {
+	'manual mode': 'manual',
+	'accept edits': 'acceptEdits',
+	'plan mode': 'plan',
+	'auto mode': 'auto',
+	'bypass permissions': 'bypassPermissions',
+	"don't ask": 'dontAsk',
+};
+const FOOTER = /(?:⏸|⏵⏵) *(manual mode|accept edits|plan mode|auto mode|bypass permissions|don't ask) on/g;
+const CURSOR_RIGHT = /\x1b\[(\d*)C/g;
+// eslint-disable-next-line no-control-regex
+const ANSI = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b[()][0-9A-B]|\x1b./g;
+
+/** Terminal output as plain text, with cursor moves to the right as spaces. */
+function plain(text) {
+	return text.replace(CURSOR_RIGHT, (_, n) => ' '.repeat(Math.min(Number(n) || 1, 200))).replace(ANSI, '');
+}
+
+/** The last permission mode the footer shows in `text`, if any. */
+export function footerMode(text) {
+	let mode = null;
+	for (const m of plain(text).matchAll(FOOTER)) mode = FOOTER_MODES[m[1]];
+	return mode;
+}
+
 function titleOf(prompt) {
 	const line = prompt.trim().split('\n')[0].trim();
 	return line.length > MAX_TITLE ? `${line.slice(0, MAX_TITLE - 1)}…` : line;
@@ -102,6 +141,8 @@ class AgentSession {
 		// Started from the phone and not heard from yet; `error` says why it never started.
 		this.starting = false;
 		this.error = null;
+		// Ended by `/clear`: the next session in its terminal takes its place.
+		this.cleared = false;
 		this.turnStartedAt = null;
 		this.entries = [];
 		this.seq = 0;
@@ -115,6 +156,9 @@ class AgentSession {
 		this.tail = null;
 		// Settles once history from the transcript (if any) is in; later events wait for it.
 		this.ready = Promise.resolve();
+		// As the hooks, the transcript and the terminal's footer last showed them (null: unknown).
+		this.permissionMode = null;
+		this.model = null;
 	}
 
 	toJSON() {
@@ -131,6 +175,8 @@ class AgentSession {
 			starting: this.starting,
 			error: this.error,
 			capabilities: this.capabilities,
+			permissionMode: this.permissionMode,
+			model: this.model,
 		};
 	}
 }
@@ -149,6 +195,10 @@ export class AgentHub extends EventEmitter {
 	#startTimeout;
 	#sequentialTtl;
 	#rolloutTail;
+	// Terminal id -> the tail of its output, for a footer split across chunks.
+	#footers = new Map();
+	// Session id -> callbacks waiting for the footer to show a mode.
+	#modeWaiters = new Map();
 
 	/**
 	 * `present` says whether someone is at the computer or looking at it in a client; agents whose
@@ -163,6 +213,12 @@ export class AgentHub extends EventEmitter {
 		startTimeout = START_TIMEOUT,
 		present = async () => false,
 		rolloutTail = (file, onItem, onTurnEnd) => new RolloutTail(file, onItem, onTurnEnd),
+		// Keeps an image from a transcript where clients can fetch it: (bytes, type) => { id, type }.
+		keepImage = null,
+		// Where files sent from clients are kept, and the media type of one by its name: prompts
+		// show the files they name there as attachments instead of paths.
+		uploadsDir = null,
+		fileType = undefined,
 	} = {}) {
 		super();
 		this.#now = now;
@@ -173,6 +229,9 @@ export class AgentHub extends EventEmitter {
 		this.#startTimeout = startTimeout;
 		this.present = present;
 		this.#rolloutTail = rolloutTail;
+		this.keepImage = keepImage;
+		this.uploadsDir = uploadsDir;
+		this.fileType = fileType;
 		// A server leaves `present` alone when the hub was given one.
 		this.presenceSet = arguments[0]?.present !== undefined;
 	}
@@ -181,10 +240,10 @@ export class AgentHub extends EventEmitter {
 	 * A prompt a client typed into a session's terminal. Once Claude Code reports a matching
 	 * `UserPromptSubmit`, the socket gets `prompt_confirmed` with this id.
 	 */
-	prompted(sessionId, { id, text, paths = [] }) {
+	prompted(sessionId, { id, text, paths = [], images = [] }) {
 		const s = this.#sessions.get(sessionId);
 		if (!s) return;
-		s.prompts.push({ id, text: comparable(text, paths), at: this.#now() });
+		s.prompts.push({ id, text: comparable(text, paths), images, at: this.#now() });
 		// Unconfirmed prompts don't pile up: the client gives up on them after 10 seconds anyway.
 		s.prompts = s.prompts.filter((p) => this.#now() - p.at < 60_000).slice(-20);
 	}
@@ -198,6 +257,62 @@ export class AgentHub extends EventEmitter {
 		const s = this.#sessions.get(sessionId);
 		if (!s || s.state !== 'running' || s.starting) return;
 		this.#endTurn(s, this.#now());
+		this.#emitSession(s);
+	}
+
+	/**
+	 * Output of one of the agent's terminals. Shift+Tab reports no hook, so a Claude Code session's
+	 * permission mode follows its footer.
+	 */
+	terminalOutput(terminal, buf) {
+		const s = [...this.#sessions.values()].find((x) => x.terminal === terminal && x.agent === 'claude' && x.state !== 'ended');
+		if (!s) {
+			this.#footers.delete(terminal);
+			return;
+		}
+		const text = (this.#footers.get(terminal) ?? '') + buf.toString('utf8');
+		this.#footers.set(terminal, text.slice(-256));
+		const mode = footerMode(text);
+		if (!mode) return;
+		const waiters = this.#modeWaiters.get(s.id) ?? [];
+		const left = waiters.filter((w) => w.from === mode);
+		if (left.length) this.#modeWaiters.set(s.id, left);
+		else this.#modeWaiters.delete(s.id);
+		for (const w of waiters) if (w.from !== mode) w.done(mode);
+		if (mode !== s.permissionMode) {
+			s.permissionMode = mode;
+			this.#emitSession(s);
+		}
+	}
+
+	/**
+	 * The mode the footer shows next that isn't `from` (a running session redraws its footer
+	 * unchanged all the time), or null if none shows within `ms`.
+	 */
+	waitForMode(sessionId, ms, from = this.#sessions.get(sessionId)?.permissionMode ?? null) {
+		return new Promise((resolve) => {
+			const waiter = {
+				from,
+				done: (mode) => {
+					clearTimeout(timer);
+					resolve(mode);
+				},
+			};
+			const timer = setTimeout(() => {
+				const left = (this.#modeWaiters.get(sessionId) ?? []).filter((w) => w !== waiter);
+				if (left.length) this.#modeWaiters.set(sessionId, left);
+				else this.#modeWaiters.delete(sessionId);
+				resolve(null);
+			}, ms);
+			this.#modeWaiters.set(sessionId, [...(this.#modeWaiters.get(sessionId) ?? []), waiter]);
+		});
+	}
+
+	/** The model a client switched a session to with `/model`, until its transcript names it. */
+	modelChosen(sessionId, model) {
+		const s = this.#sessions.get(sessionId);
+		if (!s || !model || model === s.model) return;
+		s.model = model;
 		this.#emitSession(s);
 	}
 
@@ -265,6 +380,69 @@ export class AgentHub extends EventEmitter {
 		return { entries, next: s.seq, requests: [...s.requests.values()].map((r) => r.request) };
 	}
 
+	/** Settles once a session's history (read from its transcript) is in. */
+	async ready(id) {
+		await this.#sessions.get(id)?.ready;
+	}
+
+	/**
+	 * The sessions as `restore` takes them back after the agent restarts. Claude Code's transcript
+	 * holds a session's whole timeline, so its entries are read again from there (with whatever
+	 * happened while the agent was down); others keep their latest entries.
+	 */
+	snapshot() {
+		return [...this.#sessions.values()]
+			.filter((s) => !s.starting)
+			.map((s) => ({
+				id: s.id,
+				agent: s.agent,
+				cwd: s.cwd,
+				title: s.title,
+				titled: s.titled,
+				state: s.state,
+				terminal: s.terminal,
+				startedAt: s.startedAt,
+				lastActivityAt: s.lastActivityAt,
+				endedAt: s.endedAt,
+				error: s.error,
+				cleared: s.cleared,
+				transcriptPath: s.transcriptPath ?? null,
+				permissionMode: s.permissionMode,
+				model: s.model,
+				seq: s.seq,
+				entries: s.agent === 'claude' && s.transcriptPath ? [] : s.entries.slice(-SAVED_ENTRIES),
+			}));
+	}
+
+	/**
+	 * Brings back the sessions of `snapshot`. Those that ran in the agent's terminals ended with
+	 * them; others may still run, and their next hook event says how they are doing.
+	 */
+	restore(saved) {
+		const now = this.#now();
+		for (const r of Array.isArray(saved) ? saved : []) {
+			if (!r || typeof r.id !== 'string' || this.#sessions.has(r.id) || !Object.hasOwn(ADAPTERS, r.agent)) continue;
+			if (r.state === 'ended' && !(r.endedAt >= now - ENDED_TTL)) continue;
+			const s = new AgentSession({ id: r.id, agent: r.agent, cwd: r.cwd ?? null, terminal: null, now: r.startedAt ?? now });
+			s.title = typeof r.title === 'string' ? r.title : s.title;
+			s.titled = r.titled === true;
+			s.lastActivityAt = r.lastActivityAt ?? now;
+			s.error = r.error ?? null;
+			s.cleared = r.cleared === true;
+			s.permissionMode = modeOf(r.permissionMode);
+			s.model = typeof r.model === 'string' ? r.model : null;
+			s.seq = Number.isInteger(r.seq) ? r.seq : 0;
+			if (r.state === 'ended' || r.terminal) {
+				s.state = 'ended';
+				s.endedAt = r.state === 'ended' ? (r.endedAt ?? now) : now;
+			}
+			if (typeof r.transcriptPath === 'string') s.transcriptPath = r.transcriptPath;
+			if (s.agent === 'claude' && s.transcriptPath) s.ready = this.#backfill(s, s.transcriptPath);
+			else s.entries = Array.isArray(r.entries) ? r.entries.filter((e) => Number.isInteger(e?.seq) && e.seq <= s.seq) : [];
+			this.#sessions.set(s.id, s);
+		}
+	}
+
 	/**
 	 * Takes one hook event. Resolves with the hook's output: for `PermissionRequest` once the
 	 * request is answered (null when the computer should decide), `{}` for everything else.
@@ -283,12 +461,18 @@ export class AgentHub extends EventEmitter {
 			// The placeholder started in that terminal. Codex doesn't pass the terminal to its plugin
 			// hooks, so its only placeholder in the same folder stands in for it.
 			// After `/clear`, Claude Code goes on in the same terminal under a new id: that one too.
+			// The terminal may have run other sessions before (Claude Code quit and started again):
+			// the cleared one is the latest that ended by /clear or never heard it end (Claude Code
+			// cuts SessionEnd hooks short on /clear, so that report can be lost).
 			const cleared = event.hook_event_name === 'SessionStart' && event.source === 'clear' && terminal;
-			const candidates = [...this.#sessions.values()].filter((p) =>
-				cleared
-					? p.terminal === terminal && p.agent === agent
-					: p.starting && (terminal ? p.terminal === terminal : p.agent === agent && p.cwd === event.cwd),
-			);
+			const candidates = cleared
+				? [...this.#sessions.values()]
+						.filter((p) => p.terminal === terminal && p.agent === agent && (p.state !== 'ended' || p.cleared))
+						.sort((a, b) => b.lastActivityAt - a.lastActivityAt)
+						.slice(0, 1)
+				: [...this.#sessions.values()].filter(
+						(p) => p.starting && (terminal ? p.terminal === terminal : p.agent === agent && p.cwd === event.cwd),
+					);
 			if (candidates.length === 1) {
 				replaced = candidates[0];
 				this.#sessions.delete(replaced.id);
@@ -327,7 +511,10 @@ export class AgentHub extends EventEmitter {
 			// A resumed conversation comes back under the same id.
 			s.state = 'idle';
 			s.endedAt = null;
+			s.cleared = false;
 		}
+		s.permissionMode = modeOf(event.permission_mode) ?? s.permissionMode;
+		if (typeof event.model === 'string' && event.model) s.model = event.model;
 		// Before the event's own effect, which may end the turn (resolving makes a waiting session run).
 		this.#withdrawAnsweredElsewhere(s, event);
 
@@ -338,19 +525,24 @@ export class AgentHub extends EventEmitter {
 				if (s.state === 'running' && s.turnStartedAt == null) s.state = 'idle';
 				break;
 			case 'UserPromptSubmit': {
-				const text = typeof event.prompt === 'string' ? event.prompt : '';
+				const said = typeof event.prompt === 'string' ? event.prompt : '';
+				const { text, files } = this.#withFiles(said);
 				if (!s.titled && text.trim() && !isNotice(text)) {
 					s.title = titleOf(text);
 					s.titled = true;
 				}
 				this.#startTurn(s, now);
-				this.#entry(s, { kind: 'prompt', text });
-				const said = comparable(text);
-				const i = s.prompts.findIndex((p) => p.text === said || (p.text && said.startsWith(p.text)));
-				if (i >= 0) {
-					const [prompt] = s.prompts.splice(i, 1);
-					this.emit('message', { type: 'prompt_confirmed', session: s.id, prompt: prompt.id });
-				}
+				const typed = comparable(said);
+				const i = s.prompts.findIndex((p) => p.text === typed || (p.text && typed.startsWith(p.text)));
+				const [prompt] = i >= 0 ? s.prompts.splice(i, 1) : [];
+				// Images a client attached, which Claude Code names `[Image #N]` in the text.
+				this.#entry(s, {
+					kind: 'prompt',
+					text,
+					...(prompt?.images?.length ? { images: prompt.images } : {}),
+					...(files.length ? { files } : {}),
+				});
+				if (prompt) this.emit('message', { type: 'prompt_confirmed', session: s.id, prompt: prompt.id });
 				break;
 			}
 			case 'PreToolUse':
@@ -421,6 +613,8 @@ export class AgentHub extends EventEmitter {
 				}
 				break;
 			case 'SessionEnd':
+				// Its terminal goes on under a new id (see the SessionStart from `/clear` above).
+				if (event.reason === 'clear') s.cleared = true;
 				this.#end(s);
 				break;
 			default:
@@ -454,6 +648,7 @@ export class AgentHub extends EventEmitter {
 
 	/** The terminal a session ran in exited: whatever ran in it is over. */
 	terminalExited(terminal) {
+		this.#footers.delete(terminal);
 		for (const s of this.#sessions.values()) {
 			if (s.terminal === terminal && s.state !== 'ended') {
 				if (s.starting) s.error = `${(ADAPTERS[s.agent] ?? ADAPTERS.claude).name} exited before it started. Open the terminal to see why.`;
@@ -589,9 +784,24 @@ export class AgentHub extends EventEmitter {
 				s.title = titleOf(e.text);
 				s.titled = true;
 				continue;
-			} else if (e.kind === 'prompt' && !s.titled && e.text.trim() && !isNotice(e.text)) {
-				s.title = titleOf(e.text);
-				s.titled = true;
+			} else if (e.kind === 'model') {
+				s.model = e.model;
+				continue;
+			} else if (e.kind === 'prompt') {
+				const { text, files } = this.#withFiles(e.text);
+				e.text = text;
+				if (files.length) e.files = files;
+				if (!s.titled && e.text.trim() && !isNotice(e.text)) {
+					s.title = titleOf(e.text);
+					s.titled = true;
+				}
+				if (e.images) {
+					const kept = await Promise.all(
+						e.images.map((i) => Promise.resolve(this.keepImage?.(Buffer.from(i.data, 'base64'), i.type)).catch(() => null)),
+					);
+					e.images = kept.filter(Boolean);
+					if (!e.images.length) delete e.images;
+				}
 			}
 			s.entries.push({ seq: ++s.seq, ...e });
 		}
@@ -600,7 +810,7 @@ export class AgentHub extends EventEmitter {
 	}
 
 	/**
-	 * Claude Code's shown thinking and its title for the conversation, from the part of the
+	 * Claude Code's shown thinking, its title for the conversation and the model answering, from the part of the
 	 * transcript written since the last look. Text, tools and prompts come from the hooks.
 	 */
 	#catchUp(s) {
@@ -614,20 +824,25 @@ export class AgentHub extends EventEmitter {
 		const read = await this.#transcriptSince(s.transcriptPath, s.transcriptOffset);
 		if (!read) return;
 		s.transcriptOffset = read.end;
-		let retitled = false;
+		let changed = false;
 		for (const e of read.entries) {
-			if (e.kind === 'title') {
+			if (e.kind === 'model') {
+				if (e.model !== s.model) {
+					s.model = e.model;
+					changed = true;
+				}
+			} else if (e.kind === 'title') {
 				const title = titleOf(e.text);
 				if (title !== s.title) {
 					s.title = title;
-					retitled = true;
+					changed = true;
 				}
 				s.titled = true;
 			} else if (e.kind === 'assistant' && e.thinking) {
 				this.#entry(s, { kind: 'assistant', text: e.text, thinking: true });
 			}
 		}
-		if (retitled) this.#emitSession(s);
+		if (changed) this.#emitSession(s);
 	}
 
 	/** Something Codex said or a tool's result, from its rollout, unless the hooks told it already. */
@@ -695,6 +910,11 @@ export class AgentHub extends EventEmitter {
 		s.entries.push(entry);
 		if (s.entries.length > MAX_ENTRIES) s.entries.shift();
 		this.emit('message', { type: 'entry', session: s.id, entry });
+	}
+
+	/** A prompt's text without the paths of files a client attached, and those files. */
+	#withFiles(text) {
+		return attachedFiles(text, this.uploadsDir, this.fileType);
 	}
 
 	#emitSession(s) {

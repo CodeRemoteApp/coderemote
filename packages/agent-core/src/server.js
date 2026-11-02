@@ -19,7 +19,7 @@ import {
 	TUNNEL_HANDOFF_PATH,
 } from '@vsremote/protocol';
 import { WebSocketServer } from 'ws';
-import { AgentHub } from './agents.js';
+import { AgentHub, PERMISSION_MODES } from './agents.js';
 import { listCommands } from './commands.js';
 import { BuildRunner, listSchemes } from './builds.js';
 import { listHistory } from './history.js';
@@ -36,7 +36,7 @@ import { capture, commandExists, interactiveShell, isWindows } from './platform.
 import { HttpError, Sandbox } from './sandbox.js';
 import { search } from './search.js';
 import { SessionManager } from './sessions.js';
-import { UploadStore } from './uploads.js';
+import { UploadStore, imageType } from './uploads.js';
 
 /** Marks the sockets that came in through the LAN listener. */
 const OVER_LAN = Symbol('overLan');
@@ -129,6 +129,16 @@ function typeable(text) {
 // Permission modes a session started from the phone may begin in; skipping prompts entirely is
 // for the computer to choose.
 const LAUNCH_MODES = ['manual', 'acceptEdits', 'plan', 'auto'];
+// How long Claude Code's footer takes to show the next permission mode after Shift+Tab.
+const MODE_TIMEOUT = 2000;
+const MODE_NAMES = {
+	manual: 'Manual mode',
+	acceptEdits: 'Accept edits',
+	plan: 'Plan mode',
+	auto: 'Auto mode',
+	bypassPermissions: 'Bypass permissions',
+	dontAsk: "Don't ask",
+};
 
 function sendJson(res, status, body) {
 	const json = JSON.stringify(body);
@@ -206,6 +216,7 @@ export function createAgentServer({
 	pluginInstalled = null,
 	agents = new AgentHub(),
 	pushStore = null,
+	sessionStore = null,
 	pushOptions = {},
 	previewSweep = {},
 	version = null,
@@ -216,11 +227,35 @@ export function createAgentServer({
 }) {
 	const handoff = new TunnelHandoff({ token, mint: tunnelToken });
 	const sandbox = new Sandbox(root);
-	const sessions = new SessionManager({ onExit: (id) => agents.terminalExited(id) });
+	const sessions = new SessionManager({
+		onExit: (id) => agents.terminalExited(id),
+		onOutput: (id, buf) => agents.terminalOutput(id, buf),
+	});
 	const expected = Buffer.from(`Bearer ${token}`);
 	const uploads = uploadsDir ? new UploadStore(uploadsDir) : null;
+	// Images in transcripts become uploads, which clients fetch like the files they attached.
+	if (uploads && !agents.keepImage) agents.keepImage = (bytes, type) => uploads.keep(bytes, type);
+	agents.uploadsDir ??= uploadsDir;
+	agents.fileType ??= (name) => imageType(name) ?? MEDIA_TYPES[path.extname(name).toLowerCase()] ?? 'application/octet-stream';
+	// The session list outlives the agent: a restart brings it back (see AgentHub.restore).
+	let saveTimer = null;
+	const saveSessions = () => {
+		clearTimeout(saveTimer);
+		saveTimer = null;
+		try {
+			sessionStore?.save(agents.snapshot());
+		} catch {}
+	};
+	if (sessionStore) {
+		agents.restore(sessionStore.load());
+		agents.on('message', () => {
+			saveTimer ??= setTimeout(saveSessions, 1000);
+			saveTimer.unref?.();
+		});
+	}
 	const sweep = setInterval(() => {
 		agents.sweep();
+		if (sessionStore) saveSessions();
 		uploads?.sweep().catch(() => {});
 	}, 10 * 60 * 1000);
 	sweep.unref();
@@ -265,6 +300,23 @@ export function createAgentServer({
 		if (!term) throw new HttpError(409, 'this session runs outside Code Remote; it can be followed but not typed into');
 		if (!whileWaiting && session.state === 'waiting') throw new HttpError(409, 'answer the pending request first');
 		return { session, term };
+	}
+
+	/**
+	 * Presses Shift+Tab until the session's footer shows `mode`. Claude Code has no way to pick a
+	 * mode directly, and which modes the cycle holds depends on its settings (auto may be off,
+	 * bypass needs a launch flag), so a mode that doesn't come round within one cycle isn't there.
+	 */
+	async function setMode(id, mode) {
+		if (!PERMISSION_MODES.includes(mode)) throw new HttpError(400, `mode must be one of ${PERMISSION_MODES.join(', ')}`);
+		const { term } = typingTarget(id, { whileWaiting: false });
+		for (let i = 0; i <= PERMISSION_MODES.length; i++) {
+			if (agents.session(id)?.permissionMode === mode) return agents.session(id);
+			const shown = agents.waitForMode(id, MODE_TIMEOUT);
+			term.write(KEYS.cycle_mode);
+			if (!(await shown)) break;
+		}
+		throw new HttpError(409, `${MODE_NAMES[mode]} isn't available in this session`);
 	}
 
 	/** Pastes `text` as one block, then presses Enter once the TUI has taken the paste in. */
@@ -813,8 +865,11 @@ export function createAgentServer({
 
 		[Routes.agentsSessions]: async () => ({ sessions: agents.sessions() }),
 
-		[Routes.agentsTimeline]: async (url) =>
-			agents.timeline(url.searchParams.get('session'), parseInt(url.searchParams.get('after'), 10) || 0),
+		[Routes.agentsTimeline]: async (url) => {
+			// A session brought back after a restart reads its history first.
+			await agents.ready(url.searchParams.get('session'));
+			return agents.timeline(url.searchParams.get('session'), parseInt(url.searchParams.get('after'), 10) || 0);
+		},
 
 		[Routes.agentsSetup]: async () => {
 			const [claude, codex] = await Promise.all([installed('claude'), installed('codex')]);
@@ -930,7 +985,9 @@ export function createAgentServer({
 			const paths = await attachmentPaths(attachments);
 			const typed = typeable([text.trim(), ...paths].join('\n'));
 			const prompt = randomUUID();
-			agents.prompted(id, { id: prompt, text: typed, paths });
+			// Shown with the prompt once Claude Code reports it; other files stay paths in its text.
+			const images = paths.map((p, i) => ({ id: attachments[i], type: imageType(p) })).filter((i) => i.type);
+			agents.prompted(id, { id: prompt, text: typed, paths, images });
 			await typeInto(term, typed);
 			return { prompt };
 		},
@@ -949,8 +1006,18 @@ export function createAgentServer({
 			return { id, name: saved, type, size };
 		},
 
+		[Routes.agentsUploadFile]: async (url, req, res) => {
+			const file = await uploadPath(url.searchParams.get('id'));
+			const stat = await fs.stat(file).catch(() => null);
+			if (!stat?.isFile()) throw new HttpError(404, 'no such upload (they are kept for 7 days)');
+			const type = imageType(file) ?? MEDIA_TYPES[path.extname(file).toLowerCase()] ?? 'application/octet-stream';
+			// Named by id, an upload never changes.
+			res.writeHead(200, { 'content-type': type, 'content-length': stat.size, 'cache-control': 'private, max-age=604800, immutable' });
+			await pipeline(createReadStream(file), res);
+		},
+
 		[Routes.agentsKeys]: async (url, req) => {
-			const { session: id, action, command, args } = await readJson(req);
+			const { session: id, action, command, args, mode } = await readJson(req);
 			const allowed = agents.session(typeof id === 'string' ? id : '')?.capabilities?.keys;
 			if (action !== 'command' && allowed && !allowed.includes(action)) {
 				throw new HttpError(400, `this session takes ${allowed.join(', ')}`);
@@ -965,11 +1032,15 @@ export function createAgentServer({
 					throw new HttpError(400, `${command} is not a command this session takes`);
 				}
 				await typeInto(term, typeable(args?.trim() ? `${command} ${args.trim()}` : command));
+				// The transcript names the full model once it answers; until then, what was asked for.
+				if (command === '/model' && args?.trim()) agents.modelChosen(id, args.trim());
+			} else if (action === 'set_mode') {
+				return { session: await setMode(id, mode) };
 			} else if (Object.hasOwn(KEYS, action)) {
 				typingTarget(id, { whileWaiting: true }).term.write(KEYS[action]);
 				if (action === 'interrupt') agents.interrupted(id);
 			} else {
-				throw new HttpError(400, `action must be one of ${[...Object.keys(KEYS), 'command'].join(', ')}`);
+				throw new HttpError(400, `action must be one of ${[...Object.keys(KEYS), 'set_mode', 'command'].join(', ')}`);
 			}
 			return {};
 		},
@@ -1206,6 +1277,7 @@ export function createAgentServer({
 		installs?.close();
 		clearInterval(sweep);
 		clearInterval(previewTimer);
+		if (saveTimer) saveSessions();
 		sessions.killAll();
 		for (const proxy of proxies.values()) proxy.close();
 	});
@@ -1217,5 +1289,7 @@ export function createAgentServer({
 	server.clientShows = clientShows;
 	server.push = push;
 	server.agentsUploadPath = (id) => uploadPath(id);
+	// Writes the session list now, for a shutdown that exits before the next timed save.
+	server.saveAgentSessions = () => sessionStore && saveSessions();
 	return server;
 }

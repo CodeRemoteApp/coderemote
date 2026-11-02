@@ -184,3 +184,28 @@ test('terminals tell coding agents where they run, and link sessions to them', a
 	assert.equal((await api('GET', '/api/agents/sessions')).sessions.find((s) => s.id === 'e').state, 'ended');
 	term.close();
 });
+
+test('the session list is saved as it changes and read back when the agent starts again', async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'vsremote-saved-'));
+	let saved = null;
+	const store = { load: () => saved ?? [], save: (s) => (saved = s) };
+	const first = createAgentServer({ token, root: dir, hookSecret, sessionStore: store });
+	await new Promise((r) => first.listen(0, '127.0.0.1', r));
+	const url = `http://127.0.0.1:${first.address().port}`;
+	await fetch(`${url}/api/agents/hook`, {
+		method: 'POST',
+		headers: { [HOOK_SECRET_HEADER]: hookSecret },
+		body: JSON.stringify({ session_id: 'kept', cwd: dir, hook_event_name: 'UserPromptSubmit', prompt: 'Remember me' }),
+	});
+	// Saved shortly after it changes, or on the way out.
+	first.saveAgentSessions();
+	first.close();
+	assert.deepEqual(saved.map((s) => [s.id, s.title]), [['kept', 'Remember me']]);
+
+	const second = createAgentServer({ token, root: dir, hookSecret, sessionStore: store });
+	await new Promise((r) => second.listen(0, '127.0.0.1', r));
+	const res = await fetch(`http://127.0.0.1:${second.address().port}/api/agents/sessions`, { headers: { authorization: `Bearer ${token}` } });
+	assert.deepEqual((await res.json()).sessions.map((s) => [s.id, s.title, s.state]), [['kept', 'Remember me', 'idle']]);
+	second.close();
+	await fs.rm(dir, { recursive: true, force: true });
+});

@@ -121,8 +121,31 @@ test('attachments are pasted as their paths; Claude Code reporting the prompt co
 	// Claude Code turns the image path into [Image #1].
 	await hook({ session_id: s.id, hook_event_name: 'UserPromptSubmit', prompt: '[Image #1]Why is this misaligned?' }, s.terminal);
 	assert.deepEqual(await confirmed, { type: 'prompt_confirmed', session: s.id, prompt: body.prompt });
+	// The prompt shows the image, which clients fetch by its upload id.
+	const prompt = hub.timeline(s.id).entries.findLast((e) => e.kind === 'prompt');
+	assert.deepEqual(prompt.images, [{ id: up.body.id, type: 'image/png' }]);
+	const image = await fetch(`${baseUrl}/api/agents/uploads?id=${up.body.id}`, { headers: { authorization: `Bearer ${token}` } });
+	assert.equal(image.headers.get('content-type'), 'image/png');
+	assert.deepEqual([...new Uint8Array(await image.arrayBuffer())], [137, 80, 78, 71]);
+	assert.equal((await get('/api/agents/uploads?id=0f0e0d0c-1111-2222-3333-444455556666')).status, 404);
+	assert.equal((await fetch(`${baseUrl}/api/agents/uploads?id=${up.body.id}`)).status, 401);
 
 	assert.equal((await post('/api/agents/prompt', { session: s.id, text: 'x', attachments: ['0f0e0d0c-1111-2222-3333-444455556666'] })).status, 404);
+});
+
+test('other files show with the prompt as attachments, not as the paths Claude Code was given', async () => {
+	const s = await session();
+	const up = await post('/api/agents/uploads', new Uint8Array([0, 0, 0, 24]), { 'content-type': 'video/mp4', 'x-filename': 'Screen Recording.mp4' });
+	const file = await server.agentsUploadPath(up.body.id);
+	const confirmed = new Promise((r) => hub.on('message', (m) => m.type === 'prompt_confirmed' && r(m)));
+	await post('/api/agents/prompt', { session: s.id, text: 'Why does it jump?', attachments: [up.body.id] });
+	// Claude Code leaves a video's path as typed.
+	await hook({ session_id: s.id, hook_event_name: 'UserPromptSubmit', prompt: `Why does it jump?\n${file}` }, s.terminal);
+	await confirmed;
+	const prompt = hub.timeline(s.id).entries.findLast((e) => e.kind === 'prompt');
+	assert.equal(prompt.text, 'Why does it jump?');
+	assert.deepEqual(prompt.files, [{ id: up.body.id, name: 'Screen Recording.mp4', type: 'video/mp4' }]);
+	assert.equal(hub.session(s.id).title, 'Why does it jump?');
 });
 
 test('prompts only reach sessions running in a terminal here, and not while a dialog is up', async () => {
@@ -153,6 +176,39 @@ test('keys: each action types exactly its bytes; anything else is refused', asyn
 	assert.equal((await post('/api/agents/keys', { session: s.id, action: 'command', command: '/not-a-command' })).status, 400);
 	assert.equal((await post('/api/agents/keys', { session: s.id, action: 'command', command: '$a-mention' })).status, 400);
 	assert.equal((await post('/api/agents/keys', { session: s.id, action: 'rm -rf' })).status, 400);
+});
+
+test('set_mode presses Shift+Tab until the footer shows the mode, or says it is not there', async () => {
+	const s = await session();
+	// Stands in for Claude Code's footer: each Shift+Tab shows the next mode of a cycle without auto.
+	const cycle = ['manual', 'acceptEdits', 'plan'];
+	const footer = { manual: '⏸ manual mode on', acceptEdits: '⏵⏵ accept edits on', plan: '⏸ plan mode on' };
+	let shown = 0;
+	hub.terminalOutput(s.terminal, Buffer.from(footer.manual));
+	let pressed = 0;
+	const echo = setInterval(async () => {
+		const presses = (await s.typed(0)).split('\x1b[Z').length - 1;
+		for (; pressed < presses; pressed++) {
+			shown = (shown + 1) % cycle.length;
+			hub.terminalOutput(s.terminal, Buffer.from(footer[cycle[shown]]));
+		}
+	}, 20);
+	try {
+		const { status, body } = await post('/api/agents/keys', { session: s.id, action: 'set_mode', mode: 'plan' });
+		assert.equal(status, 200);
+		assert.equal(body.session.permissionMode, 'plan');
+		assert.equal(pressed, 2);
+		// Already there: nothing to press.
+		assert.equal((await post('/api/agents/keys', { session: s.id, action: 'set_mode', mode: 'plan' })).status, 200);
+		assert.equal(pressed, 2);
+
+		const missing = await post('/api/agents/keys', { session: s.id, action: 'set_mode', mode: 'auto' });
+		assert.equal(missing.status, 409);
+		assert.match(missing.body.error, /Auto mode isn't available/);
+		assert.equal((await post('/api/agents/keys', { session: s.id, action: 'set_mode', mode: 'yolo' })).status, 400);
+	} finally {
+		clearInterval(echo);
+	}
 });
 
 test('commands: a session lists its commands and runs any of them with arguments', async () => {
@@ -221,4 +277,14 @@ test('uploads are kept a week', async () => {
 	await store.sweep();
 	await assert.rejects(store.path(saved.id), { status: 404 });
 	await assert.rejects(store.path('../x'), { status: 400 });
+});
+
+test('images found in a transcript are kept once, by their content', async () => {
+	const store = new UploadStore(path.join(tmp, 'kept'));
+	const a = await store.keep(Buffer.from('png bytes'), 'image/png');
+	const b = await store.keep(Buffer.from('png bytes'), 'image/png');
+	assert.equal(a.id, b.id);
+	assert.match(a.id, /^[0-9a-f-]{36}$/);
+	assert.ok((await store.path(a.id)).endsWith('-image.png'));
+	assert.equal((await fs.readdir(path.join(tmp, 'kept'), { recursive: true })).filter((f) => f.endsWith('.png')).length, 1);
 });
