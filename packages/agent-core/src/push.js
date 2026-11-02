@@ -8,7 +8,8 @@ import { promisify } from 'node:util';
 import { HttpError } from './sandbox.js';
 
 const run = promisify(execFile);
-const FINISHED_AFTER = 60 * 1000;
+const FINISHED_AFTER = 30 * 1000;
+const REPLY_CHARS = 180;
 const ACTIVE_WITHIN = 2 * 60;
 
 /** Seconds since the last keyboard or mouse input on this Mac; null where that can't be known. */
@@ -80,8 +81,28 @@ function describeRequest(request) {
 }
 
 function minutes(ms) {
+	if (ms < 60000) return `${Math.round(ms / 1000)} s`;
 	const m = Math.round(ms / 60000);
 	return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+/** The start of the turn's last reply, on one line with the Markdown marks dropped; null without one. */
+function lastReply(entries) {
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const e = entries[i];
+		if (e.kind === 'prompt' || (e.kind === 'turn_end' && i < entries.length - 1)) return null;
+		if (e.kind !== 'assistant' || !e.text?.trim()) continue;
+		const text = e.text
+			.replace(/```[\s\S]*?(```|$)/g, ' ')
+			.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+			.replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/gm, '')
+			.replace(/[*_`~|]/g, '')
+			.replace(/\s+/g, ' ')
+			.trim();
+		if (!text) continue;
+		return text.length > REPLY_CHARS ? `${text.slice(0, REPLY_CHARS - 1).trimEnd()}…` : text;
+	}
+	return null;
 }
 
 export class PushSender {
@@ -195,10 +216,15 @@ export class PushSender {
 		} else if (msg.type === 'entry' && msg.entry.kind === 'turn_end' && msg.entry.duration >= FINISHED_AFTER) {
 			if (this.#quiet({ session: msg.session })) return;
 			const session = this.#hub.session(msg.session);
+			let reply = null;
+			try {
+				reply = lastReply(this.#hub.timeline(msg.session).entries);
+			} catch {}
+			const took = `Finished after ${minutes(msg.entry.duration)}`;
 			await this.#broadcast('finished', {
 				kind: 'finished',
 				title: session?.title ?? 'Claude Code',
-				body: `Finished after ${minutes(msg.entry.duration)}`,
+				body: reply ? `${reply}\n${took}` : took,
 				session: msg.session,
 				category: 'DONE',
 				fallback: 'A session finished',

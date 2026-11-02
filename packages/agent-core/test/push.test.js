@@ -130,7 +130,7 @@ test('long turns notify when they finish, short ones do not', async () => {
 	const { hub, push, sent, settle, tick } = setup();
 	push.register(device());
 	await hub.handle(ev('UserPromptSubmit', { prompt: 'quick' }));
-	tick(10_000);
+	tick(20_000);
 	await hub.handle(ev('Stop'));
 	await settle();
 	assert.equal(sent.length, 0);
@@ -141,6 +141,29 @@ test('long turns notify when they finish, short ones do not', async () => {
 	assert.equal(sent.length, 1);
 	assert.equal(sent[0].body.payload.aps.category, 'DONE');
 	assert.deepEqual(open(sent[0].body.payload.e).body, 'Finished after 4 min');
+	await hub.handle(ev('UserPromptSubmit', { prompt: 'half a minute' }));
+	tick(30_000);
+	await hub.handle(ev('Stop'));
+	await settle();
+	assert.equal(open(sent[1].body.payload.e).body, 'Finished after 30 s');
+});
+
+test('a finished push starts with the turn’s last reply, plain and clipped', async () => {
+	const { hub, push, sent, settle, tick } = setup();
+	push.register(device());
+	tick(1000);
+	await hub.handle(ev('UserPromptSubmit', { prompt: 'fix it' }));
+	tick(2 * 60_000);
+	await hub.handle(ev('Stop', { last_assistant_message: '## Done\n\nFixed **the bug** in `push.js`:\n```js\nconst x = 1;\n```\n- tests pass' }));
+	await settle();
+	assert.equal(open(sent[0].body.payload.e).body, 'Done Fixed the bug in push.js: tests pass\nFinished after 2 min');
+	await hub.handle(ev('UserPromptSubmit', { prompt: 'more' }));
+	tick(2 * 60_000);
+	await hub.handle(ev('Stop', { last_assistant_message: 'word '.repeat(100) }));
+	await settle();
+	const [reply] = open(sent[1].body.payload.e).body.split('\n');
+	assert.equal(reply.length, 180);
+	assert.ok(reply.endsWith('…'));
 });
 
 test('kinds turned off are not sent', async () => {

@@ -77,7 +77,7 @@ test('buildPrompt carries the recent subjects, stat, new files and diff', () => 
 
 test('draftCommand runs without tools, sessions or hooks', () => {
 	const claude = draftCommand('claude');
-	for (const flag of ['-p', '--no-session-persistence', '--tools']) assert.ok(claude.includes(flag), flag);
+	for (const flag of ['-p', '--no-session-persistence', '--tools', '--strict-mcp-config']) assert.ok(claude.includes(flag), flag);
 	const codex = draftCommand('codex', { outFile: '/x' });
 	for (const flag of ['exec', '--ephemeral', '-o', '-']) assert.ok(codex.includes(flag), flag);
 });

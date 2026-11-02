@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { HttpError } from './sandbox.js';
 import { RolloutTail, codexItem } from './codex-rollout.js';
-import { readTranscript } from './transcript.js';
+import { readTranscript, readTranscriptSince } from './transcript.js';
 
 const MAX_ENTRIES = 500;
 const MAX_TEXT = 16 * 1024;
@@ -76,6 +76,11 @@ function resultText(response) {
 	return JSON.stringify(response, null, 2);
 }
 
+/** Whether a prompt is a note Claude Code added (a background task finished), not one typed. */
+function isNotice(prompt) {
+	return prompt.trimStart().startsWith('<task-notification>');
+}
+
 function titleOf(prompt) {
 	const line = prompt.trim().split('\n')[0].trim();
 	return line.length > MAX_TITLE ? `${line.slice(0, MAX_TITLE - 1)}…` : line;
@@ -140,6 +145,7 @@ export class AgentHub extends EventEmitter {
 	#now;
 	#requestTtl;
 	#transcript;
+	#transcriptSince;
 	#startTimeout;
 	#sequentialTtl;
 	#rolloutTail;
@@ -153,6 +159,7 @@ export class AgentHub extends EventEmitter {
 		requestTtl = REQUEST_TTL,
 		sequentialTtl = SEQUENTIAL_REQUEST_TTL,
 		transcript = readTranscript,
+		transcriptSince = readTranscriptSince,
 		startTimeout = START_TIMEOUT,
 		present = async () => false,
 		rolloutTail = (file, onItem, onTurnEnd) => new RolloutTail(file, onItem, onTurnEnd),
@@ -162,6 +169,7 @@ export class AgentHub extends EventEmitter {
 		this.#requestTtl = requestTtl;
 		this.#sequentialTtl = sequentialTtl;
 		this.#transcript = transcript;
+		this.#transcriptSince = transcriptSince;
 		this.#startTimeout = startTimeout;
 		this.present = present;
 		this.#rolloutTail = rolloutTail;
@@ -293,9 +301,16 @@ export class AgentHub extends EventEmitter {
 			this.#sessions.set(s.id, s);
 			// A brand-new session has no history; anything else started before the agent heard of it.
 			const fresh = event.hook_event_name === 'SessionStart' && event.source !== 'resume';
-			if (!fresh && typeof event.transcript_path === 'string') s.ready = this.#backfill(s, event.transcript_path);
+			if (typeof event.transcript_path === 'string') {
+				s.transcriptPath = event.transcript_path;
+				if (fresh) s.transcriptOffset = 0;
+				else s.ready = this.#backfill(s, event.transcript_path);
+			}
 		}
 		await s.ready;
+		// What Claude Code shows between tool calls and its own title for the conversation reach
+		// only its transcript: read what it wrote since, before the tool call or the reply.
+		if (['PreToolUse', 'Stop', 'StopFailure'].includes(event.hook_event_name)) await this.#catchUp(s);
 		if (s.agent === 'codex' && !s.tail && typeof event.transcript_path === 'string') {
 			s.tail = this.#rolloutTail(event.transcript_path, (item) => this.#fromRollout(s, item), (error) => this.#rolloutTurnEnd(s, error));
 			s.tail.poll?.().catch(() => {});
@@ -324,7 +339,7 @@ export class AgentHub extends EventEmitter {
 				break;
 			case 'UserPromptSubmit': {
 				const text = typeof event.prompt === 'string' ? event.prompt : '';
-				if (!s.titled && text.trim()) {
+				if (!s.titled && text.trim() && !isNotice(text)) {
 					s.title = titleOf(text);
 					s.titled = true;
 				}
@@ -570,13 +585,49 @@ export class AgentHub extends EventEmitter {
 			} else if (e.kind === 'tool_result') {
 				e.name ??= tools.get(e.toolUseId) ?? null;
 				({ text: e.output, truncated: e.truncated } = clip(e.output));
-			} else if (e.kind === 'prompt' && !s.titled && e.text.trim()) {
+			} else if (e.kind === 'title') {
+				s.title = titleOf(e.text);
+				s.titled = true;
+				continue;
+			} else if (e.kind === 'prompt' && !s.titled && e.text.trim() && !isNotice(e.text)) {
 				s.title = titleOf(e.text);
 				s.titled = true;
 			}
 			s.entries.push({ seq: ++s.seq, ...e });
 		}
+		if (s.agent === 'claude' && Number.isInteger(entries.end)) s.transcriptOffset = entries.end;
 		if (s.entries.length > MAX_ENTRIES) s.entries.splice(0, s.entries.length - MAX_ENTRIES);
+	}
+
+	/**
+	 * Claude Code's shown thinking and its title for the conversation, from the part of the
+	 * transcript written since the last look. Text, tools and prompts come from the hooks.
+	 */
+	#catchUp(s) {
+		// One read at a time: hooks of tools run in parallel arrive together.
+		s.catchingUp = (s.catchingUp ?? Promise.resolve()).then(() => this.#readSince(s)).catch(() => {});
+		return s.catchingUp;
+	}
+
+	async #readSince(s) {
+		if (s.agent !== 'claude' || !s.transcriptPath || !Number.isInteger(s.transcriptOffset)) return;
+		const read = await this.#transcriptSince(s.transcriptPath, s.transcriptOffset);
+		if (!read) return;
+		s.transcriptOffset = read.end;
+		let retitled = false;
+		for (const e of read.entries) {
+			if (e.kind === 'title') {
+				const title = titleOf(e.text);
+				if (title !== s.title) {
+					s.title = title;
+					retitled = true;
+				}
+				s.titled = true;
+			} else if (e.kind === 'assistant' && e.thinking) {
+				this.#entry(s, { kind: 'assistant', text: e.text, thinking: true });
+			}
+		}
+		if (retitled) this.#emitSession(s);
 	}
 
 	/** Something Codex said or a tool's result, from its rollout, unless the hooks told it already. */

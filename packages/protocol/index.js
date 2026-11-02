@@ -40,6 +40,14 @@ export const Routes = Object.freeze({
 	gitShow: 'GET /api/git/show',
 	gitPull: 'POST /api/git/pull',
 	gitPush: 'POST /api/git/push',
+	// Added within v4 after the commit-message route: older agents answer 404.
+	gitFetch: 'POST /api/git/fetch',
+	gitBranches: 'GET /api/git/branches',
+	gitCheckout: 'POST /api/git/checkout',
+	gitStashes: 'GET /api/git/stashes',
+	gitStash: 'POST /api/git/stash',
+	gitStashApply: 'POST /api/git/stash/apply',
+	gitStashDrop: 'POST /api/git/stash/drop',
 	portsList: 'GET /api/ports',
 	portsKill: 'POST /api/ports/kill',
 	previewList: 'GET /api/preview',
@@ -120,17 +128,20 @@ export function webUrl({ url, token }) {
 
 /**
  * The link the pairing QR encodes. `url` is the tunnel's address (absent while an agent that
- * never had a tunnel runs offline); `lan`, `{ agentId, port, addresses, fingerprint }`, lets a
- * client pin the agent's certificate and reach it on the local network straight from the QR.
- * See PROTOCOL.md, "Pairing".
+ * never had a tunnel runs offline). `agentId`, the agent's identity, goes in whenever it has a
+ * LAN listener. `lan`, `{ port, addresses, fingerprint }`, lets a client pin the agent's
+ * certificate and reach it on the local network straight from the QR: the agent passes it only
+ * while its tunnel isn't up, as a client otherwise learns all that from /api/info, and the QR
+ * stays small. See PROTOCOL.md, "Pairing".
  */
-export function pairingUrl({ url = null, token, lan = null }) {
+export function pairingUrl({ url = null, token, agentId = null, lan = null }) {
 	if (!url && !lan) throw new Error('a pairing link needs a tunnel URL or the LAN listener');
+	if (lan && !agentId) throw new Error('a pairing link with the LAN listener needs the agent id');
 	const q = new URLSearchParams();
 	if (url) q.set('url', url);
 	q.set('token', token);
+	if (agentId) q.set('id', agentId);
 	if (lan) {
-		q.set('id', lan.agentId);
 		q.set('lan', String(lan.port));
 		q.set('addr', lan.addresses.join(','));
 		q.set('fp', lan.fingerprint);

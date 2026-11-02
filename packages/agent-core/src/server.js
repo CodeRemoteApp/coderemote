@@ -679,6 +679,32 @@ export function createAgentServer({
 
 		[Routes.gitPush]: async (url, req) => ({ output: await Git.push(await repoOf((await readJson(req)).repo)) }),
 
+		[Routes.gitFetch]: async (url, req) => ({ output: await Git.fetch(await repoOf((await readJson(req)).repo)) }),
+
+		[Routes.gitBranches]: async (url) => ({ branches: await Git.branches(await repoOf(url.searchParams.get('repo'))) }),
+
+		[Routes.gitCheckout]: async (url, req) => {
+			const { repo, branch, create } = await readJson(req);
+			return Git.checkout(await repoOf(repo), branch, { create: create === true });
+		},
+
+		[Routes.gitStashes]: async (url) => ({ stashes: await Git.stashes(await repoOf(url.searchParams.get('repo'))) }),
+
+		[Routes.gitStash]: async (url, req) => {
+			const { repo, message, untracked } = await readJson(req);
+			return Git.stash(await repoOf(repo), { message, untracked: untracked !== false });
+		},
+
+		[Routes.gitStashApply]: async (url, req) => {
+			const { repo, index, pop } = await readJson(req);
+			return Git.stashApply(await repoOf(repo), index, { pop: pop === true });
+		},
+
+		[Routes.gitStashDrop]: async (url, req) => {
+			const { repo, index } = await readJson(req);
+			return Git.stashDrop(await repoOf(repo), index);
+		},
+
 		[Routes.termList]: async () => ({ sessions: sessions.list() }),
 
 		[Routes.portsList]: async () => ({ ports: await listPorts(shellPids()) }),

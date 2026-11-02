@@ -190,6 +190,111 @@ export async function push(repo) {
 	return (stdout + stderr).trim();
 }
 
+export async function fetch(repo) {
+	const { stdout, stderr } = await git(repo, ['fetch', '--all', '--prune'], { timeout: 120_000 });
+	return (stdout + stderr).trim();
+}
+
+/** A branch name git accepts, never one that reads as an option. */
+async function branchName(repo, name) {
+	if (typeof name !== 'string' || !name.trim() || name.startsWith('-')) throw new HttpError(400, 'invalid branch');
+	try {
+		await git(repo, ['check-ref-format', '--branch', name]);
+	} catch {
+		throw new HttpError(400, 'invalid branch');
+	}
+	return name;
+}
+
+/**
+ * Local branches, then remote-tracking ones, most recently committed to first. A remote branch
+ * that a local one already tracks is left out: checking out the local one is the same.
+ */
+export async function branches(repo) {
+	const { stdout } = await git(repo, [
+		'for-each-ref',
+		'--sort=-committerdate',
+		'--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(committerdate:unix)%1f%(subject)',
+		'refs/heads',
+		'refs/remotes',
+	]);
+	const all = stdout
+		.split('\n')
+		.filter(Boolean)
+		.map((line) => {
+			const [ref, name, head, upstream, at, subject] = line.split('\x1f');
+			return {
+				name,
+				remote: ref.startsWith('refs/remotes/'),
+				current: head === '*',
+				upstream: upstream || null,
+				date: at ? parseInt(at, 10) * 1000 : null,
+				subject: subject ?? '',
+				ref,
+			};
+		})
+		// origin/HEAD only points at another remote branch.
+		.filter((b) => !(b.remote && b.ref.endsWith('/HEAD')));
+	const tracked = new Set(all.filter((b) => !b.remote && b.upstream).map((b) => b.upstream));
+	return all.filter((b) => !b.remote || !tracked.has(b.name)).map(({ ref, ...b }) => b);
+}
+
+/**
+ * Switches to `branch`: a local branch, or a remote one (`origin/feature`), which gets a local
+ * branch tracking it. With `create`, a new branch from the current commit.
+ */
+export async function checkout(repo, branch, { create = false } = {}) {
+	const name = await branchName(repo, branch);
+	const has = async (ref) => (await git(repo, ['show-ref', '--verify', '-q', ref], { okCodes: [0, 1] })).code === 0;
+	if (create) {
+		await git(repo, ['switch', '-q', '-c', name]);
+	} else if (!(await has(`refs/heads/${name}`)) && name.includes('/') && (await has(`refs/remotes/${name}`))) {
+		const local = name.slice(name.indexOf('/') + 1);
+		await git(repo, (await has(`refs/heads/${local}`)) ? ['switch', '-q', local] : ['switch', '-q', '-c', local, '--track', name]);
+	} else {
+		await git(repo, ['switch', '-q', name]);
+	}
+	return status(repo);
+}
+
+export async function stashes(repo) {
+	const { stdout } = await git(repo, ['stash', 'list', '-z', '--format=%gd%x1f%gs%x1f%ct']);
+	return stdout
+		.split('\0')
+		.filter(Boolean)
+		.map((record) => {
+			const [ref, message, at] = record.split('\x1f');
+			return { index: parseInt(ref.match(/\{(\d+)\}/)?.[1] ?? '0', 10), message, date: parseInt(at, 10) * 1000 };
+		});
+}
+
+/** Stashes every change, untracked files included unless `untracked` is false. */
+export async function stash(repo, { message, untracked = true } = {}) {
+	if (message !== undefined && message !== null && typeof message !== 'string') throw new HttpError(400, 'invalid message');
+	const { files } = await status(repo);
+	if (!files.length) throw new HttpError(409, 'nothing to stash');
+	const args = ['stash', 'push', '-q', ...(untracked ? ['--include-untracked'] : [])];
+	if (message?.trim()) args.push('-m', message.trim());
+	await git(repo, args);
+	return status(repo);
+}
+
+function stashRef(index) {
+	if (!Number.isInteger(index) || index < 0) throw new HttpError(400, 'invalid stash');
+	return `stash@{${index}}`;
+}
+
+/** Applies a stash to the working tree; `pop` also drops it once it applied cleanly. */
+export async function stashApply(repo, index, { pop = false } = {}) {
+	await git(repo, ['stash', pop ? 'pop' : 'apply', '-q', stashRef(index)]);
+	return status(repo);
+}
+
+export async function stashDrop(repo, index) {
+	await git(repo, ['stash', 'drop', '-q', stashRef(index)]);
+	return status(repo);
+}
+
 function truncate(text) {
 	if (Buffer.byteLength(text) <= MAX_DIFF_BYTES) return { text, truncated: false };
 	return { text: Buffer.from(text).subarray(0, MAX_DIFF_BYTES).toString('utf8'), truncated: true };

@@ -58,9 +58,9 @@ export function buildPrompt({ stat, diff, untracked }, recentSubjects) {
 	return [
 		'Write a git commit message for the changes below.',
 		'Match the style of this repository\'s recent commits (language, tense, prefixes, capitalisation).',
-		'First line: a summary of at most 72 characters. Keep it short: add a body only when the',
-		'summary leaves out something important, and then at most 2 short lines after a blank line.',
-		'Do not list files or restate the diff.',
+		'First line: a summary of at most 72 characters.',
+		'Then a blank line and a body of 1 to 4 short lines saying what changed and why, as "- " bullets',
+		'when there is more than one point. Do not list file names or restate the diff line by line.',
 		'Reply with the commit message only: no preamble, no quotes, no code fences.',
 		'',
 		'Recent commits:',
@@ -84,16 +84,21 @@ export function cleanMessage(text) {
 	return s;
 }
 
+// Replaces Claude Code's own system prompt, written for a coding agent with tools: a long prompt
+// that only slows a one-shot answer down.
+const SYSTEM_PROMPT = 'You write git commit messages. Reply with the commit message only: no preamble, no quotes, no code fences.';
+
 /**
  * The command line that drafts the message, the prompt arriving on stdin. Neither saves a
  * session, and CODEREMOTE_NO_HOOK keeps the Code Remote plugin's hooks from reporting the run
- * to the app as a session.
+ * to the app as a session. Claude Code starts without the user's MCP servers and with a short
+ * system prompt, which takes seconds off the draft.
  */
 export function draftCommand(agent, { claudeCommand = 'claude', codexCommand = 'codex', outFile, model = null } = {}) {
 	if (agent === 'claude') {
 		// cmd.exe can't be handed a quote, so Windows relies on CODEREMOTE_NO_HOOK alone.
-		const noHooks = isWindows ? [] : ['--settings', '{"disableAllHooks":true}'];
-		return [claudeCommand, '-p', '--model', model || 'haiku', '--tools', '', '--no-session-persistence', ...noHooks];
+		const quoted = isWindows ? [] : ['--settings', '{"disableAllHooks":true}', '--system-prompt', SYSTEM_PROMPT];
+		return [claudeCommand, '-p', '--model', model || 'haiku', '--tools', '', '--no-session-persistence', '--strict-mcp-config', ...quoted];
 	}
 	// The user's MCP servers would only slow the start down (and may need a sign-in).
 	return [
@@ -155,7 +160,9 @@ export async function draftCommitMessage(repo, agent, { claudeCommand, codexComm
 			await fs.rm(dir, { recursive: true, force: true });
 		}
 	} else {
-		text = await run(draftCommand('claude', { claudeCommand, model }), { cwd: repo, input });
+		// Everything it needs is in the prompt: run outside the repository so Claude Code doesn't
+		// load its CLAUDE.md and project settings too.
+		text = await run(draftCommand('claude', { claudeCommand, model }), { cwd: os.tmpdir(), input });
 	}
 	const message = cleanMessage(text);
 	if (!message) throw new HttpError(502, 'the agent returned no message');

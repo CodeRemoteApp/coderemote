@@ -335,3 +335,63 @@ test('git: finds repos, stages, commits and reads history', async () => {
 	await assert.rejects(api('GET', '/api/git/status', { query: { repo: '/tmp' } }), { status: 403 });
 	await assert.rejects(api('GET', '/api/git/show', { query: { repo: app, commit: '--output=/tmp/x' } }), { status: 400 });
 });
+
+test('git: branches, checkout, stash and fetch', async () => {
+	const gitIn = (cwd, ...args) => execFileSync('git', args, { cwd, stdio: 'pipe' }).toString();
+	const post = (route, body) => api('POST', route, { body: JSON.stringify(body) });
+	const origin = path.join(workdir, 'origin.git');
+	const repo = path.join(workdir, 'projects', 'branchy');
+	await fs.mkdir(repo, { recursive: true });
+	execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
+	gitIn(repo, 'init', '-q', '-b', 'main');
+	gitIn(repo, 'config', 'user.email', 'test@example.com');
+	gitIn(repo, 'config', 'user.name', 'Test');
+	gitIn(repo, 'config', 'core.autocrlf', 'false');
+	await fs.writeFile(path.join(repo, 'a.txt'), 'one\n');
+	gitIn(repo, 'add', '.');
+	gitIn(repo, 'commit', '-q', '-m', 'first');
+	gitIn(repo, 'remote', 'add', 'origin', origin);
+	gitIn(repo, 'push', '-q', '-u', 'origin', 'main');
+	gitIn(repo, 'push', '-q', 'origin', 'main:feature');
+
+	const { output } = await post('/api/git/fetch', { repo });
+	assert.equal(typeof output, 'string');
+	let { branches } = await api('GET', '/api/git/branches', { query: { repo } });
+	assert.deepEqual(branches.map((b) => [b.name, b.remote, b.current]), [['main', false, true], ['origin/feature', true, false]],
+		'origin/main is left out: main tracks it');
+	assert.equal(branches[0].upstream, 'origin/main');
+
+	let st = await post('/api/git/checkout', { repo, branch: 'origin/feature' });
+	assert.equal(st.branch, 'feature');
+	assert.equal(st.upstream, 'origin/feature');
+	st = await post('/api/git/checkout', { repo, branch: 'topic', create: true });
+	assert.equal(st.branch, 'topic');
+	st = await post('/api/git/checkout', { repo, branch: 'main' });
+	assert.equal(st.branch, 'main');
+	await assert.rejects(post('/api/git/checkout', { repo, branch: '--orphan' }), { status: 400 });
+	await assert.rejects(post('/api/git/checkout', { repo, branch: 'a..b' }), { status: 400 });
+
+	await assert.rejects(post('/api/git/stash', { repo }), { status: 409 });
+	await fs.writeFile(path.join(repo, 'a.txt'), 'two\n');
+	await fs.writeFile(path.join(repo, 'new.txt'), 'new\n');
+	st = await post('/api/git/stash', { repo, message: 'wip' });
+	assert.deepEqual(st.files, [], 'tracked and untracked changes stashed');
+	let { stashes } = await api('GET', '/api/git/stashes', { query: { repo } });
+	assert.equal(stashes.length, 1);
+	assert.equal(stashes[0].index, 0);
+	assert.match(stashes[0].message, /wip/);
+	st = await post('/api/git/stash/apply', { repo, index: 0 });
+	assert.equal(st.files.length, 2);
+	({ stashes } = await api('GET', '/api/git/stashes', { query: { repo } }));
+	assert.equal(stashes.length, 1, 'apply keeps the stash');
+	st = await post('/api/git/stash/drop', { repo, index: 0 });
+	({ stashes } = await api('GET', '/api/git/stashes', { query: { repo } }));
+	assert.equal(stashes.length, 0);
+	gitIn(repo, 'stash', 'push', '-q', '--include-untracked');
+	st = await post('/api/git/stash/apply', { repo, index: 0, pop: true });
+	assert.equal(st.files.length, 2);
+	({ stashes } = await api('GET', '/api/git/stashes', { query: { repo } }));
+	assert.equal(stashes.length, 0, 'pop drops it');
+	await assert.rejects(post('/api/git/stash/drop', { repo, index: 'x' }), { status: 400 });
+	await fs.rm(repo, { recursive: true, force: true });
+});

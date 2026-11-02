@@ -22,6 +22,11 @@ function isTyped(text) {
 
 /** Timeline fields (without seq) from one transcript record. */
 function* entriesOf(record) {
+	// Claude Code names the conversation itself; the Claude apps show that name.
+	if (record?.type === 'ai-title' && typeof record.aiTitle === 'string' && record.aiTitle.trim()) {
+		yield { time: 0, kind: 'title', text: record.aiTitle.trim() };
+		return;
+	}
 	if (!record || record.isSidechain || record.isMeta) return;
 	const time = Date.parse(record.timestamp) || 0;
 	const content = record.message?.content;
@@ -41,18 +46,37 @@ function* entriesOf(record) {
 	} else if (record.type === 'assistant' && Array.isArray(content)) {
 		for (const c of content) {
 			if (c?.type === 'text' && c.text?.trim()) yield { time, kind: 'assistant', text: c.text.trimEnd() };
+			// Thinking the model shows (private thinking is stored empty): what it says between
+			// tool calls, which the Claude apps show as part of the reply. No hook reports it.
+			else if (c?.type === 'thinking' && c.thinking?.trim()) yield { time, kind: 'assistant', text: c.thinking.trimEnd(), thinking: true };
 			else if (c?.type === 'tool_use') yield { time, kind: 'tool', toolUseId: c.id ?? null, name: c.name ?? null, input: c.input ?? null };
 		}
 	}
 }
 
-/** The last `limit` timeline entries of a transcript; [] when it can't be read. */
+function parse(text) {
+	const entries = [];
+	for (const line of text.split('\n')) {
+		if (!line.trim()) continue;
+		try {
+			entries.push(...entriesOf(JSON.parse(line)));
+		} catch {}
+	}
+	return entries;
+}
+
+/**
+ * The last `limit` timeline entries of a transcript; [] when it can't be read. `end` on the array
+ * is the byte offset read up to, for `readTranscriptSince`.
+ */
 export async function readTranscript(file, limit = 500) {
 	let text;
+	let end = 0;
 	try {
 		const handle = await fs.open(file, 'r');
 		try {
 			const { size } = await handle.stat();
+			end = size;
 			const start = Math.max(0, size - TAIL_BYTES);
 			const buf = Buffer.alloc(size - start);
 			await handle.read(buf, 0, buf.length, start);
@@ -65,12 +89,34 @@ export async function readTranscript(file, limit = 500) {
 	} catch {
 		return [];
 	}
-	const entries = [];
-	for (const line of text.split('\n')) {
-		if (!line.trim()) continue;
+	// A title only matters as the latest one, which may lie before the entries kept.
+	const all = parse(text);
+	const title = all.findLast((e) => e.kind === 'title');
+	const entries = all.filter((e) => e.kind !== 'title').slice(-limit);
+	if (title) entries.unshift(title);
+	entries.end = end;
+	return entries;
+}
+
+/**
+ * Entries of the records written to a transcript since byte `offset` (whole lines only), and
+ * the offset to read from next; null when it can't be read.
+ */
+export async function readTranscriptSince(file, offset) {
+	try {
+		const handle = await fs.open(file, 'r');
 		try {
-			entries.push(...entriesOf(JSON.parse(line)));
-		} catch {}
+			const { size } = await handle.stat();
+			if (size < offset) return { entries: [], end: size };
+			const buf = Buffer.alloc(Math.min(size - offset, TAIL_BYTES));
+			await handle.read(buf, 0, buf.length, offset);
+			const last = buf.lastIndexOf(0x0a);
+			if (last < 0) return { entries: [], end: offset };
+			return { entries: parse(buf.subarray(0, last + 1).toString('utf8')), end: offset + last + 1 };
+		} finally {
+			await handle.close();
+		}
+	} catch {
+		return null;
 	}
-	return entries.slice(-limit);
 }

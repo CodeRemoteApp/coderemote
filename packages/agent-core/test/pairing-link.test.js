@@ -1,10 +1,12 @@
-// The pairing link: tunnel-only (as before), LAN-only (an agent offline), or both.
+// The pairing link: tunnel-only (as before), short (tunnel up: url, token, id) or with the LAN
+// parameters (tunnel not up: offline, with or without a remembered URL).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { pairingUrl } from '@vsremote/protocol';
 import { lanAddresses, qrAddresses } from '../src/lan.js';
 
-const lan = { agentId: 'a'.repeat(32), port: 32580, addresses: ['192.168.1.5', '2001:db8::5'], fingerprint: 'ab'.repeat(32) };
+const agentId = 'a'.repeat(32);
+const lan = { port: 32580, addresses: ['192.168.1.5', '2001:db8::5'], fingerprint: 'ab'.repeat(32) };
 const parse = (link) => Object.fromEntries(new URL(link).searchParams);
 
 test('a tunnel-only link reads exactly as links from older agents', () => {
@@ -13,19 +15,29 @@ test('a tunnel-only link reads exactly as links from older agents', () => {
 	assert.equal(link, `vsremote://pair?url=${encodeURIComponent('https://x-31580.asse.devtunnels.ms')}&token=${encodeURIComponent(token)}`);
 });
 
+test('with its tunnel up, the link carries only url, token and id', () => {
+	const link = pairingUrl({ url: 'https://x-31580.asse.devtunnels.ms', token: 't', agentId });
+	assert.deepEqual(parse(link), { url: 'https://x-31580.asse.devtunnels.ms', token: 't', id: agentId });
+});
+
 test('LAN parameters round-trip, with or without a tunnel URL', () => {
-	const both = parse(pairingUrl({ url: 'https://x-31580.asse.devtunnels.ms', token: 't', lan }));
+	const both = parse(pairingUrl({ url: 'https://x-31580.asse.devtunnels.ms', token: 't', agentId, lan }));
 	assert.deepEqual(both, {
 		url: 'https://x-31580.asse.devtunnels.ms',
 		token: 't',
-		id: lan.agentId,
+		id: agentId,
 		lan: '32580',
 		addr: '192.168.1.5,2001:db8::5',
 		fp: lan.fingerprint,
 	});
-	const offline = parse(pairingUrl({ token: 't', lan }));
+	const offline = parse(pairingUrl({ token: 't', agentId, lan }));
 	assert.equal(offline.url, undefined);
+	assert.equal(offline.id, agentId);
 	assert.equal(offline.fp, lan.fingerprint);
+});
+
+test('LAN parameters need the agent id', () => {
+	assert.throws(() => pairingUrl({ token: 't', lan }), /needs the agent id/);
 });
 
 test('a link needs a tunnel URL or the LAN listener', () => {
@@ -41,7 +53,7 @@ test("the QR's addr starts with the Wi-Fi address on a Windows computer full of 
 		'Ethernet 2': [v4('100.80.1.2')],
 		'Wi-Fi': [v6('2001:db8::7'), v6('2001:db8::8'), v4('192.168.1.20')],
 	});
-	const link = parse(pairingUrl({ token: 't', lan: { ...lan, addresses: qrAddresses(addresses) } }));
+	const link = parse(pairingUrl({ token: 't', agentId, lan: { ...lan, addresses: qrAddresses(addresses) } }));
 	assert.equal(link.addr, '192.168.1.20,100.80.1.2,2001:db8::7');
 });
 

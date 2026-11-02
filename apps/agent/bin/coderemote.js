@@ -249,10 +249,13 @@ async function ensureTunnel(cfg, port, anonymous) {
 		// Each devtunnel call takes 1-2s, so run them together. Tunnels expire 30 days after the
 		// last update; pushing that back keeps the URL (and every pairing) for good. The label
 		// lets the account's other agents list this machine (tunnels from older releases lack it).
-		const [updated, access] = await Promise.all([
-			devtunnel('update', known, '--expiration', '30d', '--add-labels', MACHINE_LABEL),
-			applyAccess(known, anonymous),
-		]);
+		const update = () => devtunnel('update', known, '--expiration', '30d', '--add-labels', MACHINE_LABEL);
+		let [updated, access] = await Promise.all([update(), applyAccess(known, anonymous)]);
+		// Both calls write the same tunnel, so the service can reject the loser with "Conflicting
+		// request" (optimistic concurrency). The other one has finished by now: just redo the loser.
+		const conflict = (res) => !res.ok && /conflicting request/i.test(res.out);
+		if (conflict(updated)) updated = await update();
+		if (conflict(access)) access = await applyAccess(known, anonymous);
 		if (updated.ok) {
 			if (!access.ok) throw new Error(`devtunnel access failed:\n${access.out}`);
 			return known;
@@ -319,10 +322,11 @@ function hostTunnel(tunnelId, port) {
 
 /**
  * `url`: the tunnel's address, or null for an agent that never had one and started offline.
- * `lan`: what lets the app pin the agent and reach it on this network straight from the QR.
+ * `link`: `{ agentId, lan }` with a LAN listener; `lan` (what lets the app pin the agent and reach
+ * it on this network straight from the QR) only while the tunnel isn't up.
  */
-function printPairing(url, token, access, vscodeUrl, lan) {
-	const pair = pairingUrl({ url, token, lan });
+function printPairing(url, token, access, vscodeUrl, link) {
+	const pair = pairingUrl({ url, token, agentId: link?.agentId, lan: link?.lan });
 	if (access) console.log(`  Access:  ${access}`);
 	// Labels line up whether or not the VS Code row is there.
 	const label = (name) => `${name}:`.padEnd(vscodeUrl ? 9 : 4);
@@ -655,7 +659,14 @@ async function start({ tunnel }) {
 		advertiser?.kill();
 		preview?.stop();
 	});
-	const lanLink = lan.port ? { agentId, port: lan.port, addresses: qrAddresses(lanAddresses()), fingerprint: lanCert.fingerprint } : null;
+	// With the tunnel up the app learns the LAN route from /api/info: the QR stays small. Offline,
+	// even with a remembered tunnel URL it can't reach yet, the QR is the phone's only way in.
+	const lanLink = lan.port
+		? {
+				agentId,
+				lan: offline ? { port: lan.port, addresses: qrAddresses(lanAddresses()), fingerprint: lanCert.fingerprint } : null,
+			}
+		: null;
 	return { url, access, lan, offline, lanLink, firewall };
 }
 

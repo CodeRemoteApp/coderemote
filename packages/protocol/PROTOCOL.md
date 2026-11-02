@@ -19,16 +19,24 @@ Every request carries:
 The agent prints a QR code for
 
 ```
-vsremote://pair?url=<https base url>&token=<token>[&id=<agentId>&lan=<port>&addr=<a,b,...>&fp=<fingerprint>]
+vsremote://pair?url=<https base url>&token=<token>[&id=<agentId>]
+vsremote://pair?[url=<https base url>&]token=<token>&id=<agentId>&lan=<port>&addr=<a,b,...>&fp=<fingerprint>
 ```
 
-`url` is the tunnel's address. The LAN parameters are there while the agent's
-[LAN listener](#local-network) is open: `id` the agent's identity, `lan` the listener's port,
-`addr` its addresses, `fp` its certificate's fingerprint. A client pins `fp` straight from the QR:
-it was read off the computer's own screen, as the token was. An agent that has never had a
-tunnel and starts without internet prints a link without `url`; clients then reach it on the
-local network only, until `/api/info` reports a tunnel. A link has `token` and either `url` or
-all four LAN parameters; clients refuse anything else.
+`url` is the tunnel's address, `token` the bearer token. `id`, the agent's identity, is there
+whenever the agent has a [LAN listener](#local-network); a client identifies the machine by it
+(else by the tunnel's host), whether or not the rest of the LAN parameters come with it.
+
+The other LAN parameters are there only while the agent's tunnel isn't up: `lan` the listener's
+port, `addr` up to 3 of its addresses (the likeliest to reach first, at most one IPv6), `fp` its
+certificate's fingerprint. A client pins `fp` straight from the QR: it was read off the computer's
+own screen, as the token was. With the tunnel up the link leaves them out, to keep the QR small:
+a client learns them from `/api/info` over the tunnel. An agent that starts without internet
+prints the long link, with `url` only if it remembers its tunnel's address; clients then reach it
+on the local network only, until `/api/info` reports a tunnel.
+
+A link has `token` and either `url` or `id`, `lan`, `addr` and `fp`; clients refuse anything else,
+and ignore a partial set of LAN parameters.
 
 `coderemote rotate-token` invalidates every paired device.
 
@@ -261,15 +269,22 @@ pull/push use the machine's existing credentials or fail. Git failures return 40
 | `GET /api/git/show?repo=&commit=` | | `{ text, truncated }` |
 | `POST /api/git/pull` | `{ repo }` | `{ output }` (fast-forward only) |
 | `POST /api/git/push` | `{ repo }` | `{ output }` |
+| `POST /api/git/fetch` | `{ repo }` | `{ output }` (every remote, pruned). Added within v4 after `commit-message`, like the routes below: older agents answer 404 |
+| `GET /api/git/branches?repo=` | | `{ branches: [{ name, remote, current, upstream, date, subject }] }`: local branches, then remote ones not already tracked by a local branch, most recent commit first; `date` in ms |
+| `POST /api/git/checkout` | `{ repo, branch, create? }` | status. A remote branch (`origin/x`) switches to a local `x` tracking it, made if missing; `create` makes `branch` from the current commit. 400 for a name git refuses |
+| `GET /api/git/stashes?repo=` | | `{ stashes: [{ index, message, date }] }`, newest (index 0) first |
+| `POST /api/git/stash` | `{ repo, message?, untracked? }` | status. Stashes every change, untracked files too unless `untracked: false`; 409 when there is nothing to stash |
+| `POST /api/git/stash/apply` | `{ repo, index, pop? }` | status. `pop` drops the stash once it applied; 409 (git's message) on a conflict |
+| `POST /api/git/stash/drop` | `{ repo, index }` | status |
 
 `index`/`worktree` are porcelain letters: `.` unchanged, `M`, `A`, `D`, `R`, `?` untracked.
 
 `commit-message` drafts a message with a coding agent installed on the computer, on the user's
-own plan: Claude Code (`claude -p`, Haiku, no tools, no saved session), else Codex (`codex exec
+own plan: Claude Code (`claude -p`, Haiku, no tools, no MCP servers, a short system prompt, no saved session, run outside the repository), else Codex (`codex exec
 --ephemeral`, read-only, its first listed model). `agent` (`claude` or `codex`) picks one, and
 `model` that agent's model (a Claude Code alias such as `opus`, or a Codex model id). It describes the staged changes,
 or every change when nothing is staged (`staged` says which), and follows the style of the
-repository's recent commit subjects; lockfiles and other generated files are left out of the diff,
+repository's recent commit subjects, as a summary line, a blank line and a short body; lockfiles and other generated files are left out of the diff,
 which is cut at 24k characters. Nothing is committed. 409 `ENOAGENT` when neither agent is
 installed, 409 when there is nothing to commit, 502 when the agent fails, 504 after 2 minutes.
 The agent's hooks are skipped (`CODEREMOTE_NO_HOOK=1`), so the run never shows as a session.
@@ -417,7 +432,7 @@ latest 500 of each session. Each is `{ seq, time, kind, ... }`:
 | `kind` | Fields |
 | --- | --- |
 | `prompt` | `text` |
-| `assistant` | `text` |
+| `assistant` | `text`; `thinking: true` for the thinking Claude Code shows between tool calls (read from its transcript, as the Claude apps show it). A session's `title` is Claude Code's own name for the conversation once it has one, else its first typed prompt (never a `<task-notification>`) |
 | `tool` | `toolUseId`, `name`, `input` |
 | `tool_result` | `toolUseId`, `name`, `output` (string), `error` (bool), `truncated` (bool), `duration` (ms, or null) |
 | `request` | `request` (the request object below) |
@@ -661,7 +676,7 @@ back in every push so the app can pick the key. `kinds` is `{ requests: bool, fi
 Registrations are kept across restarts in `~/.coderemote/push/<port>.json` and deleted by
 `coderemote rotate-token`, or when APNs reports the token gone.
 
-The agent pushes for a new request, when a turn that ran 60 seconds or more ends, when a build ends, and to replace
+The agent pushes for a new request, when a turn that ran 30 seconds or more ends (its `body` the start of the turn's last reply, as plain text clipped to 180 characters, then a line saying how long it took), when a build ends, and to replace
 the notification of a request resolved elsewhere (same `apns-collapse-id`, the request id). It
 pushes nothing about a session while a client's fresh presence names that session, and nothing
 ever about a session started outside Code Remote (not in one of the agent's terminals). Nothing about builds
