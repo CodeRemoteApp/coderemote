@@ -868,7 +868,8 @@ export function createAgentServer({
 		[Routes.agentsTimeline]: async (url) => {
 			// A session brought back after a restart reads its history first.
 			await agents.ready(url.searchParams.get('session'));
-			return agents.timeline(url.searchParams.get('session'), parseInt(url.searchParams.get('after'), 10) || 0);
+			const int = (name) => Math.max(0, parseInt(url.searchParams.get(name), 10) || 0);
+			return agents.timeline(url.searchParams.get('session'), int('after'), { limit: int('limit'), before: int('before') });
 		},
 
 		[Routes.agentsSetup]: async () => {

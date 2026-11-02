@@ -101,6 +101,19 @@ test('sessions, timeline and live entries', async () => {
 	ws.close();
 });
 
+test('timeline pages back from the newest entries', async () => {
+	for (let i = 0; i < 5; i++) await hook(ev('pg', 'UserPromptSubmit', { prompt: `p${i}` }));
+	const all = (await api('GET', '/api/agents/timeline', { query: { session: 'pg' } })).entries.map((e) => e.seq);
+	const last = await api('GET', '/api/agents/timeline', { query: { session: 'pg', limit: 2 } });
+	assert.deepEqual(last.entries.map((e) => e.seq), all.slice(-2));
+	assert.equal(last.more, true);
+	const older = await api('GET', '/api/agents/timeline', { query: { session: 'pg', limit: 2, before: last.entries[0].seq } });
+	assert.deepEqual(older.entries.map((e) => e.seq), all.slice(-4, -2));
+	const oldest = await api('GET', '/api/agents/timeline', { query: { session: 'pg', limit: 50, before: older.entries[0].seq } });
+	assert.equal(oldest.more, false);
+	assert.equal((await api('GET', '/api/agents/timeline', { query: { session: 'pg' } })).more, false);
+});
+
 test('a permission held by the hook is answered from the phone', async () => {
 	const { ws, next } = await watch();
 	const held = hook(ev('c', 'PermissionRequest', { tool_name: 'Bash', tool_input: { command: 'rm -rf build' } }));

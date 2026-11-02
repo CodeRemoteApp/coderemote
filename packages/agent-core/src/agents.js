@@ -373,11 +373,19 @@ export class AgentHub extends EventEmitter {
 		return s ? { terminal: s.terminal } : null;
 	}
 
-	timeline(id, after = 0) {
+	/**
+	 * `after` skips entries up to that `seq`. `limit` keeps only the newest that many, and `before`
+	 * only those older than that `seq` (the page before one already held); `more` says whether
+	 * entries older than the first one returned are left.
+	 */
+	timeline(id, after = 0, { limit = 0, before = 0 } = {}) {
 		const s = this.#sessions.get(id);
 		if (!s) throw new HttpError(404, 'no such session');
-		const entries = s.entries.filter((e) => e.seq > after);
-		return { entries, next: s.seq, requests: [...s.requests.values()].map((r) => r.request) };
+		let entries = s.entries.filter((e) => e.seq > after && (!before || e.seq < before));
+		if (limit > 0) entries = entries.slice(-limit);
+		const first = entries[0]?.seq ?? before;
+		const more = first > 0 && s.entries.some((e) => e.seq > after && e.seq < first);
+		return { entries, next: s.seq, more, requests: [...s.requests.values()].map((r) => r.request) };
 	}
 
 	/** Settles once a session's history (read from its transcript) is in. */

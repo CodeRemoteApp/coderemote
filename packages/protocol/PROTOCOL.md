@@ -403,7 +403,7 @@ transcript (with new `seq` numbers above the old ones), so clients reload it.
 | Route | Request | Response |
 | --- | --- | --- |
 | `GET /api/agents/sessions` | | `{ sessions: [session] }`, most recent activity first |
-| `GET /api/agents/timeline?session=&after=` | | `{ entries: [entry], next, requests: [request] }`; `after` skips entries up to that `seq` |
+| `GET /api/agents/timeline?session=&after=&limit=&before=` | | `{ entries: [entry], next, more, requests: [request] }`; `after` skips entries up to that `seq`, `limit` keeps the newest that many, `before` only those older than that `seq` (the page before one already held), and `more` is true while older entries are left. An agent that predates these returns every entry and no `more` |
 | `POST /api/agents/answer` | see below | `{}`; 404 for an unknown request, 409 once it is resolved |
 | `GET /api/agents/setup` | | `{ claude, plugin, codex, codexPlugin, codexModels }`: whether Claude Code, Codex and their Code Remote plugins are installed, and the models Codex offers, see [Starting sessions](#starting-sessions) |
 | `POST /api/agents/sessions` | `{ agent?, cwd?, model?, permissionMode?, resume?, cols?, rows? }` | `{ terminal, session }`; starts Claude Code, see [Starting sessions](#starting-sessions) |
