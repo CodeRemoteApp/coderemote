@@ -301,7 +301,7 @@ through the tunnel in plaintext, and never puts the token anywhere outside a sea
 Without them the pairing token is the one credential: whoever has it is the phone. A phone that
 enrolls becomes a *device* the agent knows by two P-256 keys made in its Secure Enclave, and from
 then on the token is good for enrolling more devices and nothing else. Support is advertised in
-`GET /api/info` as `devices: { version: 1, strict, presence, presenceWindow }` (`null` without
+`GET /api/info` as `devices: { version: 2, strict, presence, presenceWindow }` (`null` without
 it, which an agent started with `serve`, with no tunnel, is). Test vectors for the signatures are
 in [`device-vectors.json`](device-vectors.json). Enrolling, signing in and presence need a
 secure channel: a [sealed request](#sealed-requests), or the LAN listener. Elsewhere they answer 403.
@@ -336,11 +336,17 @@ exactly that.
 ### Strict mode
 
 Once a device is enrolled, a request that carries only the pairing token gets 401 with
-`code: "device_required"`, except `POST /api/devices`. The mode lasts across restarts and after the
+`code: "device_required"` and the agent's `agentId` (when it has one), except `POST /api/devices`.
+The agent id is what a phone probing a LAN address checks, as it would in `GET /api/info`: the
+pinned certificate proves the computer, the id which of its agents answered. The mode lasts across restarts and after the
 last device is revoked; only `coderemote rotate-token` ends it (and removes every device).
 `coderemote devices` lists the devices, `coderemote devices revoke <id>` removes one: its sessions,
-tickets and open sockets end at once. A device cannot revoke (403); `DELETE /api/devices?id=` is for
-the local credential.
+tickets and open sockets end at once. `DELETE /api/devices?id=` takes the local credential for any
+device. From version 2 a device session may also use it: for its own id with no more (a phone gives
+up its enrollment before it pairs again or forgets the machine), for another device's only with a
+live presence grant, else 403 `presence_required`. Version 1 answers a device 403 either way.
+`PUT /api/device/name` with `{ "name" }` (version 2) renames the calling device; it answers
+`{ id, name }`, 400 for a bad name, 403 for anyone but a device session.
 
 The CLI reaches a running agent with `Authorization: Local <secret>` on the loopback listener
 (the secret is in `~/.coderemote/local-secret`); the LAN listener never accepts it.

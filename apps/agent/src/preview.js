@@ -3,7 +3,7 @@
 // tunnel over from the old one, dropping every connection through it. Keeping previews on their
 // own tunnel means a restart only blips other previews, never the main tunnel's terminals.
 // The preview tunnel is private; the app opens it with a connect token the agent hands out.
-import { spawn } from 'node:child_process';
+import { spawnTied } from './tied.js';
 import { PREVIEW_LABEL, TUNNEL_LIMIT, makeRoom } from './tunnels.js';
 
 const HOST_READY_TIMEOUT_MS = 30_000;
@@ -199,7 +199,8 @@ export class PreviewTunnel {
 
 	#startHost() {
 		return new Promise((resolve, reject) => {
-			const child = spawn(this.command(), ['host', this.#tunnelId], { stdio: ['ignore', 'pipe', 'pipe'] });
+			// Tied to the agent, so a preview host can't outlive it (tied.js).
+			const child = spawnTied(this.command(), ['host', this.#tunnelId], { stdout: 'pipe', stderr: 'pipe' });
 			const urls = new Map();
 			let log = '';
 			const timer = setTimeout(() => {

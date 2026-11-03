@@ -38,6 +38,7 @@ before(async () => {
 	server = createAgentServer({
 		token: pairingToken,
 		root: tmp,
+		agentId: 'agent-under-test',
 		e2e: identity,
 		devices: registry,
 		localSecret,
@@ -73,7 +74,7 @@ test('1. before any device the pairing token works as it always did', async () =
 	const res = await plain('GET', '/api/info', { headers: pairingHeader });
 	assert.equal(res.status, 200);
 	const info = await res.json();
-	assert.deepEqual(info.devices, { version: 1, strict: false, presence: 'terminal', presenceWindow: 300 });
+	assert.deepEqual(info.devices, { version: 2, strict: false, presence: 'terminal', presenceWindow: 300 });
 	assert.equal((await plain('GET', '/api/fs/list?path=' + encodeURIComponent(tmp), { headers: pairingHeader })).status, 200);
 });
 
@@ -117,7 +118,7 @@ test('4. a sealed enrollment stores the device and tells the user', async () => 
 test('5. strict: the pairing token is good for enrolling and nothing else', async () => {
 	const other = await plain('GET', '/api/fs/list?path=' + encodeURIComponent(tmp), { headers: pairingHeader });
 	assert.equal(other.status, 401);
-	assert.equal((await other.json()).code, 'device_required');
+	assert.deepEqual(await other.json(), { error: 'this machine needs an enrolled device', code: 'device_required', agentId: 'agent-under-test' });
 	const info = await plain('GET', '/api/info', { headers: pairingHeader });
 	assert.equal(info.status, 401);
 	// A made-up bearer token is told its session is gone.
@@ -223,6 +224,10 @@ test('12. over the LAN a device enrolls and mints a session inside pinned TLS', 
 	assert.equal(session.status, 200);
 	const { token } = session.json();
 	assert.equal((await lanRequest('GET', '/api/info', { authorization: `Bearer ${token}` })).status, 200);
+	// A phone probing this address with the pairing token learns which agent answered, nothing more.
+	const probe = await lanRequest('GET', '/api/info', { authorization: `Bearer ${pairingToken}` });
+	assert.equal(probe.status, 401);
+	assert.deepEqual(probe.json(), { error: 'this machine needs an enrolled device', code: 'device_required', agentId: 'agent-under-test' });
 	// The same signature does not work through a sealed session.
 	const p = await newDevice('x');
 	const { nonce: n2 } = (await p.http.request('POST', route(Routes.deviceChallenge), { headers: jsonHeaders, body: JSON.stringify({ deviceId: id }) })).json();
@@ -232,9 +237,13 @@ test('12. over the LAN a device enrolls and mints a session inside pinned TLS', 
 	assert.equal((await lanRequest('GET', '/api/info', { authorization: `Bearer ${token}` })).status, 401);
 });
 
-test('13. only the computer revokes: a revoked phone loses its session, sockets and tickets', async () => {
-	// A device may not revoke.
-	assert.equal((await second.request('DELETE', route(Routes.deviceRevoke) + `?id=${first.deviceId}`)).status, 403);
+test('13. the computer revokes: a revoked phone loses its session, sockets and tickets', async () => {
+	// A device may not revoke another without Face ID.
+	const refused = await second.request('DELETE', route(Routes.deviceRevoke) + `?id=${first.deviceId}`);
+	assert.equal(refused.status, 403);
+	assert.equal(refused.json().code, 'presence_required');
+	// Nor may the pairing token.
+	assert.equal((await first.withPairing('DELETE', route(Routes.deviceRevoke) + `?id=${first.deviceId}`)).status, 401);
 	const notePath = path.join(tmp, 'note.txt');
 	const ticket = (await second.request('POST', route(Routes.e2eTicket), { scope: 'read', target: notePath })).json().ticket;
 	const readTicket = () => plain('GET', route(Routes.fsRead) + '?path=' + encodeURIComponent(path.join(tmp, 'note.txt')), { headers: { authorization: `Ticket ${ticket}` } });
@@ -255,6 +264,35 @@ test('13. only the computer revokes: a revoked phone loses its session, sockets 
 	assert.equal((await first.request('GET', '/api/info')).status, 200);
 	assert.equal((await plain('DELETE', route(Routes.deviceRevoke) + '?id=nope', { headers: { authorization: `Local ${localSecret}` } })).status, 404);
 	registry.setPresence({ level: 'terminal' });
+});
+
+test('13b. a device renames itself, revokes itself, and revokes another with Face ID', async () => {
+	const third = await newDevice('iPhone');
+	assert.equal((await third.enroll()).status, 200);
+	assert.equal((await third.login()).status, 200);
+	const renamed = await third.request('PUT', route(Routes.deviceName), { name: '  Work iPhone ' });
+	assert.equal(renamed.status, 200);
+	assert.equal(registry.get(third.deviceId).name, 'Work iPhone');
+	assert.equal((await third.request('PUT', route(Routes.deviceName), { name: '' })).status, 400);
+	assert.equal((await plain('PUT', route(Routes.deviceName), { headers: { authorization: `Local ${localSecret}` }, body: { name: 'x' } })).status, 403);
+
+	// Revoking another needs a grant; with one it works.
+	const fourth = await newDevice('old enrollment');
+	assert.equal((await fourth.enroll()).status, 200);
+	assert.equal((await third.request('DELETE', route(Routes.deviceRevoke) + `?id=${fourth.deviceId}`)).status, 403);
+	assert.equal((await third.grant()).status, 200);
+	assert.equal((await third.request('DELETE', route(Routes.deviceRevoke) + `?id=${fourth.deviceId}`)).status, 200);
+	assert.equal(registry.get(fourth.deviceId), null);
+	assert.equal((await third.request('DELETE', route(Routes.deviceRevoke) + '?id=nope')).status, 404);
+
+	// Revoking itself needs no grant, and ends its own session.
+	const fifth = await newDevice('pairing again');
+	assert.equal((await fifth.enroll()).status, 200);
+	assert.equal((await fifth.login()).status, 200);
+	assert.equal((await fifth.request('DELETE', route(Routes.deviceRevoke) + `?id=${fifth.deviceId}`)).status, 200);
+	assert.equal(registry.get(fifth.deviceId), null);
+	assert.equal((await fifth.request('GET', '/api/info')).status, 401);
+	assert.ok(server.revokeDevice(third.deviceId));
 });
 
 test('14. after the last device is revoked the agent stays strict', async () => {

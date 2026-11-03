@@ -705,9 +705,26 @@ export function createAgentServer({
 
 		[Routes.deviceRevoke]: async (url, req) => {
 			if (!devices) throw new HttpError(404, 'not found');
-			if (req.caller?.kind !== 'local') throw new HttpError(403, 'devices are revoked from the computer');
-			if (!revokeDevice(url.searchParams.get('id') ?? '')) throw new HttpError(404, 'no such device');
+			const id = url.searchParams.get('id') ?? '';
+			// The computer's CLI revokes any device. A device revokes itself freely (it only gives up
+			// access, e.g. when the phone pairs again or forgets the machine), another with Face ID.
+			if (req.caller?.kind !== 'local') {
+				if (req.caller?.kind !== 'device' || !req.caller.token) throw new HttpError(403, 'devices are revoked from the computer');
+				if (id !== req.caller.deviceId && !deviceSessions.granted(req.caller.token)) {
+					throw Object.assign(new HttpError(403, 'face id needed'), { code: 'presence_required' });
+				}
+			}
+			if (!revokeDevice(id)) throw new HttpError(404, 'no such device');
 			return {};
+		},
+
+		[Routes.deviceName]: async (url, req) => {
+			if (!devices) throw new HttpError(404, 'not found');
+			if (req.caller?.kind !== 'device' || !req.caller.deviceId) throw new HttpError(403, 'a device renames itself');
+			const { name } = await readJson(req);
+			const { device, error } = devices.rename(req.caller.deviceId, name);
+			if (error) throw new HttpError(error.status, error.message);
+			return { id: device.id, name: device.name };
 		},
 
 		[Routes.deviceChallenge]: async (url, req) => {
@@ -1329,7 +1346,9 @@ export function createAgentServer({
 				return sendJson(res, 401, { error: 'unauthorized', ...(sessionGone ? { code: 'device_session' } : {}) });
 			}
 			if (caller?.kind === 'enroll' && routeKey !== Routes.deviceEnroll) {
-				return sendJson(res, 401, { error: 'this machine needs an enrolled device', code: 'device_required' });
+				// The agent id lets a phone that probes the LAN tell this agent from another folder's
+				// on the same computer (same certificate) before it has a device session there.
+				return sendJson(res, 401, { error: 'this machine needs an enrolled device', code: 'device_required', ...(agentId ? { agentId } : {}) });
 			}
 			if (lacksGrant(caller, routeClass(routeKey))) {
 				return sendJson(res, 403, { error: 'face id needed', code: 'presence_required' });

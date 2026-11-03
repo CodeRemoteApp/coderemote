@@ -154,6 +154,23 @@ export class DeviceRegistry {
 		return this.devices.get(id) ?? null;
 	}
 
+	/** Renames device `id`: `{ device }`, or `{ error: { status, message } }`. */
+	rename(id, name) {
+		const d = this.devices.get(id);
+		if (!d) return { error: { status: 404, message: 'no such device' } };
+		const trimmed = typeof name === 'string' ? name.trim() : '';
+		if (!trimmed || trimmed.length > 64) return { error: { status: 400, message: 'a device needs a name of up to 64 characters' } };
+		const before = d.name;
+		d.name = trimmed;
+		try {
+			this.save();
+		} catch (e) {
+			d.name = before;
+			return { error: { status: 500, message: `could not save: ${e.message}` } };
+		}
+		return { device: d };
+	}
+
 	remove(id) {
 		if (!this.devices.delete(id)) return false;
 		this.save();

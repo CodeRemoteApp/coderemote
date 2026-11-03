@@ -22,6 +22,9 @@ import { availableUpdate, fetchLatest, installCommand, isNewer } from '../src/up
 import pkg from '../package.json' with { type: 'json' };
 import { Redactor, filterRequests, formatDetail, formatList, redactDetail } from '../src/requests.js';
 import { Spinner } from '../src/spinner.js';
+import { commandHelp } from '../src/help.js';
+import { sweepStrayAdvertisers } from '../src/bonjour.js';
+import { spawnTied } from '../src/tied.js';
 import { codeTunnelLogin, codeTunnelSignedIn, findCode, hostCodeTunnel } from '../src/vscode-tunnel.js';
 import { firewallAdvice, firewallReport, lanAdapters } from '../src/windows-firewall.js';
 import { LAN_SERVICE_TYPE, PROTOCOL_VERSION, pairingUrl, webUrl } from '@vsremote/protocol';
@@ -168,18 +171,17 @@ async function openLan(server, agentPort) {
 
 /**
  * Advertises the LAN listener over Bonjour (macOS only: `dns-sd` ships with it), so the app
- * finds this agent even when the relay is out of reach. Returns the advertiser, or null.
+ * finds this agent even when the relay is out of reach. The advertisement ends with the agent,
+ * even one killed outright (see tied.js). Returns the advertiser, or null.
  */
-function advertiseLan(lanPort, fingerprint, agentPort) {
+async function advertiseLan(lanPort, fingerprint, agentPort) {
 	if (process.platform !== 'darwin') return null;
+	// Ones an earlier agent left behind would point phones at a dead port.
+	await sweepStrayAdvertisers(LAN_SERVICE_TYPE);
 	const host = os.hostname().replace(/\.local$/, '');
 	const name = agentPort === DEFAULT_PORT ? host : `${host} :${agentPort}`;
 	try {
-		const child = spawn(
-			'dns-sd',
-			['-R', name, LAN_SERVICE_TYPE, 'local', String(lanPort), `fp=${fingerprint.slice(0, 16)}`, `proto=${PROTOCOL_VERSION}`],
-			{ stdio: 'ignore' },
-		);
+		const child = spawnTied('dns-sd', ['-R', name, LAN_SERVICE_TYPE, 'local', String(lanPort), `fp=${fingerprint.slice(0, 16)}`, `proto=${PROTOCOL_VERSION}`]);
 		child.on('error', () => {});
 		return child;
 	} catch {
@@ -328,7 +330,8 @@ async function connectToken(tunnelId) {
 
 function hostTunnel(tunnelId, port) {
 	return new Promise((resolve, reject) => {
-		const child = spawn(DEVTUNNEL, ['host', tunnelId], { stdio: ['ignore', 'pipe', 'pipe'] });
+		// Tied to the agent: a host outliving it would keep the tunnel and block the next `up`.
+		const child = spawnTied(DEVTUNNEL, ['host', tunnelId], { stdout: 'pipe', stderr: 'pipe' });
 		let log = '';
 		const onData = (d) => {
 			log += d;
@@ -407,6 +410,7 @@ async function startVSCodeTunnel() {
 }
 
 const USAGE = `Usage: coderemote <command> [options]
+       coderemote <command> --help   (just that command and its subcommands)
 
   up                   share this folder through a dev tunnel and print the pairing QR;
                        the phone or browser must sign in with your dev tunnels account.
@@ -454,9 +458,11 @@ Options:
 const HELP_FLAGS = ['help', '--help', '-help', '-h'];
 const argv = process.argv.slice(2);
 // Bare `coderemote` or `--help` anywhere shows usage rather than sharing a folder by accident.
+// With a command (`coderemote devices --help`, `coderemote help devices`) only that command's help.
+const helpFor = HELP_FLAGS.includes(argv[0]) ? argv[1] : argv[0];
 const [cmd, ...rest] =
 	argv.length === 0 || argv.some((a) => HELP_FLAGS.includes(a))
-		? ['help']
+		? ['help', ...(helpFor && !HELP_FLAGS.includes(helpFor) ? [helpFor] : [])]
 		: argv.some((a) => a === '--version' || a === '-v')
 			? ['version']
 			: argv;
@@ -577,7 +583,7 @@ async function start({ tunnel }) {
 	let firewall = null;
 	if (lanCert) {
 		lan = await openLan(server, port);
-		if (lan.port) advertiser = advertiseLan(lan.port, lanCert.fingerprint, port);
+		if (lan.port) advertiser = await advertiseLan(lan.port, lanCert.fingerprint, port);
 		if (lan.port && isWindows) {
 			const lanPort = lan.port;
 			firewall = firewallReport().then((report) => firewallAdvice(report, { lanPort, adapters: lanAdapters(os.networkInterfaces()) }));
@@ -892,7 +898,7 @@ switch (cmd) {
 		if (rest[0] === 'claude') await setupClaude();
 		else if (rest[0] === 'codex') await setupCodex();
 		else {
-			console.error('Usage: coderemote setup claude|codex [--remove]');
+			console.error(commandHelp(USAGE, 'setup'));
 			process.exit(1);
 		}
 		break;
@@ -1049,7 +1055,7 @@ switch (cmd) {
 					console.log(`  ${d.id}  ${d.name}${d.presence ? '' : '  (no Face ID key)'}  enrolled ${new Date(d.enrolledAt).toLocaleDateString()}, last seen ${seen}`);
 				}
 			} else {
-				console.error('Usage: coderemote devices [revoke <id> | policy <level> [--window 5m|30m|1h]]');
+				console.error(`Unknown subcommand: devices ${sub}\n\n${commandHelp(USAGE, 'devices')}`);
 				process.exit(1);
 			}
 		} catch (e) {
@@ -1237,9 +1243,19 @@ switch (cmd) {
 	case 'version':
 		console.log(VERSION);
 		break;
-	case 'help':
-		console.log(USAGE);
+	case 'help': {
+		if (!rest[0]) {
+			console.log(USAGE);
+			break;
+		}
+		const help = commandHelp(USAGE, rest[0]);
+		if (!help) {
+			console.error(`Unknown command: ${rest[0]}\n\n${USAGE}`);
+			process.exit(1);
+		}
+		console.log(help);
 		break;
+	}
 	default:
 		console.error(`Unknown command: ${cmd}\n\n${USAGE}`);
 		process.exit(1);

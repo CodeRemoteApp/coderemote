@@ -96,6 +96,8 @@ export const Routes = Object.freeze({
 	presenceChallenge: 'POST /api/device/presence/challenge',
 	presenceGrant: 'POST /api/device/presence',
 	devicePolicy: 'PUT /api/device/policy',
+	// Devices v2: a device renames itself.
+	deviceName: 'PUT /api/device/name',
 });
 
 // Opened in the system browser (no bearer token); answers with a redirect to
@@ -110,8 +112,9 @@ export const E2E_REQUEST_PATH = '/api/e2e';
 export const E2E_SESSION_HEADER = 'X-E2E-Session';
 export const E2E_VERSION = 1;
 
-// Device keys: the version `GET /api/info` reports in `devices`.
-export const DEVICES_VERSION = 1;
+// Device keys: the version `GET /api/info` reports in `devices`. 2: a device may revoke itself,
+// revoke another with a presence grant, and rename itself.
+export const DEVICES_VERSION = 2;
 
 export const TERMINAL_WS_PATH = '/api/term/ws';
 

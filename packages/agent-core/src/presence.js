@@ -81,7 +81,9 @@ const CLASSES = {
 	[Routes.e2eTicket]: FREE,
 	[Routes.deviceEnroll]: FREE,
 	[Routes.deviceList]: FREE,
+	// Revoking another device checks for a grant itself.
 	[Routes.deviceRevoke]: FREE,
+	[Routes.deviceName]: FREE,
 	[Routes.deviceChallenge]: FREE,
 	[Routes.deviceSession]: FREE,
 	[Routes.presenceChallenge]: FREE,
