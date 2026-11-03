@@ -19,8 +19,8 @@ Every request carries:
 The agent prints a QR code for
 
 ```
-vsremote://pair?url=<https base url>&token=<token>[&id=<agentId>]
-vsremote://pair?[url=<https base url>&]token=<token>&id=<agentId>&lan=<port>&addr=<a,b,...>&fp=<fingerprint>
+vsremote://pair?url=<https base url>&token=<token>[&id=<agentId>][&pk=<key>]
+vsremote://pair?[url=<https base url>&]token=<token>&id=<agentId>&lan=<port>&addr=<a,b,...>&fp=<fingerprint>[&pk=<key>]
 ```
 
 `url` is the tunnel's address, `token` the bearer token. `id`, the agent's identity, is there
@@ -34,6 +34,11 @@ own screen, as the token was. With the tunnel up the link leaves them out, to ke
 a client learns them from `/api/info` over the tunnel. An agent that starts without internet
 prints the long link, with `url` only if it remembers its tunnel's address; clients then reach it
 on the local network only, until `/api/info` reports a tunnel.
+
+`pk` is the agent's identity key for [end-to-end encryption](#end-to-end-encryption): 32 bytes as
+unpadded base64url (43 characters), in either shape, whenever the agent has one. A client that
+reads it pins it for that machine, and refuses a `pk` that isn't exactly that; one that doesn't
+know `pk` ignores it and talks to the agent in plaintext, as before.
 
 A link has `token` and either `url` or `id`, `lan`, `addr` and `fp`; clients refuse anything else,
 and ignore a partial set of LAN parameters.
@@ -183,6 +188,112 @@ the local network only and connects its tunnel once it can, without restarting.
 Adding `lan`, `agentId` and `tunnel` didn't change the protocol version: clients that don't know
 them ignore them.
 
+## End-to-end encryption
+
+Through the tunnel, TLS ends at the relay, which would otherwise see the bearer token and every
+request and response. A client that holds the agent's `pk` (from the [pairing link](#pairing))
+encrypts between itself and the agent instead, so the relay forwards ciphertext. It adds nothing
+on the [local network](#local-network), whose pinned certificate already covers it, and the
+agent's loopback listener stays plaintext for local tools (the hook command, the CLI). Test vectors
+for everything below are in [`e2e-vectors.json`](e2e-vectors.json).
+
+Support is advertised in `GET /api/info` as `e2e: { version: 1 }` (`null` without an identity
+key). Through the tunnel (the loopback listener) the response never carries the key: a client
+takes it from the pairing link. Over the LAN listener it adds `publicKey` (the same 43
+characters), so a client paired before the agent had a key can adopt it over the certificate it
+pinned, without scanning again; a client takes it from nowhere else, never replaces a key it
+already pinned, and ignores one that arrives through the tunnel. Adding `e2e` and `pk` didn't
+change the protocol version.
+
+### Handshake
+
+`POST /api/e2e/handshake`, no `Authorization`, JSON `{ "v": 1, "epk": "<base64url>" }` with a fresh
+X25519 public key. The agent answers `{ "v": 1, "sid": "<session id>", "epk": "<base64url>",
+"confirm": "<base64url>" }` with its own ephemeral public key. With `S` the agent's identity
+key (`pk`), `ec` and `es` the two ephemeral keys:
+
+```
+ikm     = X25519(ec_priv, S) || X25519(ec_priv, es)       # the agent computes both from its side
+salt    = SHA256("coderemote-e2e-1" || S || ec || es)
+c2s     = HKDF-SHA256(ikm, salt, info="c2s", 32)           # client to agent
+s2c     = HKDF-SHA256(ikm, salt, info="s2c", 32)           # agent to client
+confirm = HMAC-SHA256(HKDF-SHA256(ikm, salt, info="confirm", 32), salt)
+```
+
+The client checks `confirm`: only the holder of the identity private key can compute it, and a
+client that sees a different value sends nothing further. 400 for a bad body or a `v` the agent
+doesn't know (`code: "e2e_version"`), 429 when handshakes come too fast. The bearer token is not
+part of the handshake; it travels inside the sealed messages.
+
+A session ends after 30 minutes idle, when the agent stops, and when `rotate-token` runs; the
+agent keeps at most 64, dropping the least recently used. A session serves **either** sealed
+requests **or** one socket, whichever it is used for first.
+
+### Sealed messages
+
+A sealed message is `counter || ciphertext || tag`: an 8-byte big-endian counter, then
+ChaCha20-Poly1305 output (16-byte tag). The nonce is four zero bytes plus the counter; each
+direction has its own key and counts from 0. The associated data names the session and the
+direction, below. At most 8 MiB of plaintext per message.
+
+### Sealed requests
+
+`POST /api/e2e` with `X-E2E-Session: <sid>`; the body is a sealed message (AAD `"<sid>:req"`)
+of `u32 header length (big endian) || JSON header || body`, where the header is
+`{ "method", "path", "headers" }` (`path` with its query; `headers` including `authorization`) and
+the body the request's. The agent checks the counter against a window of the last 128, so
+requests may arrive out of order but none twice, then runs the request against its own routes
+with the same authorization as a plaintext one.
+
+The answer is `200` with a sealed message (AAD `"<sid>:res:<request counter>"`) of the same
+packing: header `{ "status", "headers" }`, then the body. Outside the envelope the agent
+answers only: `400` for a message that doesn't authenticate or repeats a counter (`e2e_bad`,
+`e2e_replay`), `401` with `code: "e2e_session"` for an unknown or expired session (the client
+handshakes again and, for an idempotent request, retries once), `413` for a body over the limit.
+A request for `/api/e2e` or `/api/e2e/handshake` inside an envelope is refused with 404.
+
+A response over the limit comes back as a sealed `413` with `code: "e2e_too_large"`; the client
+fetches such a transfer with a ticket.
+
+### Sealed sockets
+
+The terminal and agents sockets are opened as `GET /api/term/ws?e2e=<sid>` or
+`GET /api/agents/ws?e2e=<sid>`, with no `Authorization` and no other parameter, on a session of
+their own (a fresh handshake). Every frame in both directions is a binary WebSocket message
+holding a sealed message (AAD `"<sid>:ws:c2s"` or `"<sid>:ws:s2c"`) whose plaintext is one byte
+(`0` text, `1` binary) followed by the frame's payload. Counters must arrive in order.
+
+The first client frame is
+`{ "type": "open", "kind": "term" | "agents", "token", "id", "cols", "rows", "cwd" }`
+(`id`, `cols`, `rows`, `cwd` as the terminal's query parameters). The agent sends nothing before
+it, and closes the socket if it doesn't arrive within 5 seconds. After it, the frames are those of
+the [terminal](#terminal) and [agents](#live-updates) sockets. The agent closes with 4400 for a
+bad, repeated or missing frame (or the wrong `kind`), 4401 for a wrong token, 4404 for an unknown
+terminal `id`, 4408 for no `open`, 4500 for anything else.
+
+### Tickets
+
+Three kinds of transfer stay outside the envelope: byte-range reads of media, uploads, and
+downloads too large for one sealed message. Sending the bearer token with them would hand it to
+the relay, so they use a ticket instead. `POST /api/e2e/ticket` (inside the envelope, with the
+token) with `{ "scope": "read" | "upload" }` answers `{ "ticket", "expiresIn" }` (seconds, 300).
+The client sends `Authorization: Ticket <ticket>` on:
+
+| Scope | Routes |
+| --- | --- |
+| `read` | `GET /api/fs/read` |
+| `upload` | `POST /api/agents/uploads`, `GET /api/agents/uploads` |
+
+Anywhere else, and after it expires, a ticket answers 401. The relay can read what travels with a
+ticket and replay the ticket until it expires; it can't use it for anything else.
+
+### What stays outside
+
+The tunnel's own sign-in (`X-Tunnel-Authorization`, `/vsremote/handoff`), the public preview and
+install links, and hook delivery. Message sizes, timing and the existence of a session are visible
+to the relay. A client that holds a `pk` never sends a request or opens a socket to that agent
+through the tunnel in plaintext, and never puts the token anywhere outside a sealed message.
+
 ## Shared folder
 
 The agent shares one folder, the directory `coderemote up` runs in (or `--root DIR`).
@@ -199,7 +310,7 @@ with 400 (bad input), 401, 403 (outside the shared folder, `EACCES`/`EPERM`), 40
 
 | Route | Request | Response |
 | --- | --- | --- |
-| `GET /api/info` | | `{ protocol, minClientProtocol, version, hostname, platform, root, user, shell, lan, agentId, tunnel }` (see [Compatibility](#compatibility), [Local network](#local-network)) |
+| `GET /api/info` | | `{ protocol, minClientProtocol, version, hostname, platform, root, user, shell, lan, agentId, tunnel, e2e }` (see [Compatibility](#compatibility), [Local network](#local-network)) |
 | `GET /api/fs/list?path=` | | `{ path, entries: [{ name, type, size, mtime, target? }] }` |
 | `GET /api/fs/stat?path=` | | `{ path, name, type, size, mtime, target? }` |
 | `GET /api/fs/read?path=` | | raw bytes; one `Range: bytes=…` gets 206 with that part (416 past the end), so media streams; video and audio files carry their media type |

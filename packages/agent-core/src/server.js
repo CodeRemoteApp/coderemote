@@ -9,6 +9,9 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import {
 	AGENTS_WS_PATH,
 	AgentsClientMessage,
+	E2E_HANDSHAKE_PATH,
+	E2E_REQUEST_PATH,
+	E2E_VERSION,
 	HOOK_SECRET_HEADER,
 	PROTOCOL_VERSION,
 	MIN_CLIENT_PROTOCOL,
@@ -25,6 +28,9 @@ import { BuildRunner, listSchemes } from './builds.js';
 import { listHistory } from './history.js';
 import { InstallLinks } from './install-links.js';
 import * as Git from './git.js';
+import { b64u } from './e2e.js';
+import { createSealedGateway } from './e2e-http.js';
+import { acceptSealedSocket, SealedClose } from './e2e-socket.js';
 import { draftCommitMessage } from './commit-message.js';
 import { TunnelHandoff } from './handoff.js';
 import { LANDING_HTML } from './landing.js';
@@ -191,6 +197,9 @@ async function readJson(req) {
  * @param {{ key: string, cert: string, fingerprint: string } | null} [opts.lan]  the certificate
  *        `listenLan()` serves devices on the local network with; without one there is no LAN listener
  * @param {() => string[]} [opts.lanAddresses]  where devices on the network reach this computer
+ * @param {{ publicKey: Buffer, privateKey: object } | null} [opts.e2e]  the identity key that end-to-end
+ *        encryption is offered with; without one `/api/info` reports `e2e: null`
+ * @param {object} [opts.e2eOptions]  limits of the sealed sessions and tickets (tests shorten them)
  * @param {string | null} [opts.agentId]  this agent's lasting identity, reported in `/api/info`
  * @param {() => string | null} [opts.tunnelUrl]  the tunnel's public URL while it is hosted
  * @param {{ checkMs?: number, graceMs?: number, killedMs?: number }} [opts.previewSweep]  how often
@@ -222,6 +231,8 @@ export function createAgentServer({
 	version = null,
 	lan = null,
 	lanAddresses = defaultLanAddresses,
+	e2e = null,
+	e2eOptions = {},
 	agentId = null,
 	tunnelUrl = () => null,
 }) {
@@ -232,6 +243,8 @@ export function createAgentServer({
 		onOutput: (id, buf) => agents.terminalOutput(id, buf),
 	});
 	const expected = Buffer.from(`Bearer ${token}`);
+	// Sealed requests re-enter this server over loopback, so they reach the routes unchanged.
+	const sealed = e2e ? createSealedGateway({ identity: e2e, port: () => server.address().port, options: e2eOptions }) : null;
 	const uploads = uploadsDir ? new UploadStore(uploadsDir) : null;
 	// Images in transcripts become uploads, which clients fetch like the files they attached.
 	if (uploads && !agents.keepImage) agents.keepImage = (bytes, type) => uploads.keep(bytes, type);
@@ -547,8 +560,13 @@ export function createAgentServer({
 	}
 
 	const routes = {
-		[Routes.info]: async () => ({
+		[Routes.info]: async (url, req) => ({
 			...lanInfo(),
+			// The key goes only to a client on the LAN listener, whose certificate it pinned: through the
+			// tunnel a relay could swap it, so there a client takes it from the pairing link alone.
+			e2e: sealed
+				? { version: E2E_VERSION, ...(req.socket[OVER_LAN] === true ? { publicKey: b64u(e2e.publicKey) } : {}) }
+				: null,
 			protocol: PROTOCOL_VERSION,
 			minClientProtocol: MIN_CLIENT_PROTOCOL,
 			version,
@@ -562,6 +580,13 @@ export function createAgentServer({
 			// Null until the tunnel is hosted (an agent started offline connects it later).
 			tunnel: tunnelUrl() ? { url: tunnelUrl() } : null,
 		}),
+
+		[Routes.e2eTicket]: async (url, req) => {
+			if (!sealed) throw new HttpError(404, 'not found');
+			const { scope } = await readJson(req);
+			if (scope !== 'read' && scope !== 'upload') throw new HttpError(400, 'scope must be read or upload');
+			return sealed.tickets.mint(scope);
+		},
 
 		[Routes.fsList]: async (url) => {
 			const dir = await sandbox.resolve(url.searchParams.get('path'));
@@ -1109,9 +1134,15 @@ export function createAgentServer({
 		if (req.socket[OVER_LAN] === true && tunnelOnly(req.method, url.pathname)) {
 			return sendJson(res, 404, { error: 'not found' });
 		}
+		if (url.pathname === E2E_HANDSHAKE_PATH || url.pathname === E2E_REQUEST_PATH) {
+			// Over LAN the pinned certificate is the protection; without a key there is nothing to offer.
+			if (!sealed || req.socket[OVER_LAN] === true) return sendJson(res, 404, { error: 'not found' });
+			if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' });
+			return (url.pathname === E2E_HANDSHAKE_PATH ? sealed.handshake : sealed.request)(req, res).catch(() => res.destroy());
+		}
 		if (req.method === 'GET' && url.pathname === TUNNEL_HANDOFF_PATH) return handoffRedirect(url, res);
 		if (`${req.method} ${url.pathname}` === Routes.agentsHook) return hookDelivery(url, req, res);
-		if (!authorized(req)) return sendJson(res, 401, { error: 'unauthorized' });
+		if (!authorized(req) && !sealed?.ticketOk(req, url.pathname)) return sendJson(res, 401, { error: 'unauthorized' });
 		const handler = routes[`${req.method} ${url.pathname}`];
 		if (!handler) return sendJson(res, 404, { error: 'not found' });
 		try {
@@ -1174,8 +1205,67 @@ export function createAgentServer({
 	// Terminal: GET TERMINAL_WS_PATH?id=<session>&cols=&rows=&cwd=
 	// Omitting id creates a new session; passing one reattaches and replays scrollback.
 	const wss = new WebSocketServer({ noServer: true });
+
+	/** The terminal session `{ id, cols, rows, cwd }` asks for: `{ session }`, or `{ status }` on failure. */
+	async function terminalFor({ id, cols, rows, cwd }) {
+		if (id) {
+			const session = sessions.get(id);
+			return session ? { session } : { status: 404 };
+		}
+		try {
+			return {
+				session: sessions.create({
+					cols: parseInt(cols, 10) || 80,
+					rows: parseInt(rows, 10) || 24,
+					// New shells start in the shared folder unless a subfolder is asked for.
+					cwd: await sandbox.resolve(cwd || sandbox.root),
+					env: terminalEnv(),
+				}),
+			};
+		} catch (e) {
+			return { status: e.status || (e.code === 'ENOENT' ? 404 : 500) };
+		}
+	}
+
+	/** An upgrade that names a sealed session (`?e2e=`): the open frame carries the rest. */
+	function sealedUpgrade(url, req, socket, head) {
+		const kind = url.pathname === AGENTS_WS_PATH ? 'agents' : 'term';
+		const session = sealed.sessions.get(url.searchParams.get('e2e') ?? '');
+		if (!session) return socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
+		if (!sealed.sessions.claim(session, 'ws')) return socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+		wss.handleUpgrade(req, socket, head, (ws) => {
+			acceptSealedSocket(
+				ws,
+				session,
+				async (msg, sealedWs) => {
+					if (msg.kind !== kind) return SealedClose.badFrame;
+					const got = Buffer.from(`Bearer ${msg.token}`);
+					if (got.length !== expected.length || !timingSafeEqual(got, expected)) return SealedClose.unauthorized;
+					if (kind === 'agents') {
+						watchAgents(sealedWs);
+						return true;
+					}
+					const found = await terminalFor(msg);
+					if (!found.session) return found.status === 404 ? SealedClose.notFound : SealedClose.failed;
+					found.session.attach(sealedWs);
+					return true;
+				},
+				e2eOptions.socket,
+			);
+			ws.on('close', () => sealed.sessions.delete(session.id));
+		});
+	}
+
 	server.on('upgrade', async (req, socket, head) => {
 		const url = new URL(req.url, 'http://localhost');
+		if (
+			url.searchParams.has('e2e') &&
+			(url.pathname === AGENTS_WS_PATH || url.pathname === TERMINAL_WS_PATH) &&
+			sealed &&
+			req.socket[OVER_LAN] !== true
+		) {
+			return sealedUpgrade(url, req, socket, head);
+		}
 		if (url.pathname === AGENTS_WS_PATH && authorized(req)) {
 			wss.handleUpgrade(req, socket, head, watchAgents);
 			return;
@@ -1184,29 +1274,17 @@ export function createAgentServer({
 			socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
 			return;
 		}
-		const id = url.searchParams.get('id');
-		let session;
-		if (id) {
-			session = sessions.get(id);
-			if (!session) {
-				socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
-				return;
-			}
-		} else {
-			try {
-				session = sessions.create({
-					cols: parseInt(url.searchParams.get('cols'), 10) || 80,
-					rows: parseInt(url.searchParams.get('rows'), 10) || 24,
-					// New shells start in the shared folder unless a subfolder is asked for.
-					cwd: await sandbox.resolve(url.searchParams.get('cwd') || sandbox.root),
-					env: terminalEnv(),
-				});
-			} catch (e) {
-				socket.end(`HTTP/1.1 ${e.status || (e.code === 'ENOENT' ? 404 : 500)} Error\r\n\r\n`);
-				return;
-			}
+		const found = await terminalFor({
+			id: url.searchParams.get('id'),
+			cols: url.searchParams.get('cols'),
+			rows: url.searchParams.get('rows'),
+			cwd: url.searchParams.get('cwd'),
+		});
+		if (!found.session) {
+			socket.end(`HTTP/1.1 ${found.status} ${found.status === 404 ? 'Not Found' : 'Error'}\r\n\r\n`);
+			return;
 		}
-		wss.handleUpgrade(req, socket, head, (ws) => session.attach(ws));
+		wss.handleUpgrade(req, socket, head, (ws) => found.session.attach(ws));
 	});
 
 	// Agents socket: a snapshot, then every change as it happens.
@@ -1274,6 +1352,7 @@ export function createAgentServer({
 	};
 
 	server.on('close', () => {
+		sealed?.end();
 		lanServer?.close();
 		installs?.close();
 		clearInterval(sweep);
@@ -1284,6 +1363,9 @@ export function createAgentServer({
 	});
 	// server.close() waits for open sockets; callers shutting down kill shells right away.
 	server.killAllSessions = () => sessions.killAll();
+	// Ends every sealed session and ticket now (the identity key was replaced).
+	server.endSealedSessions = () => sealed?.end();
+	server.sealed = sealed;
 	server.agents = agents;
 	// Whether a client showed this machine in the last 30 seconds, and what of it.
 	server.clientInForeground = clientInForeground;

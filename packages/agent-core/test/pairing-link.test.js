@@ -60,3 +60,19 @@ test("the QR's addr starts with the Wi-Fi address on a Windows computer full of 
 test('the QR keeps at most 3 addresses, one of them IPv6 at most, in the order given', () => {
 	assert.deepEqual(qrAddresses(['10.0.0.2', '2001:db8::1', '2001:db8::2', '192.168.1.3', '172.16.0.4']), ['10.0.0.2', '2001:db8::1', '192.168.1.3']);
 });
+
+test('the identity key goes in as pk on every link shape', () => {
+	const key = Buffer.alloc(32, 9);
+	const pk = key.toString('base64url');
+	assert.equal(pk.length, 43);
+	assert.equal(parse(pairingUrl({ url: 'https://x-31580.asse.devtunnels.ms', token: 't', agentId, publicKey: key })).pk, pk);
+	const offline = parse(pairingUrl({ token: 't', agentId, lan, publicKey: key }));
+	assert.equal(offline.pk, pk);
+	assert.equal(offline.fp, lan.fingerprint);
+	assert.equal(parse(pairingUrl({ url: 'https://x-31580.asse.devtunnels.ms', token: 't', agentId, lan, publicKey: key })).pk, pk);
+});
+
+test('without an identity key the link has no pk, and a key of the wrong size is refused', () => {
+	assert.equal('pk' in parse(pairingUrl({ url: 'https://x-31580.asse.devtunnels.ms', token: 't', agentId })), false);
+	assert.throws(() => pairingUrl({ url: 'https://x-31580.asse.devtunnels.ms', token: 't', publicKey: Buffer.alloc(31) }), /32 bytes/);
+});

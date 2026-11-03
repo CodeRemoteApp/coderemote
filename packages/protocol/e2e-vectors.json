@@ -1,0 +1,28 @@
+{
+  "note": "Fixed-key test vectors for the end-to-end encryption handshake and sealing. Shared by the agent and the app.",
+  "version": 1,
+  "agentPrivate": "1111111111111111111111111111111111111111111111111111111111111111",
+  "agentPublic": "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+  "clientEphemeralPrivate": "2222222222222222222222222222222222222222222222222222222222222222",
+  "clientEphemeralPublic": "0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20",
+  "agentEphemeralPrivate": "3333333333333333333333333333333333333333333333333333333333333333",
+  "agentEphemeralPublic": "7b0d47d93427f8311160781c7c733fd89f88970aef490d8aa0ee19a4cb8a1b14",
+  "confirm": "fee8653c52c2461bd27d9d9a51afab9734ac8b9544d8ba5292208a9255d72d2f",
+  "keyC2S": "4798915abcb5f1d8c6f8632cdeee39d2902cea911627c9d5e6e0834f1ec92164",
+  "keyS2C": "fde73a5887007cda511a1351294f474031851abd62778938c9ef17d619642de6",
+  "seal": {
+    "key": "keyC2S",
+    "counter": 7,
+    "aad": "SID:req",
+    "plaintext": "68656c6c6f",
+    "sealed": "0000000000000007ec053a4ffc2ad50799ff5060b0c05613df1337538f"
+  },
+  "pack": {
+    "header": {
+      "method": "GET",
+      "path": "/api/info"
+    },
+    "body": "626f6479",
+    "packed": "000000237b226d6574686f64223a22474554222c2270617468223a222f6170692f696e666f227d626f6479"
+  }
+}

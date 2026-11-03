@@ -90,9 +90,12 @@ Commands, requirements and FAQ are in the
 </p>
 
 The agent listens on `127.0.0.1` and connects out to the relay, so no inbound port is ever
-opened. The phone talks to it over HTTPS (files, git) and a WebSocket (terminals). The wire
-contract is in [PROTOCOL.md](packages/protocol/PROTOCOL.md); the security model in
-[SECURITY.md](SECURITY.md).
+opened. The phone talks to it over HTTPS (files, git) and a WebSocket (terminals). Through the
+tunnel those connections end at Microsoft's relay, but an app that supports it also encrypts
+end to end with the agent's key (the `pk` in the QR), so the relay only forwards ciphertext (media and uploads are the
+exception); on the same network it connects directly with the agent's certificate pinned. See
+[What the relay can see](SECURITY.md#what-the-relay-can-see). The wire contract is in
+[PROTOCOL.md](packages/protocol/PROTOCOL.md); the security model in [SECURITY.md](SECURITY.md).
 
 ## Repository layout
 

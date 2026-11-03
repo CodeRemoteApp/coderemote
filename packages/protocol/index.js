@@ -85,12 +85,21 @@ export const Routes = Object.freeze({
 	pushDeviceSet: 'PUT /api/push/device',
 	pushDeviceDelete: 'DELETE /api/push/device',
 	pushTest: 'POST /api/push/test',
+	// Added within v4: sealed in the end-to-end envelope, mints a ticket for the transfers outside it.
+	e2eTicket: 'POST /api/e2e/ticket',
 });
 
 // Opened in the system browser (no bearer token); answers with a redirect to
 // `vsremote://tunnel-auth?token=&expires=&state=`. See PROTOCOL.md, "Tunnel sign-in".
 export const TUNNEL_HANDOFF_PATH = '/vsremote/handoff';
 export const TUNNEL_AUTH_CALLBACK_HOST = 'tunnel-auth';
+
+// End-to-end encryption (PROTOCOL.md, "End-to-end encryption"): the handshake and the sealed-request
+// endpoint. Both are POST, answered before any bearer-token check.
+export const E2E_HANDSHAKE_PATH = '/api/e2e/handshake';
+export const E2E_REQUEST_PATH = '/api/e2e';
+export const E2E_SESSION_HEADER = 'X-E2E-Session';
+export const E2E_VERSION = 1;
 
 export const TERMINAL_WS_PATH = '/api/term/ws';
 
@@ -134,9 +143,10 @@ export function webUrl({ url, token }) {
  * LAN listener. `lan`, `{ port, addresses, fingerprint }`, lets a client pin the agent's
  * certificate and reach it on the local network straight from the QR: the agent passes it only
  * while its tunnel isn't up, as a client otherwise learns all that from /api/info, and the QR
- * stays small. See PROTOCOL.md, "Pairing".
+ * stays small. `publicKey`, the agent's end-to-end identity key, goes in whenever it has one.
+ * See PROTOCOL.md, "Pairing".
  */
-export function pairingUrl({ url = null, token, agentId = null, lan = null }) {
+export function pairingUrl({ url = null, token, agentId = null, lan = null, publicKey = null }) {
 	if (!url && !lan) throw new Error('a pairing link needs a tunnel URL or the LAN listener');
 	if (lan && !agentId) throw new Error('a pairing link with the LAN listener needs the agent id');
 	const q = new URLSearchParams();
@@ -148,6 +158,9 @@ export function pairingUrl({ url = null, token, agentId = null, lan = null }) {
 		q.set('addr', lan.addresses.join(','));
 		q.set('fp', lan.fingerprint);
 	}
+	// The agent's end-to-end identity key (32 bytes, unpadded base64url): the client pins it.
+	if (publicKey && publicKey.length !== 32) throw new Error('the end-to-end identity key is 32 bytes');
+	if (publicKey) q.set('pk', Buffer.from(publicKey).toString('base64url'));
 	// encodeURIComponent's escaping, as links from older agents have it (URLSearchParams writes "+").
 	return `${PAIRING_SCHEME}://pair?${q.toString().replace(/\+/g, '%20')}`;
 }

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import qrcode from 'qrcode-terminal';
-import { createAgentServer, execCommand, isWindows, lanAddresses, lanCertificate, qrAddresses, spawnCommand } from '@vsremote/agent-core';
+import { createAgentServer, execCommand, isWindows, lanAddresses, lanCertificate, loadIdentity, qrAddresses, spawnCommand } from '@vsremote/agent-core';
 import { ensureDevtunnel } from '../src/devtunnel.js';
 import { ensureHookSecret, readHookSecret, runHook, writeHookLauncher } from '../src/hook.js';
 import { PreviewTunnel } from '../src/preview.js';
@@ -39,6 +39,9 @@ const AGENT_SESSIONS_DIR = path.join(CONFIG_DIR, 'agent-sessions');
 const UPLOADS_DIR = path.join(CONFIG_DIR, 'uploads');
 // The certificate of the LAN listener, which paired phones pin; `rotate-token` replaces it.
 const LAN_DIR = path.join(CONFIG_DIR, 'lan');
+// The identity key of end-to-end encryption, which paired phones pin (`pk` in the pairing link);
+// `rotate-token` replaces it.
+const E2E_DIR = path.join(CONFIG_DIR, 'e2e');
 // A folder's LAN listener starts looking for a port this far above its agent's.
 const LAN_PORT_OFFSET = 1000;
 const DEFAULT_PORT = 31580;
@@ -60,6 +63,8 @@ function loadConfig() {
 		fs.rmSync(PUSH_DIR, { recursive: true, force: true });
 		fs.rmSync(UPLOADS_DIR, { recursive: true, force: true });
 		fs.rmSync(LAN_DIR, { recursive: true, force: true });
+		// The same for the end-to-end identity key: devices pinned the old one.
+		fs.rmSync(E2E_DIR, { recursive: true, force: true });
 	}
 	// Older releases kept one tunnel per machine, made for the default port.
 	if (cfg.tunnelId && !cfg.tunnels) {
@@ -94,7 +99,7 @@ function portFree(port) {
 	});
 }
 
-function listen(token, port, root, tunnelToken, preview, status, remover, lan, agentId, tunnelUrl) {
+function listen(token, port, root, tunnelToken, preview, status, remover, lan, agentId, tunnelUrl, e2e) {
 	const hookSecret = ensureHookSecret(CONFIG_DIR);
 	writeHookLauncher(CONFIG_DIR, { script: fs.realpathSync(process.argv[1]) });
 	const server = createAgentServer({
@@ -112,6 +117,7 @@ function listen(token, port, root, tunnelToken, preview, status, remover, lan, a
 		uploadsDir: UPLOADS_DIR,
 		version: VERSION,
 		lan,
+		e2e,
 		agentId,
 		tunnelUrl,
 	});
@@ -327,9 +333,10 @@ function hostTunnel(tunnelId, port) {
  * `url`: the tunnel's address, or null for an agent that never had one and started offline.
  * `link`: `{ agentId, lan }` with a LAN listener; `lan` (what lets the app pin the agent and reach
  * it on this network straight from the QR) only while the tunnel isn't up.
+ * `publicKey`: the identity key of end-to-end encryption, when the agent has one.
  */
-function printPairing(url, token, access, vscodeUrl, link) {
-	const pair = pairingUrl({ url, token, agentId: link?.agentId, lan: link?.lan });
+function printPairing(url, token, access, vscodeUrl, link, publicKey) {
+	const pair = pairingUrl({ url, token, agentId: link?.agentId, lan: link?.lan, publicKey });
 	if (access) console.log(`  Access:  ${access}`);
 	// Labels line up whether or not the VS Code row is there.
 	const label = (name) => `${name}:`.padEnd(vscodeUrl ? 9 : 4);
@@ -523,6 +530,13 @@ async function start({ tunnel }) {
 		if (got.error) lan = { error: got.error };
 		else lanCert = got;
 	}
+	// Phones reaching the agent through the tunnel encrypt end to end with this key (see SECURITY.md).
+	let e2eKey = null;
+	if (tunnel) {
+		const got = loadIdentity(E2E_DIR);
+		if (got.error) console.error(`End-to-end encryption is off (${got.error.message}); the tunnel relay can read tunnel traffic.`);
+		else e2eKey = got;
+	}
 	const hadAgentId = cfg.agentIds?.[port];
 	const agentId = ensureAgentId(cfg, port);
 	if (agentId !== hadAgentId) saveConfig(cfg);
@@ -530,7 +544,7 @@ async function start({ tunnel }) {
 	let hostedUrl = null;
 	spinner.start('Starting agent');
 	try {
-		server = await listen(cfg.token, port, root, tunnelToken, preview, status, remover, lanCert, agentId, () => hostedUrl);
+		server = await listen(cfg.token, port, root, tunnelToken, preview, status, remover, lanCert, agentId, () => hostedUrl, e2eKey);
 	} catch (e) {
 		spinner.fail();
 		if (e.code !== 'EADDRINUSE') throw e;
@@ -671,7 +685,7 @@ async function start({ tunnel }) {
 				lan: offline ? { port: lan.port, addresses: qrAddresses(lanAddresses()), fingerprint: lanCert.fingerprint } : null,
 			}
 		: null;
-	return { url, access, lan, offline, lanLink, firewall };
+	return { url, access, lan, offline, lanLink, firewall, publicKey: e2eKey?.publicKey ?? null };
 }
 
 // The plugin's marketplace is this repository; --marketplace points at a checkout to try changes.
@@ -874,7 +888,7 @@ switch (cmd) {
 			spinner.fail();
 			throw e;
 		}
-		const { url, access, lan, offline, lanLink, firewall } = started;
+		const { url, access, lan, offline, lanLink, firewall, publicKey } = started;
 		const vscodeUrl = rest.includes('--web') && !offline ? await startVSCodeTunnel() : null;
 		console.log(`\n  Sharing: ${root}`);
 		if (offline) console.log('  Tunnel:  not connected (no internet); phones on this network can pair and connect. It connects on its own once the internet is back.');
@@ -892,7 +906,7 @@ switch (cmd) {
 		await new Promise((r) => setImmediate(r));
 		if (firewallLines) showFirewall(firewallLines);
 		else firewall?.then(showFirewall);
-		printPairing(url, cfg.token, access, vscodeUrl, lanLink);
+		printPairing(url, cfg.token, access, vscodeUrl, lanLink, publicKey);
 		const newer = await update;
 		if (newer) {
 			const c = (code, s) => (process.stdout.isTTY ? `\x1b[${code}m${s}\x1b[0m` : s);
