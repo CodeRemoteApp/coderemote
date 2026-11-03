@@ -165,57 +165,67 @@ test('a session serves sealed requests or one socket, not both', async () => {
 	assert.equal(server.sealed.sessions.claim(server.sealed.sessions.get(s.sid), 'ws'), false);
 });
 
-test('tickets open file reads and uploads only, until they expire', async () => {
+const mintTicket = async (s, body) =>
+	s.request('POST', Routes.e2eTicket.split(' ')[1], { headers: { ...bearer, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+test('a read ticket opens one file, in ranges, and nothing else', async () => {
 	const s = await handshake(base, identity.publicKey);
-	const minted = await s.request('POST', Routes.e2eTicket.split(' ')[1], {
-		headers: { ...bearer, 'content-type': 'application/json' },
-		body: JSON.stringify({ scope: 'read' }),
-	});
+	const note = path.join(tmp, 'note.txt');
+	const minted = await mintTicket(s, { scope: 'read', target: note });
 	assert.equal(minted.status, 200);
-	const { ticket } = minted.json();
-	const auth = { authorization: `Ticket ${ticket}` };
-	// A file, with a byte range, the way media playback asks.
-	const ranged = await fetch(base + path_(path.join(tmp, 'note.txt')), { headers: { ...auth, range: 'bytes=0-2' } });
-	assert.equal(ranged.status, 206);
-	assert.equal(await ranged.text(), 'top');
+	const auth = { authorization: `Ticket ${minted.json().ticket}` };
+	// The file, with a byte range, the way media playback asks, as often as it likes.
+	for (let i = 0; i < 3; i++) {
+		const ranged = await fetch(base + path_(note), { headers: { ...auth, range: 'bytes=0-2' } });
+		assert.equal(ranged.status, 206);
+		assert.equal(await ranged.text(), 'top');
+	}
+	// Not another file next to it: a relay that copies the ticket gets this transfer only.
+	await fs.writeFile(path.join(tmp, '.env'), 'SECRET=1');
+	assert.equal((await fetch(base + path_(path.join(tmp, '.env')), { headers: auth })).status, 401);
+	assert.equal((await fetch(base + path_(path.join(tmp, '.', 'note.txt')) + '&x=1', { headers: auth })).status, 200);
+	assert.equal((await fetch(base + '/api/fs/read', { headers: auth })).status, 401);
 	// Not the upload routes, not anything else.
 	assert.equal((await fetch(base + '/api/agents/uploads?id=x', { headers: auth })).status, 401);
 	assert.equal((await fetch(base + '/api/fs/list?path=' + encodeURIComponent(tmp), { headers: auth })).status, 401);
-	assert.equal((await fetch(base + '/api/fs/write?path=x', { method: 'PUT', headers: auth, body: 'x' })).status, 401);
+	assert.equal((await fetch(base + '/api/fs/write?path=' + encodeURIComponent(note), { method: 'PUT', headers: auth, body: 'x' })).status, 401);
 	assert.equal((await fetch(base + '/api/term', { headers: auth })).status, 401);
-	assert.equal((await fetch(base + '/api/fs/read?path=x', { headers: { authorization: 'Ticket forged' } })).status, 401);
-	// A ticket can't mint another, nor serve as the token for the handshake'd routes.
+	assert.equal((await fetch(base + path_(note), { headers: { authorization: 'Ticket forged' } })).status, 401);
+	// A ticket can't mint another.
 	assert.equal((await fetch(base + Routes.e2eTicket.split(' ')[1], { method: 'POST', headers: auth, body: '{"scope":"read"}' })).status, 401);
-	const bad = await s.request('POST', Routes.e2eTicket.split(' ')[1], {
-		headers: { ...bearer, 'content-type': 'application/json' },
-		body: JSON.stringify({ scope: 'all' }),
-	});
-	assert.equal(bad.status, 400);
 });
 
-test('an upload ticket opens the upload routes', async () => {
+test('a ticket must say what it is for', async () => {
 	const s = await handshake(base, identity.publicKey);
-	const { ticket } = (
-		await s.request('POST', Routes.e2eTicket.split(' ')[1], {
-			headers: { ...bearer, 'content-type': 'application/json' },
-			body: JSON.stringify({ scope: 'upload' }),
-		})
-	).json();
-	const auth = { authorization: `Ticket ${ticket}` };
-	// Past the ticket check: the route answers on its own terms, not 401.
-	const res = await fetch(base + '/api/agents/uploads?id=missing', { headers: auth });
-	assert.notEqual(res.status, 401);
-	assert.equal((await fetch(base + path_(path.join(tmp, 'note.txt')), { headers: auth })).status, 401);
+	assert.equal((await mintTicket(s, { scope: 'read' })).status, 400);
+	assert.equal((await mintTicket(s, { scope: 'attachment' })).status, 400);
+	assert.equal((await mintTicket(s, { scope: 'all' })).status, 400);
+});
+
+test('an upload ticket works once, and an attachment ticket reads one attachment', async () => {
+	const s = await handshake(base, identity.publicKey);
+	const { ticket } = (await mintTicket(s, { scope: 'upload' })).json();
+	const post = () =>
+		fetch(base + '/api/agents/uploads', {
+			method: 'POST',
+			headers: { authorization: `Ticket ${ticket}`, 'content-type': 'text/plain', 'x-filename': 'a.txt' },
+			body: 'hello',
+		});
+	const first = await post();
+	assert.equal(first.status, 200);
+	const { id } = await first.json();
+	assert.equal((await post()).status, 401, 'used up');
+	const read = (await mintTicket(s, { scope: 'attachment', target: id })).json().ticket;
+	const got = await fetch(base + `/api/agents/uploads?id=${encodeURIComponent(id)}`, { headers: { authorization: `Ticket ${read}` } });
+	assert.equal(got.status, 200);
+	assert.equal(await got.text(), 'hello');
+	assert.equal((await fetch(base + '/api/agents/uploads?id=other', { headers: { authorization: `Ticket ${read}` } })).status, 401);
+	assert.equal((await fetch(base + path_(path.join(tmp, 'note.txt')), { headers: { authorization: `Ticket ${read}` } })).status, 401);
 });
 
 test('ending the sealed sessions drops sessions and tickets', async () => {
 	const s = await handshake(base, identity.publicKey);
-	const { ticket } = (
-		await s.request('POST', Routes.e2eTicket.split(' ')[1], {
-			headers: { ...bearer, 'content-type': 'application/json' },
-			body: JSON.stringify({ scope: 'read' }),
-		})
-	).json();
+	const { ticket } = (await mintTicket(s, { scope: 'read', target: path.join(tmp, 'note.txt') })).json();
 	server.endSealedSessions();
 	const { wire } = s.sealRequest('GET', '/api/info', { headers: bearer });
 	assert.equal((await s.postWire(wire)).status, 401);

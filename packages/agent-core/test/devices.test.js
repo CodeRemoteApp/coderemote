@@ -144,29 +144,29 @@ test('a challenge works once, soon, on its channel, for its device', () => {
 	const nonce = b64u(s.sessions.deviceChallenge(s.device.id, 'SID'));
 	const signature = signDevice(s.phone.device, nonce, 'SID');
 	assert.ok(s.sessions.mint({ deviceId: s.device.id, nonce, signature, channel: 'SID' }));
-	assert.equal(s.sessions.mint({ deviceId: s.device.id, nonce, signature, channel: 'SID' }), null, 'reused');
+	assert.equal(s.sessions.mint({ deviceId: s.device.id, nonce, signature, channel: 'SID' }).error, 'challenge', 'reused');
 
 	const late = b64u(s.sessions.deviceChallenge(s.device.id, 'SID'));
 	s.advance(D.DEVICE_CHALLENGE_MS + 1);
-	assert.equal(s.sessions.mint({ deviceId: s.device.id, nonce: late, signature: signDevice(s.phone.device, late, 'SID'), channel: 'SID' }), null, 'expired');
+	assert.equal(s.sessions.mint({ deviceId: s.device.id, nonce: late, signature: signDevice(s.phone.device, late, 'SID'), channel: 'SID' }).error, 'challenge', 'expired');
 
 	const here = b64u(s.sessions.deviceChallenge(s.device.id, 'SID'));
-	assert.equal(s.sessions.mint({ deviceId: s.device.id, nonce: here, signature: signDevice(s.phone.device, here, 'OTHER'), channel: 'OTHER' }), null, 'another channel');
+	assert.equal(s.sessions.mint({ deviceId: s.device.id, nonce: here, signature: signDevice(s.phone.device, here, 'OTHER'), channel: 'OTHER' }).error, 'challenge', 'another channel');
 
 	const other = enroll(s.reg);
 	const mine = b64u(s.sessions.deviceChallenge(s.device.id, 'SID'));
-	assert.equal(s.sessions.mint({ deviceId: other.id, nonce: mine, signature: signDevice(s.phone.device, mine, 'SID'), channel: 'SID' }), null, 'another device');
+	assert.equal(s.sessions.mint({ deviceId: other.id, nonce: mine, signature: signDevice(s.phone.device, mine, 'SID'), channel: 'SID' }).error, 'challenge', 'another device');
 
 	const stranger = newPhone();
 	const forged = b64u(s.sessions.deviceChallenge(s.device.id, 'SID'));
-	assert.equal(s.sessions.mint({ deviceId: s.device.id, nonce: forged, signature: signDevice(stranger.device, forged, 'SID'), channel: 'SID' }), null, 'wrong key');
+	assert.equal(s.sessions.mint({ deviceId: s.device.id, nonce: forged, signature: signDevice(stranger.device, forged, 'SID'), channel: 'SID' }).error, 'unknown', 'wrong key');
 });
 
 test('an unknown device gets a challenge like any other and no session', () => {
 	const s = setup();
 	const nonce = b64u(s.sessions.deviceChallenge('f'.repeat(16), 'SID'));
 	assert.equal(nonce.length, 43);
-	assert.equal(s.sessions.mint({ deviceId: 'f'.repeat(16), nonce, signature: signDevice(s.phone.device, nonce, 'SID'), channel: 'SID' }), null);
+	assert.equal(s.sessions.mint({ deviceId: 'f'.repeat(16), nonce, signature: signDevice(s.phone.device, nonce, 'SID'), channel: 'SID' }).error, 'unknown');
 });
 
 test('sessions expire, are capped, and end with their device', () => {
@@ -190,7 +190,22 @@ test('a revoked device loses its sessions and cannot get another', () => {
 	s.reg.remove(s.device.id);
 	assert.equal(s.sessions.get(got.token), null);
 	const nonce = b64u(s.sessions.deviceChallenge(s.device.id, 'SID'));
-	assert.equal(s.sessions.mint({ deviceId: s.device.id, nonce, signature: signDevice(s.phone.device, nonce, 'SID'), channel: 'SID' }), null);
+	assert.equal(s.sessions.mint({ deviceId: s.device.id, nonce, signature: signDevice(s.phone.device, nonce, 'SID'), channel: 'SID' }).error, 'unknown');
+});
+
+test('flooding challenges never drops another device\'s, and caps each device', () => {
+	const s = setup();
+	const mine = b64u(s.sessions.deviceChallenge(s.device.id, 'SID'));
+	// A flood for made-up ids fills the table, then is refused; the phone's challenge stays.
+	let refused = 0;
+	for (let i = 0; i < D.MAX_CHALLENGES + 10; i++) if (!s.sessions.deviceChallenge(`x${i}`, 'SID')) refused++;
+	assert.ok(refused >= 10);
+	assert.ok(s.sessions.mint({ deviceId: s.device.id, nonce: mine, signature: signDevice(s.phone.device, mine, 'SID'), channel: 'SID' }).token);
+	// One id keeps at most a few: its own oldest goes first.
+	const t = setup();
+	const first = b64u(t.sessions.deviceChallenge(t.device.id, 'SID'));
+	for (let i = 0; i < D.MAX_CHALLENGES_PER_DEVICE; i++) t.sessions.deviceChallenge(t.device.id, 'SID');
+	assert.equal(t.sessions.mint({ deviceId: t.device.id, nonce: first, signature: signDevice(t.phone.device, first, 'SID'), channel: 'SID' }).error, 'challenge');
 });
 
 function presence(s, token, phone = s.phone) {

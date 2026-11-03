@@ -298,24 +298,30 @@ export class TicketTable {
 		this.tickets = new Map();
 	}
 
-	/** A ticket of `scope`; `owner` (a device id) lets `purge` end it with that device. */
-	mint(scope, owner = null) {
+	/**
+	 * A ticket of `scope` for one transfer: `target` is what it opens (a file's path, an upload's id;
+	 * null for a new upload), `uses` how often (null: until it expires). `owner` (a device id) lets
+	 * `purge` end it with that device.
+	 */
+	mint(scope, owner = null, { target = null, uses = null } = {}) {
 		this.sweep();
 		while (this.tickets.size >= this.max) this.tickets.delete(this.tickets.keys().next().value);
 		const ticket = b64u(randomBytes(32));
-		this.tickets.set(ticket, { scope, owner, expires: this.now() + this.ttlMs });
+		this.tickets.set(ticket, { scope, owner, target, uses, expires: this.now() + this.ttlMs });
 		return { ticket, expiresIn: Math.round(this.ttlMs / 1000) };
 	}
 
-	/** Whether `ticket` is live and of `scope`. */
-	check(ticket, scope) {
+	/** Whether `ticket` is live, of `scope` and for `target`; a use is spent when it is. */
+	check(ticket, scope, target = null) {
 		const t = this.tickets.get(ticket);
 		if (!t) return false;
 		if (t.expires < this.now()) {
 			this.tickets.delete(ticket);
 			return false;
 		}
-		return t.scope === scope;
+		if (t.scope !== scope || t.target !== target) return false;
+		if (t.uses !== null && --t.uses <= 0) this.tickets.delete(ticket);
+		return true;
 	}
 
 	/** Ends every ticket `owner` minted. */

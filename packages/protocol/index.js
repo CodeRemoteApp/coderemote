@@ -145,15 +145,13 @@ export const AgentsServerMessage = Object.freeze({
 export const AgentsClientMessage = Object.freeze({ presence: 'presence' });
 
 /**
- * Browser link: the agent's landing page turns the fragment into a pairing link. `agentId` and
- * `publicKey` (the end-to-end identity key, 32 bytes) go in when the agent has them, so a pairing
- * made from it is end-to-end encrypted and can enroll a device.
+ * Browser link: the agent's landing page turns the fragment into a pairing link. It never carries the
+ * end-to-end identity key: the page comes through the relay, which could rewrite the key it hands the
+ * app (and read the token). A phone paired from it is not end-to-end encrypted until it learns the
+ * key from the QR code or over the local network. See SECURITY.md, "The web link".
  */
-export function webUrl({ url, token, agentId = null, publicKey = null }) {
-	let fragment = `token=${encodeURIComponent(token)}`;
-	if (agentId) fragment += `&id=${encodeURIComponent(agentId)}`;
-	if (publicKey) fragment += `&pk=${Buffer.from(publicKey).toString('base64url')}`;
-	return `${url}/#${fragment}`;
+export function webUrl({ url, token }) {
+	return `${url}/#token=${encodeURIComponent(token)}`;
 }
 
 /**

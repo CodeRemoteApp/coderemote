@@ -28,11 +28,18 @@ const INNER_HEADER = 'x-coderemote-inner';
 const INNER_SID_HEADER = 'x-coderemote-sid';
 const DROPPED_REQUEST_HEADERS = new Set(['host', 'connection', 'content-length', 'transfer-encoding', SESSION_HEADER, INNER_HEADER, INNER_SID_HEADER]);
 
-/** Which route a ticket of each scope opens. */
-const TICKET_ROUTES = {
-	read: (method, pathname) => method === 'GET' && pathname === '/api/fs/read',
-	upload: (method, pathname) => pathname === '/api/agents/uploads' && (method === 'POST' || method === 'GET'),
-};
+/**
+ * What a ticket of each scope opens: one route, and on it one target (the query parameter that must
+ * equal the one the ticket was minted for). A relay that copies a ticket gets that one transfer.
+ */
+export const TICKET_SCOPES = Object.freeze({
+	// One file, read in byte ranges (media) or too big for a sealed answer.
+	read: { method: 'GET', pathname: '/api/fs/read', param: 'path' },
+	// One attachment sent earlier, read back.
+	attachment: { method: 'GET', pathname: '/api/agents/uploads', param: 'id' },
+	// One new attachment: the ticket works once.
+	upload: { method: 'POST', pathname: '/api/agents/uploads', param: null, uses: 1 },
+});
 
 function reply(res, status, body) {
 	const json = JSON.stringify(body);
@@ -200,10 +207,13 @@ export function createSealedGateway({ identity, port, options = {} }) {
 	}
 
 	/** Whether `Authorization: Ticket <t>` opens this request: a live ticket on a route of its scope. */
-	function ticketOk(req, pathname) {
+	function ticketOk(req, url) {
 		const m = /^Ticket (\S+)$/.exec(req.headers.authorization || '');
 		if (!m) return false;
-		return Object.entries(TICKET_ROUTES).some(([scope, allows]) => allows(req.method, pathname) && tickets.check(m[1], scope));
+		const entry = Object.entries(TICKET_SCOPES).find(([, s]) => s.method === req.method && s.pathname === url.pathname);
+		if (!entry) return false;
+		const [scope, s] = entry;
+		return tickets.check(m[1], scope, s.param ? url.searchParams.get(s.param) : null);
 	}
 
 	/** The sealed session `req` came through (this gateway re-entered it), or null. */

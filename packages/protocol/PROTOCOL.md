@@ -275,17 +275,19 @@ terminal `id`, 4408 for no `open`, 4500 for anything else.
 
 Three kinds of transfer stay outside the envelope: byte-range reads of media, uploads, and
 downloads too large for one sealed message. Sending the bearer token with them would hand it to
-the relay, so they use a ticket instead. `POST /api/e2e/ticket` (inside the envelope, with the
-token) with `{ "scope": "read" | "upload" }` answers `{ "ticket", "expiresIn" }` (seconds, 300).
-The client sends `Authorization: Ticket <ticket>` on:
+the relay, so they use a ticket instead, good for **one** transfer. `POST /api/e2e/ticket` (inside
+the envelope, with the token) with `{ "scope", "target" }` answers `{ "ticket", "expiresIn" }`
+(seconds, 300). The client sends `Authorization: Ticket <ticket>` on:
 
-| Scope | Routes |
-| --- | --- |
-| `read` | `GET /api/fs/read` |
-| `upload` | `POST /api/agents/uploads`, `GET /api/agents/uploads` |
+| Scope | Route | `target` | Uses |
+| --- | --- | --- | --- |
+| `read` | `GET /api/fs/read` | the `path` query parameter, exactly | until it expires (media reads in ranges) |
+| `attachment` | `GET /api/agents/uploads` | the `id` query parameter, exactly | until it expires |
+| `upload` | `POST /api/agents/uploads` | none | once |
 
-Anywhere else, and after it expires, a ticket answers 401. The relay can read what travels with a
-ticket and replay the ticket until it expires; it can't use it for anything else.
+A ticket for another route, another `path` or `id`, a used-up one or an expired one answers 401. The
+relay can read what travels with a ticket and repeat that one transfer until the ticket expires; it
+can't read another file with it.
 
 ### What stays outside
 
@@ -322,8 +324,12 @@ base64url, good once for 30 seconds; it is the same for an unknown id). The devi
 session id (`X-E2E-Session`), or the text `lan` over the LAN listener, and sends
 `POST /api/device/session` with `{ "deviceId", "nonce", "signature" }`. The signature is ECDSA with
 SHA-256, 64 bytes (`r || s`) in base64url. The answer is `{ "token", "expiresIn" }`: a random
-session token valid for an hour, sent as `Authorization: Bearer` from then on. Anything wrong is a
-plain 401 that says not which part. Sessions live in the agent's memory; after a restart the
+session token valid for an hour, sent as `Authorization: Bearer` from then on. A 401 says which side
+failed: `code: "device_challenge"` for a challenge that was used, expired or made for another
+channel (ask for another one), `code: "device_unknown"` for a device the agent doesn't have, or a
+signature that doesn't match its key (the two are not told apart). Only the latter means this phone
+was revoked. A device keeps at most 4 outstanding challenges, nobody else's are dropped for it, and
+when too many are outstanding the challenge answers 429 `device_busy`. Sessions live in the agent's memory; after a restart the
 device signs in again, which needs no user action. A 401 with `code: "device_session"` means
 exactly that.
 

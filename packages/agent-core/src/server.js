@@ -32,7 +32,7 @@ import * as Git from './git.js';
 import { DeviceSessions } from './devices.js';
 import { b64u } from './e2e.js';
 import { requiresGrant, routeClass, terminalNeedsGrant } from './presence.js';
-import { createSealedGateway } from './e2e-http.js';
+import { createSealedGateway, TICKET_SCOPES } from './e2e-http.js';
 import { acceptSealedSocket, SealedClose } from './e2e-socket.js';
 import { draftCommitMessage } from './commit-message.js';
 import { TunnelHandoff } from './handoff.js';
@@ -663,9 +663,11 @@ export function createAgentServer({
 
 		[Routes.e2eTicket]: async (url, req) => {
 			if (!sealed) throw new HttpError(404, 'not found');
-			const { scope } = await readJson(req);
-			if (scope !== 'read' && scope !== 'upload') throw new HttpError(400, 'scope must be read or upload');
-			return sealed.tickets.mint(scope, req.caller?.deviceId ?? null);
+			const { scope, target } = await readJson(req);
+			const s = TICKET_SCOPES[scope];
+			if (!s) throw new HttpError(400, `scope must be ${Object.keys(TICKET_SCOPES).join(', ')}`);
+			if (s.param && (typeof target !== 'string' || !target)) throw new HttpError(400, `a ${scope} ticket needs the ${s.param} it is for`);
+			return sealed.tickets.mint(scope, req.caller?.deviceId ?? null, { target: s.param ? target : null, uses: s.uses ?? null });
 		},
 
 		[Routes.deviceEnroll]: async (url, req) => {
@@ -697,7 +699,9 @@ export function createAgentServer({
 			if (!deviceSessions) throw new HttpError(404, 'not found');
 			const channel = needSecureChannel(req);
 			const { deviceId } = await readJson(req);
-			return { nonce: b64u(deviceSessions.deviceChallenge(deviceId, channel)) };
+			const nonce = deviceSessions.deviceChallenge(deviceId, channel);
+			if (!nonce) throw Object.assign(new HttpError(429, 'too many sign-ins at once; try again shortly'), { code: 'device_busy' });
+			return { nonce: b64u(nonce) };
 		},
 
 		[Routes.deviceSession]: async (url, req) => {
@@ -705,7 +709,8 @@ export function createAgentServer({
 			const channel = needSecureChannel(req);
 			const { deviceId, nonce, signature } = await readJson(req);
 			const minted = deviceSessions.mint({ deviceId, nonce, signature, channel });
-			if (!minted) throw new HttpError(401, 'unauthorized');
+			// `device_challenge`: ask for another one. `device_unknown`: this device is not enrolled here.
+			if (minted.error) throw Object.assign(new HttpError(401, 'unauthorized'), { code: `device_${minted.error}` });
 			return { token: minted.token, expiresIn: minted.expiresIn };
 		},
 
@@ -1302,7 +1307,7 @@ export function createAgentServer({
 		// Challenges and sessions prove themselves with a signature, not with a credential.
 		if (routeKey !== Routes.deviceChallenge && routeKey !== Routes.deviceSession) {
 			const caller = callerOf(req);
-			if (!caller && !sealed?.ticketOk(req, url.pathname)) {
+			if (!caller && !sealed?.ticketOk(req, url)) {
 				const sessionGone = devices?.strict && /^Bearer /.test(req.headers.authorization || '');
 				return sendJson(res, 401, { error: 'unauthorized', ...(sessionGone ? { code: 'device_session' } : {}) });
 			}

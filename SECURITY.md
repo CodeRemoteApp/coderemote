@@ -60,6 +60,15 @@ involved (see [Local network](packages/protocol/PROTOCOL.md#local-network); `--n
 off). To avoid Microsoft's relay entirely, `coderemote serve` runs the agent on `127.0.0.1`
 without a tunnel; put it behind something you trust, such as SSH or WireGuard/Tailscale.
 
+## The web link
+
+Besides the QR code, `coderemote up` prints a web link that opens a page turning it into a pairing
+link. That page comes **through the relay**, so whoever controls the relay can read the pairing token
+from it, and could hand the app a key of its own. The page therefore never passes on the agent's
+end-to-end key: a phone paired from it talks plaintext through the tunnel until it learns the key
+from the QR code or over the local network, and the relay should be assumed to know that token.
+Prefer the QR code; if you used the web link, `coderemote rotate-token` afterwards.
+
 ## Devices and Face ID
 
 The pairing token in the QR code is a shared secret, so by itself it can't tell phones apart or

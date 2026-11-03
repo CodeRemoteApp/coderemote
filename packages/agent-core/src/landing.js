@@ -45,9 +45,8 @@ export const LANDING_HTML = `<!doctype html>
     document.getElementById('ready').classList.toggle('hidden', !token);
     document.getElementById('missing').classList.toggle('hidden', !!token);
     if (!token) return;
-    let link = '${PAIRING_SCHEME}://pair?url=' + encodeURIComponent(location.origin) + '&token=' + encodeURIComponent(token);
-    // The agent's identity and end-to-end key come along when the link has them.
-    for (const name of ['id', 'pk']) if (params.get(name)) link += '&' + name + '=' + encodeURIComponent(params.get(name));
+    // Never an end-to-end key: this page comes through the relay, so the app must not trust one it hands out.
+    const link = '${PAIRING_SCHEME}://pair?url=' + encodeURIComponent(location.origin) + '&token=' + encodeURIComponent(token);
     document.getElementById('open').href = link;
     document.getElementById('copy').textContent = 'Copy pairing link';
     document.getElementById('copy').onclick = async (e) => {

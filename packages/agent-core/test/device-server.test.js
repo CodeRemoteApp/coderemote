@@ -235,7 +235,8 @@ test('12. over the LAN a device enrolls and mints a session inside pinned TLS', 
 test('13. only the computer revokes: a revoked phone loses its session, sockets and tickets', async () => {
 	// A device may not revoke.
 	assert.equal((await second.request('DELETE', route(Routes.deviceRevoke) + `?id=${first.deviceId}`)).status, 403);
-	const ticket = (await second.request('POST', route(Routes.e2eTicket), { scope: 'read' })).json().ticket;
+	const notePath = path.join(tmp, 'note.txt');
+	const ticket = (await second.request('POST', route(Routes.e2eTicket), { scope: 'read', target: notePath })).json().ticket;
 	const readTicket = () => plain('GET', route(Routes.fsRead) + '?path=' + encodeURIComponent(path.join(tmp, 'note.txt')), { headers: { authorization: `Ticket ${ticket}` } });
 	assert.equal((await readTicket()).status, 200);
 	registry.setPresence({ level: 'none' });

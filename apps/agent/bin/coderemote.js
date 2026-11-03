@@ -355,7 +355,7 @@ function printPairing(url, token, access, vscodeUrl, link, publicKey) {
 	console.log('');
 	if (vscodeUrl) console.log(`  ${label('VS Code')}  ${vscodeUrl}`);
 	// A browser can't pin the LAN certificate: the web link needs the tunnel.
-	if (url) console.log(`  ${label('Web')}  ${webUrl({ url, token, agentId: link?.agentId, publicKey })}`);
+	if (url) console.log(`  ${label('Web')}  ${webUrl({ url, token })}  (through the relay: prefer the QR code)`);
 	console.log(`  ${label('App')}  ${pair}\n`);
 	if (!url) console.log('  No tunnel yet: pair the Code Remote app on this Wi-Fi (an app too old for that calls this link invalid).\n');
 	if (vscodeUrl) console.log('  VS Code opens in the browser after signing in with the account of `code tunnel`.');
@@ -665,7 +665,7 @@ async function start({ tunnel }) {
 			later.done.then((connected) => {
 				registry.register({ port, root, url: connected });
 				console.log(`\n  Tunnel connected: ${connected}`);
-				console.log(`  Web:  ${webUrl({ url: connected, token: cfg.token, agentId, publicKey: e2eKey?.publicKey })}`);
+				console.log(`  Web:  ${webUrl({ url: connected, token: cfg.token })}  (through the relay: prefer the QR code)`);
 				console.log('  Phones paired on this network pick it up on their own; sign in on them to use it away from here.\n');
 			});
 		}

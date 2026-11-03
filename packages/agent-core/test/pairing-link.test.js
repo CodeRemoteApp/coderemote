@@ -100,25 +100,13 @@ function landingLink(hash) {
 	return element('open').href;
 }
 
-test('the web link carries the token, and the agent id and identity key when it has them', () => {
-	const key = Buffer.alloc(32, 9);
-	const pk = key.toString('base64url');
-	const full = webUrl({ url: 'https://x-31580.asse.devtunnels.ms', token: 't+/=', agentId, publicKey: key });
-	assert.equal(full, `https://x-31580.asse.devtunnels.ms/#token=${encodeURIComponent('t+/=')}&id=${agentId}&pk=${pk}`);
-	// A link from an older agent reads as before.
-	assert.equal(webUrl({ url: 'https://x', token: 't' }), 'https://x/#token=t');
+test('the web link carries the token and never the identity key', () => {
+	assert.equal(webUrl({ url: 'https://x-31580.asse.devtunnels.ms', token: 't+/=' }), `https://x-31580.asse.devtunnels.ms/#token=${encodeURIComponent('t+/=')}`);
+	assert.equal(webUrl({ url: 'https://x', token: 't', publicKey: Buffer.alloc(32, 9) }), 'https://x/#token=t');
 });
 
-test('the landing page puts the identity in the pairing link it offers', () => {
-	const key = Buffer.alloc(32, 9);
-	const fragment = new URL(webUrl({ url: 'https://x-31580.asse.devtunnels.ms', token: 'tok', agentId, publicKey: key })).hash;
-	const link = parse(landingLink(fragment));
-	assert.deepEqual(link, {
-		url: 'https://x-31580.asse.devtunnels.ms',
-		token: 'tok',
-		id: agentId,
-		pk: key.toString('base64url'),
-	});
-	// Without them, the link is the old one.
-	assert.deepEqual(parse(landingLink('#token=tok')), { url: 'https://x-31580.asse.devtunnels.ms', token: 'tok' });
+test('the landing page never hands the app an end-to-end key, whatever the fragment says', () => {
+	// The page comes through the relay: a key in it is not one the app may pin.
+	const link = parse(landingLink('#token=tok&id=' + agentId + '&pk=' + Buffer.alloc(32, 9).toString('base64url')));
+	assert.deepEqual(link, { url: 'https://x-31580.asse.devtunnels.ms', token: 'tok' });
 });

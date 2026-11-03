@@ -21,6 +21,9 @@ export const SESSION_TTL_MS = 60 * 60 * 1000;
 export const MAX_SESSIONS = 256;
 export const DEVICE_CHALLENGE_MS = 30_000;
 export const PRESENCE_CHALLENGE_MS = 60_000;
+/** Outstanding challenges: in all, and per device id. */
+export const MAX_CHALLENGES = 4096;
+export const MAX_CHALLENGES_PER_DEVICE = 4;
 export const PRESENCE_LEVELS = Object.freeze(['none', 'terminal', 'terminal+writes']);
 /** The grant windows a user may pick, by the name the CLI takes, in seconds. */
 export const PRESENCE_WINDOWS = Object.freeze({ '5m': 300, '30m': 1800, '1h': 3600 });
@@ -242,28 +245,40 @@ export class DeviceSessions {
 	}
 
 	/** A challenge for `deviceId` on `channel`; made the same for an unknown device, so it can't be probed. */
+	/**
+	 * A challenge for `deviceId` on `channel`, made the same for an unknown device so it can't be
+	 * probed; null when too many are outstanding. A device keeps at most a few: its oldest goes first,
+	 * and nobody else's are ever dropped to make room, so flooding can't make a phone's sign-in fail.
+	 */
 	deviceChallenge(deviceId, channel) {
 		this.sweep();
-		while (this.challenges.size >= 1024) this.challenges.delete(this.challenges.keys().next().value);
+		const id = String(deviceId);
+		const mine = [...this.challenges].filter(([, c]) => c.kind === 'device' && c.deviceId === id);
+		while (mine.length >= MAX_CHALLENGES_PER_DEVICE) this.challenges.delete(mine.shift()[0]);
+		if (this.challenges.size >= MAX_CHALLENGES) return null;
 		const nonce = randomBytes(32);
-		this.challenges.set(b64u(nonce), { kind: 'device', deviceId: String(deviceId), channel, expires: this.now() + DEVICE_CHALLENGE_MS });
+		this.challenges.set(b64u(nonce), { kind: 'device', deviceId: id, channel, expires: this.now() + DEVICE_CHALLENGE_MS });
 		return nonce;
 	}
 
 	/**
-	 * Redeems a device challenge: `{ token, expiresIn, device }`, or null for anything wrong (a nonce
-	 * used before, expired, made for another channel or device, an unknown or revoked device, a bad
-	 * signature), without saying which.
+	 * Redeems a device challenge: `{ token, expiresIn, device }`, or `{ error: 'challenge' }` for a
+	 * nonce used before, expired or made for another channel or device, or `{ error: 'unknown' }` for
+	 * an unknown or revoked device or a bad signature (those are not told apart).
 	 */
 	mint({ deviceId, nonce, signature, channel }) {
 		const key = typeof nonce === 'string' ? nonce : '';
 		const c = this.challenges.get(key);
 		this.challenges.delete(key);
-		if (!c || c.kind !== 'device' || c.expires < this.now() || c.deviceId !== deviceId || c.channel !== channel) return null;
+		// The challenge itself: used, expired, or not this one. The device may simply ask again.
+		if (!c || c.kind !== 'device' || c.expires < this.now() || c.deviceId !== deviceId || c.channel !== channel) {
+			return { error: 'challenge' };
+		}
+		// The device: unknown, revoked, or not holding its key. Not told apart, so ids can't be probed.
 		const device = this.registry.get(deviceId);
 		const raw = fromB64u(nonce, 32);
-		if (!device || !raw) return null;
-		if (!verifySignature(importPoint(device.deviceKey), deviceMessage(raw, channel), signature)) return null;
+		if (!device || !raw) return { error: 'unknown' };
+		if (!verifySignature(importPoint(device.deviceKey), deviceMessage(raw, channel), signature)) return { error: 'unknown' };
 		while (this.sessions.size >= this.max) this.sessions.delete(this.sessions.keys().next().value);
 		const token = b64u(randomBytes(32));
 		this.sessions.set(token, { deviceId, expires: this.now() + this.ttlMs });
