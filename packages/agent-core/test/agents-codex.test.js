@@ -226,3 +226,15 @@ test('the rollout reports how turns end', async () => {
 	tail.stop();
 	assert.deepEqual(ends, ['Model not supported', null]);
 });
+
+test('the model a Codex placeholder started with stays with the session Codex reports', async () => {
+	const h = hub();
+	const placeholder = h.launched({ id: 'ph-m', terminal: 't-m', cwd: '/Users/me/project', agent: 'codex', model: 'gpt-test' });
+	assert.equal(placeholder.model, 'gpt-test');
+	const { model, ...unnamed } = ev.start;
+	await h.handle(unnamed, { agent: 'codex', terminal: 't-m' });
+	assert.equal(h.session(common.session_id).model, 'gpt-test');
+	// Once Codex names the model answering, that one shows.
+	await h.handle(ev.prompt, { agent: 'codex', terminal: 't-m' });
+	assert.equal(h.session(common.session_id).model, model);
+});

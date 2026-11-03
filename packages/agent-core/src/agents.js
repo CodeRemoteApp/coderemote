@@ -327,13 +327,15 @@ export class AgentHub extends EventEmitter {
 	 * or the one it resumes). It shows right away; if Claude Code reports nothing within the
 	 * start timeout, it ends with an error.
 	 */
-	launched({ id, terminal, cwd, agent = 'claude' }) {
+	launched({ id, terminal, cwd, agent = 'claude', model = null }) {
 		const now = this.#now();
 		let s = this.#sessions.get(id);
 		if (!s) {
 			s = new AgentSession({ id, agent, cwd, terminal, now });
 			this.#sessions.set(id, s);
 		}
+		// The model it was started with, until the agent names the one answering.
+		if (model) s.model = model;
 		const adapter = ADAPTERS[agent] ?? ADAPTERS.claude;
 		// One that reports only on its first prompt waits for it, ready to be typed into.
 		const state = adapter.startsOnPrompt ? 'idle' : 'running';
@@ -510,6 +512,7 @@ export class AgentHub extends EventEmitter {
 		if (replaced) {
 			// Prompts typed into the placeholder are confirmed under the real session.
 			s.prompts.push(...replaced.prompts);
+			s.model ??= replaced.model;
 			this.emit('message', { type: 'session_removed', session: replaced.id, replacedBy: s.id });
 		}
 		if (terminal && !s.terminal) s.terminal = terminal;

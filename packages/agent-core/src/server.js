@@ -504,6 +504,21 @@ export function createAgentServer({
 		}
 	}
 
+	/**
+	 * The model a new Codex session starts with: the one Codex's config.toml sets, else the first
+	 * its picker lists. Named at launch, so clients show it before Codex reports anything.
+	 */
+	async function codexDefaultModel() {
+		try {
+			const config = await fs.readFile(path.join(codexHome, 'config.toml'), 'utf8');
+			// Top-level keys only: a `model` under a [table] belongs to something else.
+			const top = config.split(/^\s*\[/m)[0];
+			const found = top.match(/^\s*model\s*=\s*["']([A-Za-z0-9._[\]-]{1,80})["']/m)?.[1];
+			if (found) return found;
+		} catch {}
+		return (await codexModels())[0]?.id ?? null;
+	}
+
 	// Install links go out through the preview tunnel, so agents without one can't make them.
 	const installs = preview ? new InstallLinks({ preview }) : null;
 
@@ -1141,6 +1156,8 @@ export function createAgentServer({
 			if (!(await hasPlugin(agent))) {
 				throw Object.assign(new HttpError(400, launcher.missingPlugin), { code: 'ENOPLUGIN' });
 			}
+			// A new Codex session gets its model named, so it shows from the start (resumed ones keep theirs).
+			const startModel = model ?? (agent === 'codex' && !resume ? await codexDefaultModel() : null);
 			const id = resume ?? randomUUID();
 			if (uploadsDir) await fs.mkdir(uploadsDir, { recursive: true, mode: 0o700 });
 			const argv = [
@@ -1148,7 +1165,7 @@ export function createAgentServer({
 				...launcher.args({
 					id,
 					resume,
-					model,
+					model: startModel,
 					permissionMode: agent === 'claude' ? permissionMode : undefined,
 					approvalPolicy: agent === 'codex' ? (approvalPolicy ?? 'on-request') : undefined,
 				}),
@@ -1160,7 +1177,7 @@ export function createAgentServer({
 				env: { ...terminalEnv(), ...launcher.env },
 				command: argv,
 			});
-			return { terminal: term.id, session: agents.launched({ id, terminal: term.id, cwd: dir, agent }) };
+			return { terminal: term.id, session: agents.launched({ id, terminal: term.id, cwd: dir, agent, model: startModel }) };
 		},
 
 		[Routes.agentsPrompt]: async (url, req) => {
