@@ -298,11 +298,12 @@ export class TicketTable {
 		this.tickets = new Map();
 	}
 
-	mint(scope) {
+	/** A ticket of `scope`; `owner` (a device id) lets `purge` end it with that device. */
+	mint(scope, owner = null) {
 		this.sweep();
 		while (this.tickets.size >= this.max) this.tickets.delete(this.tickets.keys().next().value);
 		const ticket = b64u(randomBytes(32));
-		this.tickets.set(ticket, { scope, expires: this.now() + this.ttlMs });
+		this.tickets.set(ticket, { scope, owner, expires: this.now() + this.ttlMs });
 		return { ticket, expiresIn: Math.round(this.ttlMs / 1000) };
 	}
 
@@ -315,6 +316,11 @@ export class TicketTable {
 			return false;
 		}
 		return t.scope === scope;
+	}
+
+	/** Ends every ticket `owner` minted. */
+	purge(owner) {
+		for (const [k, v] of this.tickets) if (v.owner === owner) this.tickets.delete(k);
 	}
 
 	clear() {

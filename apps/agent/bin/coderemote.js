@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import qrcode from 'qrcode-terminal';
-import { createAgentServer, execCommand, isWindows, lanAddresses, lanCertificate, loadIdentity, qrAddresses, spawnCommand } from '@vsremote/agent-core';
+import { createAgentServer, execCommand, isWindows, lanAddresses, DeviceRegistry, PRESENCE_WINDOWS, lanCertificate, loadIdentity, loadLocalSecret, qrAddresses, spawnCommand } from '@vsremote/agent-core';
 import { ensureDevtunnel } from '../src/devtunnel.js';
 import { ensureHookSecret, readHookSecret, runHook, writeHookLauncher } from '../src/hook.js';
 import { PreviewTunnel } from '../src/preview.js';
@@ -42,6 +42,11 @@ const LAN_DIR = path.join(CONFIG_DIR, 'lan');
 // The identity key of end-to-end encryption, which paired phones pin (`pk` in the pairing link);
 // `rotate-token` replaces it.
 const E2E_DIR = path.join(CONFIG_DIR, 'e2e');
+// The phones enrolled with each agent (one file per agent port) and their presence policy;
+// `rotate-token` deletes them all.
+const DEVICES_DIR = path.join(CONFIG_DIR, 'devices');
+// What this CLI sends to a running agent on loopback instead of the pairing token.
+const LOCAL_SECRET_FILE = path.join(CONFIG_DIR, 'local-secret');
 // A folder's LAN listener starts looking for a port this far above its agent's.
 const LAN_PORT_OFFSET = 1000;
 const DEFAULT_PORT = 31580;
@@ -63,6 +68,9 @@ function loadConfig() {
 		fs.rmSync(PUSH_DIR, { recursive: true, force: true });
 		fs.rmSync(UPLOADS_DIR, { recursive: true, force: true });
 		fs.rmSync(LAN_DIR, { recursive: true, force: true });
+		// Every enrolled phone goes, and the local secret is replaced.
+		fs.rmSync(DEVICES_DIR, { recursive: true, force: true });
+		fs.rmSync(LOCAL_SECRET_FILE, { force: true });
 		// The same for the end-to-end identity key: devices pinned the old one.
 		fs.rmSync(E2E_DIR, { recursive: true, force: true });
 	}
@@ -118,6 +126,10 @@ function listen(token, port, root, tunnelToken, preview, status, remover, lan, a
 		version: VERSION,
 		lan,
 		e2e,
+		// Device keys only matter where the tunnel (end-to-end encryption) is.
+		devices: e2e ? new DeviceRegistry(path.join(DEVICES_DIR, `${port}.json`)) : null,
+		localSecret: loadLocalSecret(LOCAL_SECRET_FILE).secret ?? null,
+		onDeviceEnrolled: (d) => console.log(`\n  Device enrolled: ${d.name} (${d.id}). Revoke it with \`coderemote devices revoke ${d.id}\`.`),
 		agentId,
 		tunnelUrl,
 	});
@@ -343,7 +355,7 @@ function printPairing(url, token, access, vscodeUrl, link, publicKey) {
 	console.log('');
 	if (vscodeUrl) console.log(`  ${label('VS Code')}  ${vscodeUrl}`);
 	// A browser can't pin the LAN certificate: the web link needs the tunnel.
-	if (url) console.log(`  ${label('Web')}  ${webUrl({ url, token })}`);
+	if (url) console.log(`  ${label('Web')}  ${webUrl({ url, token, agentId: link?.agentId, publicKey })}`);
 	console.log(`  ${label('App')}  ${pair}\n`);
 	if (!url) console.log('  No tunnel yet: pair the Code Remote app on this Wi-Fi (an app too old for that calls this link invalid).\n');
 	if (vscodeUrl) console.log('  VS Code opens in the browser after signing in with the account of `code tunnel`.');
@@ -404,6 +416,11 @@ const USAGE = `Usage: coderemote <command> [options]
   status               list running agents and their terminal sessions
   kill <id>... | --all kill terminal sessions (an id prefix is enough)
   stop [--all]         stop the agent for this folder (or every agent)
+  devices              list the phones enrolled with this folder's agent and its Face ID policy
+  devices revoke <id>  stop one phone from connecting (its sessions end at once)
+  devices policy <level> [--window 5m|30m|1h]
+                       Face ID level: none, terminal (default) or terminal+writes, and how long
+                       one Face ID check lasts
   rotate-token         revoke every paired device and stop running agents
   tunnels              list your dev tunnels account's tunnels (it may keep 10)
   tunnels delete <id>...  delete tunnels nothing uses; one that is online or is this
@@ -648,7 +665,7 @@ async function start({ tunnel }) {
 			later.done.then((connected) => {
 				registry.register({ port, root, url: connected });
 				console.log(`\n  Tunnel connected: ${connected}`);
-				console.log(`  Web:  ${webUrl({ url: connected, token: cfg.token })}`);
+				console.log(`  Web:  ${webUrl({ url: connected, token: cfg.token, agentId, publicKey: e2eKey?.publicKey })}`);
 				console.log('  Phones paired on this network pick it up on their own; sign in on them to use it away from here.\n');
 			});
 		}
@@ -793,10 +810,20 @@ async function setupCodex() {
 }
 
 /** Calls a running agent's local API. */
-async function agentApi(agent, method, route, query = {}) {
+async function agentApi(agent, method, route, query = {}, payload = undefined) {
 	const url = new URL(route, `http://127.0.0.1:${agent.port}`);
 	for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
-	const res = await fetch(url, { method, headers: { authorization: `Bearer ${cfg.token}` } });
+	const call = (authorization) =>
+		fetch(url, {
+			method,
+			headers: { authorization, ...(payload === undefined ? {} : { 'content-type': 'application/json' }) },
+			body: payload === undefined ? undefined : JSON.stringify(payload),
+		});
+	// The local secret is how this CLI is let in once phones are enrolled; an agent from before
+	// device keys doesn't know it and still takes the pairing token.
+	const local = loadLocalSecret(LOCAL_SECRET_FILE).secret;
+	let res = local ? await call(`Local ${local}`) : null;
+	if (!res || res.status === 401) res = await call(`Bearer ${cfg.token}`);
 	const body = await res.json();
 	if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
 	return body;
@@ -967,6 +994,67 @@ switch (cmd) {
 		for (const agent of targets) {
 			stopAgent(agent.pid);
 			console.log(`stopped agent for ${agent.root} (pid ${agent.pid})`);
+		}
+		break;
+	}
+	case 'devices': {
+		const agent = currentAgent();
+		if (!agent) {
+			console.error('No running agent for this folder. Start one with `coderemote up`, or pass --port.');
+			process.exit(1);
+		}
+		const args = rest.filter((a, i) => !a.startsWith('--') && rest[i - 1] !== '--window' && rest[i - 1] !== '--port');
+		const sub = args[0];
+		const windowName = (seconds) => Object.entries(PRESENCE_WINDOWS).find(([, s]) => s === seconds)?.[0];
+		try {
+			if (sub === 'revoke') {
+				const { devices } = await agentApi(agent, 'GET', '/api/devices');
+				const matches = devices.filter((d) => args[1] && d.id.startsWith(args[1]));
+				if (matches.length !== 1) {
+					console.error(args[1] ? `${matches.length ? 'More than one' : 'No'} device matches ${args[1]}.` : 'Usage: coderemote devices revoke <id>');
+					process.exit(1);
+				}
+				await agentApi(agent, 'DELETE', '/api/devices', { id: matches[0].id });
+				console.log(`Revoked ${matches[0].name} (${matches[0].id}).`);
+			} else if (sub === 'policy') {
+				const level = args[1];
+				const windowFlag = flag('--window');
+				const change = {};
+				if (level) change.level = level;
+				if (windowFlag) {
+					if (!PRESENCE_WINDOWS[windowFlag]) {
+						console.error('--window is 5m, 30m or 1h.');
+						process.exit(1);
+					}
+					change.window = PRESENCE_WINDOWS[windowFlag];
+				}
+				if (!level && !windowFlag) {
+					console.error('Usage: coderemote devices policy <none|terminal|terminal+writes> [--window 5m|30m|1h]');
+					process.exit(1);
+				}
+				const now = await agentApi(agent, 'PUT', '/api/device/policy', {}, change);
+				console.log(`Face ID: ${now.level}, one check lasts ${windowName(now.window)}.`);
+			} else if (sub === undefined) {
+				const { devices } = await agentApi(agent, 'GET', '/api/devices');
+				const info = await agentApi(agent, 'GET', '/api/info');
+				if (!info.devices) {
+					console.log('This agent has no device keys (it was started without a tunnel).');
+					break;
+				}
+				console.log(`Sharing ${agent.root}`);
+				console.log(`Face ID: ${info.devices.presence}, one check lasts ${windowName(info.devices.presenceWindow)}${info.devices.strict ? '' : ' (applies once a phone is enrolled)'}`);
+				if (!devices.length) console.log('No phones enrolled yet: the app enrolls one when it pairs.');
+				for (const d of devices) {
+					const seen = d.lastSeen ? new Date(d.lastSeen).toLocaleString() : 'never';
+					console.log(`  ${d.id}  ${d.name}${d.presence ? '' : '  (no Face ID key)'}  enrolled ${new Date(d.enrolledAt).toLocaleDateString()}, last seen ${seen}`);
+				}
+			} else {
+				console.error('Usage: coderemote devices [revoke <id> | policy <level> [--window 5m|30m|1h]]');
+				process.exit(1);
+			}
+		} catch (e) {
+			console.error(`coderemote devices: ${e.message}`);
+			process.exit(1);
 		}
 		break;
 	}

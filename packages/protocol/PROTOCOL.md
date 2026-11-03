@@ -294,6 +294,77 @@ install links, and hook delivery. Message sizes, timing and the existence of a s
 to the relay. A client that holds a `pk` never sends a request or opens a socket to that agent
 through the tunnel in plaintext, and never puts the token anywhere outside a sealed message.
 
+## Devices
+
+Without them the pairing token is the one credential: whoever has it is the phone. A phone that
+enrolls becomes a *device* the agent knows by two P-256 keys made in its Secure Enclave, and from
+then on the token is good for enrolling more devices and nothing else. Support is advertised in
+`GET /api/info` as `devices: { version: 1, strict, presence, presenceWindow }` (`null` without
+it, which an agent started with `serve`, with no tunnel, is). Test vectors for the signatures are
+in [`device-vectors.json`](device-vectors.json). Enrolling, signing in and presence need a
+secure channel: a [sealed request](#sealed-requests), or the LAN listener. Elsewhere they answer 403.
+
+### Enrolling
+
+`POST /api/devices` with `Authorization: Bearer <pairing token>` and
+`{ "name", "deviceKey", "presenceKey" }`: a name of up to 64 characters, and the device key and
+the (optional) presence key as 65-byte uncompressed P-256 points in unpadded base64url. The agent
+answers `{ id, name, presence }`, prints that a device enrolled, and is **strict** from then on.
+400 for a bad name or a point that isn't on the curve, 409 when 16 devices are enrolled, 403 for a
+device session (only the pairing token enrolls). `GET /api/devices` lists the devices (id, name,
+enrolled, last seen, whether it has a presence key), never a key.
+
+### Device sessions
+
+`POST /api/device/challenge` with `{ "deviceId" }` answers `{ "nonce" }` (32 random bytes,
+base64url, good once for 30 seconds; it is the same for an unknown id). The device signs
+`"coderemote-device-1\0" || nonce || channel` with its device key, where `channel` is the sealed
+session id (`X-E2E-Session`), or the text `lan` over the LAN listener, and sends
+`POST /api/device/session` with `{ "deviceId", "nonce", "signature" }`. The signature is ECDSA with
+SHA-256, 64 bytes (`r || s`) in base64url. The answer is `{ "token", "expiresIn" }`: a random
+session token valid for an hour, sent as `Authorization: Bearer` from then on. Anything wrong is a
+plain 401 that says not which part. Sessions live in the agent's memory; after a restart the
+device signs in again, which needs no user action. A 401 with `code: "device_session"` means
+exactly that.
+
+### Strict mode
+
+Once a device is enrolled, a request that carries only the pairing token gets 401 with
+`code: "device_required"`, except `POST /api/devices`. The mode lasts across restarts and after the
+last device is revoked; only `coderemote rotate-token` ends it (and removes every device).
+`coderemote devices` lists the devices, `coderemote devices revoke <id>` removes one: its sessions,
+tickets and open sockets end at once. A device cannot revoke (403); `DELETE /api/devices?id=` is for
+the local credential.
+
+The CLI reaches a running agent with `Authorization: Local <secret>` on the loopback listener
+(the secret is in `~/.coderemote/local-secret`); the LAN listener never accepts it.
+
+### Presence
+
+A device proves its owner is there with its presence key (Face ID or the passcode). The agent keeps
+a *level* and a *grant window* for the folder it shares:
+
+| Level | Needs a grant |
+| --- | --- |
+| `none` | nothing |
+| `terminal` (default) | opening a terminal socket, `agents/prompt`, `agents/keys`, `agents/sessions` (launch), `builds` (start) |
+| `terminal+writes` | the above, and `fs/write`, `fs/mkdir`, `fs/rename`, `fs` (delete), git commit, discard, pull, push, checkout and stash, `ports/kill`, `term` (kill), `agents/stop`, `agents/answer`, `preview/share`, `builds/install` |
+
+A guarded request without a grant gets 403 with `code: "presence_required"`; a terminal socket gets
+`403` on the upgrade, and a sealed one is closed with 4403. Reading, staging and fetching are free.
+
+`POST /api/device/presence/challenge` (a device session) answers `{ "nonce" }`, good once for 60
+seconds. The device signs `"coderemote-presence-1\0" || nonce || SHA256(session token)` with the
+presence key and sends `POST /api/device/presence` with `{ "nonce", "signature" }`; the answer is
+`{ "grantedFor": seconds }`. The grant belongs to the device and lasts the window, so a session
+renewed inside it keeps it. A device with no presence key gets 409 and cannot run guarded actions.
+
+The window is 5 minutes (default), 30 minutes or 1 hour. `PUT /api/device/policy` with
+`{ "level"?, "window"? }` (the window in seconds) changes them: tightening (a higher level, a
+shorter window) needs a session, relaxing needs a grant (else 403 `presence_required`), and the
+computer's `coderemote devices policy <level> [--window 5m|30m|1h]` needs neither. Any other value
+is a 400.
+
 ## Shared folder
 
 The agent shares one folder, the directory `coderemote up` runs in (or `--root DIR`).
@@ -310,7 +381,7 @@ with 400 (bad input), 401, 403 (outside the shared folder, `EACCES`/`EPERM`), 40
 
 | Route | Request | Response |
 | --- | --- | --- |
-| `GET /api/info` | | `{ protocol, minClientProtocol, version, hostname, platform, root, user, shell, lan, agentId, tunnel, e2e }` (see [Compatibility](#compatibility), [Local network](#local-network)) |
+| `GET /api/info` | | `{ protocol, minClientProtocol, version, hostname, platform, root, user, shell, lan, agentId, tunnel, e2e, devices }` (see [Compatibility](#compatibility), [Local network](#local-network)) |
 | `GET /api/fs/list?path=` | | `{ path, entries: [{ name, type, size, mtime, target? }] }` |
 | `GET /api/fs/stat?path=` | | `{ path, name, type, size, mtime, target? }` |
 | `GET /api/fs/read?path=` | | raw bytes; one `Range: bytes=…` gets 206 with that part (416 past the end), so media streams; video and audio files carry their media type |

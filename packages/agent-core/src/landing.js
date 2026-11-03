@@ -40,11 +40,14 @@ export const LANDING_HTML = `<!doctype html>
   // Pasting the full link into a tab already showing this page (e.g. after the tunnel's sign-in
   // dropped the fragment) only changes the hash and doesn't reload, so re-read it on hashchange.
   function render() {
-    const token = new URLSearchParams(location.hash.slice(1)).get('token');
+    const params = new URLSearchParams(location.hash.slice(1));
+    const token = params.get('token');
     document.getElementById('ready').classList.toggle('hidden', !token);
     document.getElementById('missing').classList.toggle('hidden', !!token);
     if (!token) return;
-    const link = '${PAIRING_SCHEME}://pair?url=' + encodeURIComponent(location.origin) + '&token=' + encodeURIComponent(token);
+    let link = '${PAIRING_SCHEME}://pair?url=' + encodeURIComponent(location.origin) + '&token=' + encodeURIComponent(token);
+    // The agent's identity and end-to-end key come along when the link has them.
+    for (const name of ['id', 'pk']) if (params.get(name)) link += '&' + name + '=' + encodeURIComponent(params.get(name));
     document.getElementById('open').href = link;
     document.getElementById('copy').textContent = 'Copy pairing link';
     document.getElementById('copy').onclick = async (e) => {

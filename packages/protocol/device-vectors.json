@@ -1,0 +1,13 @@
+{
+  "note": "Fixed vectors for device keys: signatures made by Node over the messages below; any implementation must verify them, and must produce signatures Node verifies.",
+  "version": 1,
+  "nonce": "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI",
+  "channel": "SID123",
+  "deviceKey": "BBGsWbNwMcrwonkxU740YEaDbzOy6FkBfsmqUePofk4uLJqdwsOT8VqbcckvJZu7TvUFVEi74dIhb96CoffmfCk",
+  "deviceMessage": "636f646572656d6f74652d6465766963652d31004242424242424242424242424242424242424242424242424242424242424242534944313233",
+  "deviceSignature": "glRg1qKeIBXEQ9YFl8BGjjCdaS21iNbK7qvDKakew8vxsZw-eZQ1VDUEwwkMVQexFXpxmU-76c3K0gDPvEutzg",
+  "presenceKey": "BA9CsaWb4pjp1BNnRo0Nl00EqnrRHKhTkuvzpBWZEEYXac_VG_sa5CnglWV7sphZAhczi8y04jfa8Ob0y3jLPWM",
+  "sessionToken": "session-token-for-vector",
+  "presenceMessage": "636f646572656d6f74652d70726573656e63652d31004242424242424242424242424242424242424242424242424242424242424242b723e0f6f23b94cb54c4de909466a0f75efa730fad496ddcef81fda23f4a78b6",
+  "presenceSignature": "y8G36YWFgoo23sDoDUlpNNzIGDCgPlb7IuHVSW6BCtq2MWPVBzUoJFCMilN-jw4z14yhmdAcqEbmncLHkdm27Q"
+}

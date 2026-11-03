@@ -60,6 +60,31 @@ involved (see [Local network](packages/protocol/PROTOCOL.md#local-network); `--n
 off). To avoid Microsoft's relay entirely, `coderemote serve` runs the agent on `127.0.0.1`
 without a tunnel; put it behind something you trust, such as SSH or WireGuard/Tailscale.
 
+## Devices and Face ID
+
+The pairing token in the QR code is a shared secret, so by itself it can't tell phones apart or
+say who is holding one. A phone that enrolls (the app does it right after pairing) gets its own
+keys, made in the phone's Secure Enclave and never leaving it, and from then on:
+
+- **The token only enrolls.** The agent turns away a request that has just the pairing token. Each
+  phone signs a challenge with its device key to get a session that lasts an hour. A screenshot or
+  a backup of the QR code no longer opens anything beyond enrolling another phone, which shows in
+  `coderemote devices` and in the agent's output.
+- **Revoking one phone works.** `coderemote devices revoke <id>` ends its sessions, tickets and open
+  terminals at once; the others carry on. `coderemote rotate-token` removes every device.
+- **Face ID guards what runs commands.** At the default level (`terminal`), opening a terminal,
+  typing into or starting a coding-agent session, and starting a build need a Face ID (or passcode)
+  check made in the last 5 minutes. `terminal+writes` adds file changes, git actions that publish or
+  discard work, stopping processes and approving a coding agent's tool calls. The level and how long
+  a check lasts (5 minutes, 30 minutes or 1 hour) are set per folder with
+  `coderemote devices policy <level> [--window 5m|30m|1h]`, and the agent enforces them: a
+  modified app can't relax them. The app can relax them only with a Face ID check of its own.
+
+What this doesn't do: anyone with the pairing token can still enroll a device of their own until you
+run `coderemote rotate-token` (watch `coderemote devices`), and malware running as you on the
+computer can read what `coderemote` keeps in `~/.coderemote/`. If a phone is lost, revoke it; if it
+was the only one, `rotate-token` resets the folder.
+
 ## Security model
 
 In scope, and worth reporting if broken:
@@ -75,6 +100,8 @@ In scope, and worth reporting if broken:
 - **Encryption through the tunnel.** Requests sealed for an agent's identity key must stay
   confidential and unreplayable, and a client holding that key must never fall back to
   plaintext. Weaknesses in the handshake or the sealing are in scope.
+- **Devices.** A revoked device must not get another session, the pairing token must not do anything
+  but enroll once a device exists, and a guarded action must not run without a presence grant.
 - **Secrets at rest.** The agent token and its identity key live in `~/.coderemote/` (mode 0600); the app keeps
   pairings and tunnel tokens in the iOS Keychain.
 

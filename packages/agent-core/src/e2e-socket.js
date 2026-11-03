@@ -11,6 +11,7 @@ export const SealedClose = Object.freeze({
 	badFrame: 4400,
 	unauthorized: 4401,
 	notFound: 4404,
+	presence: 4403,
 	noOpen: 4408,
 	failed: 4500,
 });

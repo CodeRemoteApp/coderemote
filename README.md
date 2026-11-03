@@ -81,7 +81,8 @@ Commands, requirements and FAQ are in the
 - **VS Code in the browser (optional):** `coderemote up --web` also starts VS Code's own
   tunnel and prints a vscode.dev link that opens the folder in the full editor
 - **Private by default:** only your own GitHub or Microsoft account gets through the tunnel,
-  plus a pairing token per device; files and git can't leave the shared folder
+  and each phone has its own keys: revoke one with `coderemote devices revoke`, and running
+  commands asks for Face ID. Files and git can't leave the shared folder
 
 ## How it works
 

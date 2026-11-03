@@ -76,3 +76,49 @@ test('without an identity key the link has no pk, and a key of the wrong size is
 	assert.equal('pk' in parse(pairingUrl({ url: 'https://x-31580.asse.devtunnels.ms', token: 't', agentId })), false);
 	assert.throws(() => pairingUrl({ url: 'https://x-31580.asse.devtunnels.ms', token: 't', publicKey: Buffer.alloc(31) }), /32 bytes/);
 });
+
+import vm from 'node:vm';
+import { webUrl } from '@vsremote/protocol';
+import { LANDING_HTML } from '../src/landing.js';
+
+/** Runs the landing page's script on `hash` and returns the href it puts on the "Open" button. */
+function landingLink(hash) {
+	const elements = new Map();
+	const element = (id) => {
+		if (!elements.has(id)) elements.set(id, { classList: { toggle() {} }, textContent: '', href: '', onclick: null });
+		return elements.get(id);
+	};
+	const script = /<script>([\s\S]*?)<\/script>/.exec(LANDING_HTML)[1];
+	vm.runInNewContext(script, {
+		location: { hash, origin: 'https://x-31580.asse.devtunnels.ms' },
+		document: { getElementById: element },
+		addEventListener() {},
+		navigator: {},
+		URLSearchParams,
+		encodeURIComponent,
+	});
+	return element('open').href;
+}
+
+test('the web link carries the token, and the agent id and identity key when it has them', () => {
+	const key = Buffer.alloc(32, 9);
+	const pk = key.toString('base64url');
+	const full = webUrl({ url: 'https://x-31580.asse.devtunnels.ms', token: 't+/=', agentId, publicKey: key });
+	assert.equal(full, `https://x-31580.asse.devtunnels.ms/#token=${encodeURIComponent('t+/=')}&id=${agentId}&pk=${pk}`);
+	// A link from an older agent reads as before.
+	assert.equal(webUrl({ url: 'https://x', token: 't' }), 'https://x/#token=t');
+});
+
+test('the landing page puts the identity in the pairing link it offers', () => {
+	const key = Buffer.alloc(32, 9);
+	const fragment = new URL(webUrl({ url: 'https://x-31580.asse.devtunnels.ms', token: 'tok', agentId, publicKey: key })).hash;
+	const link = parse(landingLink(fragment));
+	assert.deepEqual(link, {
+		url: 'https://x-31580.asse.devtunnels.ms',
+		token: 'tok',
+		id: agentId,
+		pk: key.toString('base64url'),
+	});
+	// Without them, the link is the old one.
+	assert.deepEqual(parse(landingLink('#token=tok')), { url: 'https://x-31580.asse.devtunnels.ms', token: 'tok' });
+});

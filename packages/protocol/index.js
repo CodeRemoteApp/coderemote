@@ -87,6 +87,15 @@ export const Routes = Object.freeze({
 	pushTest: 'POST /api/push/test',
 	// Added within v4: sealed in the end-to-end envelope, mints a ticket for the transfers outside it.
 	e2eTicket: 'POST /api/e2e/ticket',
+	// Device keys (PROTOCOL.md "Devices"): enrolling, sessions, presence (Face ID) and the policy.
+	deviceEnroll: 'POST /api/devices',
+	deviceList: 'GET /api/devices',
+	deviceRevoke: 'DELETE /api/devices',
+	deviceChallenge: 'POST /api/device/challenge',
+	deviceSession: 'POST /api/device/session',
+	presenceChallenge: 'POST /api/device/presence/challenge',
+	presenceGrant: 'POST /api/device/presence',
+	devicePolicy: 'PUT /api/device/policy',
 });
 
 // Opened in the system browser (no bearer token); answers with a redirect to
@@ -100,6 +109,9 @@ export const E2E_HANDSHAKE_PATH = '/api/e2e/handshake';
 export const E2E_REQUEST_PATH = '/api/e2e';
 export const E2E_SESSION_HEADER = 'X-E2E-Session';
 export const E2E_VERSION = 1;
+
+// Device keys: the version `GET /api/info` reports in `devices`.
+export const DEVICES_VERSION = 1;
 
 export const TERMINAL_WS_PATH = '/api/term/ws';
 
@@ -132,9 +144,16 @@ export const AgentsServerMessage = Object.freeze({
 // Client -> server frames on the agents socket.
 export const AgentsClientMessage = Object.freeze({ presence: 'presence' });
 
-/** Browser link: the agent's landing page turns the fragment into a pairing link. */
-export function webUrl({ url, token }) {
-	return `${url}/#token=${encodeURIComponent(token)}`;
+/**
+ * Browser link: the agent's landing page turns the fragment into a pairing link. `agentId` and
+ * `publicKey` (the end-to-end identity key, 32 bytes) go in when the agent has them, so a pairing
+ * made from it is end-to-end encrypted and can enroll a device.
+ */
+export function webUrl({ url, token, agentId = null, publicKey = null }) {
+	let fragment = `token=${encodeURIComponent(token)}`;
+	if (agentId) fragment += `&id=${encodeURIComponent(agentId)}`;
+	if (publicKey) fragment += `&pk=${Buffer.from(publicKey).toString('base64url')}`;
+	return `${url}/#${fragment}`;
 }
 
 /**

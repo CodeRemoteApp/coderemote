@@ -9,6 +9,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import {
 	AGENTS_WS_PATH,
 	AgentsClientMessage,
+	DEVICES_VERSION,
 	E2E_HANDSHAKE_PATH,
 	E2E_REQUEST_PATH,
 	E2E_VERSION,
@@ -28,7 +29,9 @@ import { BuildRunner, listSchemes } from './builds.js';
 import { listHistory } from './history.js';
 import { InstallLinks } from './install-links.js';
 import * as Git from './git.js';
+import { DeviceSessions } from './devices.js';
 import { b64u } from './e2e.js';
+import { requiresGrant, routeClass, terminalNeedsGrant } from './presence.js';
 import { createSealedGateway } from './e2e-http.js';
 import { acceptSealedSocket, SealedClose } from './e2e-socket.js';
 import { draftCommitMessage } from './commit-message.js';
@@ -200,6 +203,11 @@ async function readJson(req) {
  * @param {{ publicKey: Buffer, privateKey: object } | null} [opts.e2e]  the identity key that end-to-end
  *        encryption is offered with; without one `/api/info` reports `e2e: null`
  * @param {object} [opts.e2eOptions]  limits of the sealed sessions and tickets (tests shorten them)
+ * @param {import('./devices.js').DeviceRegistry | null} [opts.devices]  the enrolled devices and presence
+ *        policy; without one the agent takes the pairing token as before and has no device routes
+ * @param {string | null} [opts.localSecret]  what the CLI sends (`Authorization: Local`) on loopback
+ * @param {(device: object) => void} [opts.onDeviceEnrolled]  told when a device enrolls
+ * @param {object} [opts.deviceOptions]  limits of the device sessions (tests shorten them)
  * @param {string | null} [opts.agentId]  this agent's lasting identity, reported in `/api/info`
  * @param {() => string | null} [opts.tunnelUrl]  the tunnel's public URL while it is hosted
  * @param {{ checkMs?: number, graceMs?: number, killedMs?: number }} [opts.previewSweep]  how often
@@ -233,6 +241,10 @@ export function createAgentServer({
 	lanAddresses = defaultLanAddresses,
 	e2e = null,
 	e2eOptions = {},
+	devices = null,
+	localSecret = null,
+	onDeviceEnrolled = null,
+	deviceOptions = {},
 	agentId = null,
 	tunnelUrl = () => null,
 }) {
@@ -287,9 +299,74 @@ export function createAgentServer({
 		agents.present = async () => !clientInForeground() && (await (pushOptions.userActive ?? userActiveHere)());
 	}
 
+	const deviceSessions = devices ? new DeviceSessions(devices, deviceOptions) : null;
+	const localExpected = localSecret ? Buffer.from(localSecret) : null;
+
+	/**
+	 * Who `header` (an `Authorization` value) is: `{ kind: 'local' }` for the CLI, `{ kind: 'device',
+	 * token, deviceId }` for a device session, `{ kind: 'device', pairing: true }` for the pairing token
+	 * while no device has enrolled, `{ kind: 'enroll', pairing: true }` for it afterwards (it may only
+	 * enroll), else null.
+	 */
+	function callerOfHeader(header, overLan) {
+		if (header.startsWith('Local ')) {
+			const got = Buffer.from(header.slice(6));
+			return localExpected && !overLan && got.length === localExpected.length && timingSafeEqual(got, localExpected)
+				? { kind: 'local' }
+				: null;
+		}
+		const got = Buffer.from(header);
+		if (got.length === expected.length && timingSafeEqual(got, expected)) {
+			return devices?.strict ? { kind: 'enroll', pairing: true } : { kind: 'device', pairing: true };
+		}
+		const m = /^Bearer (\S+)$/.exec(header);
+		const session = m && deviceSessions?.get(m[1]);
+		return session ? { kind: 'device', token: m[1], deviceId: session.deviceId } : null;
+	}
+
+	const callerOf = (req) => callerOfHeader(req.headers.authorization || '', req.socket[OVER_LAN] === true);
+
+	/** Whether `req` may use the API at all (an enrollment-only caller may not). */
 	function authorized(req) {
-		const got = Buffer.from(req.headers.authorization || '');
-		return got.length === expected.length && timingSafeEqual(got, expected);
+		const caller = callerOf(req);
+		return !!caller && caller.kind !== 'enroll';
+	}
+
+	/** The channel a secret may travel on: `lan` (pinned TLS), the sealed session id, or null. */
+	function channelOf(req) {
+		return req.socket[OVER_LAN] === true ? 'lan' : (sealed?.channelOf(req) ?? null);
+	}
+
+	const needSecureChannel = (req) => {
+		const channel = channelOf(req);
+		if (!channel) throw new HttpError(403, 'this needs an end-to-end encrypted or local network connection');
+		return channel;
+	};
+
+	/** Whether `caller` lacks the presence grant `cls` needs; false when device keys are not in force. */
+	function lacksGrant(caller, cls) {
+		if (!devices?.strict || caller?.kind !== 'device' || !caller.token) return false;
+		return requiresGrant(devices.presence.level, cls) && !deviceSessions.granted(caller.token);
+	}
+
+	// Open sockets per device, so revoking one closes them.
+	const socketsByDevice = new Map();
+	function trackSocket(caller, ws) {
+		if (!caller?.deviceId) return;
+		const set = socketsByDevice.get(caller.deviceId) ?? new Set();
+		socketsByDevice.set(caller.deviceId, set);
+		set.add(ws);
+		ws.on('close', () => set.delete(ws));
+	}
+
+	/** Removes a device and ends its sessions, tickets and sockets. False when it isn't enrolled. */
+	function revokeDevice(id) {
+		if (!devices?.remove(id)) return false;
+		deviceSessions.endDevice(id);
+		sealed?.tickets.purge(id);
+		for (const ws of socketsByDevice.get(id) ?? []) ws.close(1008, 'device revoked');
+		socketsByDevice.delete(id);
+		return true;
 	}
 
 	/** What terminals add to the environment, so coding agents in them reach this agent. */
@@ -564,6 +641,9 @@ export function createAgentServer({
 			...lanInfo(),
 			// The key goes only to a client on the LAN listener, whose certificate it pinned: through the
 			// tunnel a relay could swap it, so there a client takes it from the pairing link alone.
+			devices: devices
+				? { version: DEVICES_VERSION, strict: devices.strict, presence: devices.presence.level, presenceWindow: devices.presence.window }
+				: null,
 			e2e: sealed
 				? { version: E2E_VERSION, ...(req.socket[OVER_LAN] === true ? { publicKey: b64u(e2e.publicKey) } : {}) }
 				: null,
@@ -585,7 +665,83 @@ export function createAgentServer({
 			if (!sealed) throw new HttpError(404, 'not found');
 			const { scope } = await readJson(req);
 			if (scope !== 'read' && scope !== 'upload') throw new HttpError(400, 'scope must be read or upload');
-			return sealed.tickets.mint(scope);
+			return sealed.tickets.mint(scope, req.caller?.deviceId ?? null);
+		},
+
+		[Routes.deviceEnroll]: async (url, req) => {
+			if (!devices) throw new HttpError(404, 'not found');
+			if (!req.caller?.pairing) throw new HttpError(403, 'enroll with the pairing token');
+			needSecureChannel(req);
+			const { name, deviceKey, presenceKey } = await readJson(req);
+			const { device, error } = devices.enroll({ name, deviceKey, presenceKey });
+			if (error) throw new HttpError(error.status, error.message);
+			try {
+				onDeviceEnrolled?.(device);
+			} catch {}
+			return { id: device.id, name: device.name, presence: device.presenceKey !== null };
+		},
+
+		[Routes.deviceList]: async () => {
+			if (!devices) throw new HttpError(404, 'not found');
+			return { devices: devices.list() };
+		},
+
+		[Routes.deviceRevoke]: async (url, req) => {
+			if (!devices) throw new HttpError(404, 'not found');
+			if (req.caller?.kind !== 'local') throw new HttpError(403, 'devices are revoked from the computer');
+			if (!revokeDevice(url.searchParams.get('id') ?? '')) throw new HttpError(404, 'no such device');
+			return {};
+		},
+
+		[Routes.deviceChallenge]: async (url, req) => {
+			if (!deviceSessions) throw new HttpError(404, 'not found');
+			const channel = needSecureChannel(req);
+			const { deviceId } = await readJson(req);
+			return { nonce: b64u(deviceSessions.deviceChallenge(deviceId, channel)) };
+		},
+
+		[Routes.deviceSession]: async (url, req) => {
+			if (!deviceSessions) throw new HttpError(404, 'not found');
+			const channel = needSecureChannel(req);
+			const { deviceId, nonce, signature } = await readJson(req);
+			const minted = deviceSessions.mint({ deviceId, nonce, signature, channel });
+			if (!minted) throw new HttpError(401, 'unauthorized');
+			return { token: minted.token, expiresIn: minted.expiresIn };
+		},
+
+		[Routes.presenceChallenge]: async (url, req) => {
+			if (!deviceSessions) throw new HttpError(404, 'not found');
+			if (!req.caller?.token) throw new HttpError(401, 'unauthorized');
+			const got = deviceSessions.presenceChallenge(req.caller.token);
+			if (!got) throw new HttpError(401, 'unauthorized');
+			if (got.error) throw new HttpError(got.error.status, got.error.message);
+			return { nonce: b64u(got.nonce) };
+		},
+
+		[Routes.presenceGrant]: async (url, req) => {
+			if (!deviceSessions) throw new HttpError(404, 'not found');
+			if (!req.caller?.token) throw new HttpError(401, 'unauthorized');
+			const { nonce, signature } = await readJson(req);
+			const granted = deviceSessions.grant({ token: req.caller.token, nonce, signature });
+			if (!granted) throw new HttpError(401, 'unauthorized');
+			return granted;
+		},
+
+		[Routes.devicePolicy]: async (url, req) => {
+			if (!devices) throw new HttpError(404, 'not found');
+			const { level, window } = await readJson(req);
+			const change = {};
+			if (level !== undefined) change.level = level;
+			if (window !== undefined) change.window = window;
+			const invalid = devices.validate(change);
+			if (invalid) throw new HttpError(invalid.error.status, invalid.error.message);
+			// Tightening needs a session; relaxing needs a grant. The computer's own CLI needs neither.
+			if (req.caller?.kind !== 'local' && devices.relaxes(change) && !deviceSessions.granted(req.caller?.token ?? '')) {
+				throw Object.assign(new HttpError(403, 'face id needed'), { code: 'presence_required' });
+			}
+			const { presence, error } = devices.setPresence(change);
+			if (error) throw new HttpError(error.status, error.message);
+			return { level: presence.level, window: presence.window };
 		},
 
 		[Routes.fsList]: async (url) => {
@@ -1142,8 +1298,23 @@ export function createAgentServer({
 		}
 		if (req.method === 'GET' && url.pathname === TUNNEL_HANDOFF_PATH) return handoffRedirect(url, res);
 		if (`${req.method} ${url.pathname}` === Routes.agentsHook) return hookDelivery(url, req, res);
-		if (!authorized(req) && !sealed?.ticketOk(req, url.pathname)) return sendJson(res, 401, { error: 'unauthorized' });
-		const handler = routes[`${req.method} ${url.pathname}`];
+		const routeKey = `${req.method} ${url.pathname}`;
+		// Challenges and sessions prove themselves with a signature, not with a credential.
+		if (routeKey !== Routes.deviceChallenge && routeKey !== Routes.deviceSession) {
+			const caller = callerOf(req);
+			if (!caller && !sealed?.ticketOk(req, url.pathname)) {
+				const sessionGone = devices?.strict && /^Bearer /.test(req.headers.authorization || '');
+				return sendJson(res, 401, { error: 'unauthorized', ...(sessionGone ? { code: 'device_session' } : {}) });
+			}
+			if (caller?.kind === 'enroll' && routeKey !== Routes.deviceEnroll) {
+				return sendJson(res, 401, { error: 'this machine needs an enrolled device', code: 'device_required' });
+			}
+			if (lacksGrant(caller, routeClass(routeKey))) {
+				return sendJson(res, 403, { error: 'face id needed', code: 'presence_required' });
+			}
+			req.caller = caller;
+		}
+		const handler = routes[routeKey];
 		if (!handler) return sendJson(res, 404, { error: 'not found' });
 		try {
 			const body = await handler(url, req, res);
@@ -1239,14 +1410,19 @@ export function createAgentServer({
 				session,
 				async (msg, sealedWs) => {
 					if (msg.kind !== kind) return SealedClose.badFrame;
-					const got = Buffer.from(`Bearer ${msg.token}`);
-					if (got.length !== expected.length || !timingSafeEqual(got, expected)) return SealedClose.unauthorized;
+					const caller = callerOfHeader(`Bearer ${msg.token}`, false);
+					if (!caller || caller.kind === 'enroll') return SealedClose.unauthorized;
+					if (kind === 'term' && devices?.strict && caller.token && terminalNeedsGrant(devices.presence.level) && !deviceSessions.granted(caller.token)) {
+						return SealedClose.presence;
+					}
 					if (kind === 'agents') {
+						trackSocket(caller, sealedWs);
 						watchAgents(sealedWs);
 						return true;
 					}
 					const found = await terminalFor(msg);
 					if (!found.session) return found.status === 404 ? SealedClose.notFound : SealedClose.failed;
+					trackSocket(caller, sealedWs);
 					found.session.attach(sealedWs);
 					return true;
 				},
@@ -1266,12 +1442,21 @@ export function createAgentServer({
 		) {
 			return sealedUpgrade(url, req, socket, head);
 		}
-		if (url.pathname === AGENTS_WS_PATH && authorized(req)) {
-			wss.handleUpgrade(req, socket, head, watchAgents);
+		const caller = callerOf(req);
+		const known = caller && caller.kind !== 'enroll' ? caller : null;
+		if (url.pathname === AGENTS_WS_PATH && known) {
+			wss.handleUpgrade(req, socket, head, (ws) => {
+				trackSocket(known, ws);
+				watchAgents(ws);
+			});
 			return;
 		}
-		if (url.pathname !== TERMINAL_WS_PATH || !authorized(req)) {
+		if (url.pathname !== TERMINAL_WS_PATH || !known) {
 			socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
+			return;
+		}
+		if (devices?.strict && known.token && terminalNeedsGrant(devices.presence.level) && !deviceSessions.granted(known.token)) {
+			socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
 			return;
 		}
 		const found = await terminalFor({
@@ -1284,7 +1469,10 @@ export function createAgentServer({
 			socket.end(`HTTP/1.1 ${found.status} ${found.status === 404 ? 'Not Found' : 'Error'}\r\n\r\n`);
 			return;
 		}
-		wss.handleUpgrade(req, socket, head, (ws) => found.session.attach(ws));
+		wss.handleUpgrade(req, socket, head, (ws) => {
+			trackSocket(known, ws);
+			found.session.attach(ws);
+		});
 	});
 
 	// Agents socket: a snapshot, then every change as it happens.
@@ -1353,6 +1541,7 @@ export function createAgentServer({
 
 	server.on('close', () => {
 		sealed?.end();
+		deviceSessions?.clear();
 		lanServer?.close();
 		installs?.close();
 		clearInterval(sweep);
@@ -1366,6 +1555,9 @@ export function createAgentServer({
 	// Ends every sealed session and ticket now (the identity key was replaced).
 	server.endSealedSessions = () => sealed?.end();
 	server.sealed = sealed;
+	server.devices = devices;
+	server.deviceSessions = deviceSessions;
+	server.revokeDevice = revokeDevice;
 	server.agents = agents;
 	// Whether a client showed this machine in the last 30 seconds, and what of it.
 	server.clientInForeground = clientInForeground;
