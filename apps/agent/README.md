@@ -17,6 +17,7 @@
 </p>
 
 <p align="center">
+  <a href="https://apps.apple.com/app/code-remote-ai-mobile-ide/id6827182814"><b>App Store</b></a> ·
   <a href="https://coderemoteapp.github.io/web/"><b>Website</b></a> ·
   <a href="https://coderemoteapp.github.io/web/docs/"><b>Docs</b></a>
 </p>
@@ -74,6 +75,6 @@ Inside Claude Code you can also run `/plugin install coderemote --marketplace Co
 
 - Node.js 22+ on macOS or Windows 10/11 (Linux is expected to work, untested)
 - A GitHub or Microsoft account
-- The **Code Remote** iOS app (App Store release coming)
+- The **Code Remote** iOS app, [on the App Store](https://apps.apple.com/app/code-remote-ai-mobile-ide/id6827182814)
 
 Commands, options and details are in the [docs](https://coderemoteapp.github.io/web/docs/).

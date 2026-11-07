@@ -17,6 +17,7 @@
 </p>
 
 <p align="center">
+  <a href="https://apps.apple.com/app/code-remote-ai-mobile-ide/id6827182814"><b>App Store</b></a> ·
   <a href="https://coderemoteapp.github.io/web/"><b>Website</b></a> ·
   <a href="https://coderemoteapp.github.io/web/docs/"><b>Docs</b></a>
 </p>
@@ -61,7 +62,8 @@ Want the full editor too? `coderemote up --web` also starts VS Code's own tunnel
 It needs VS Code's `code` command on your `PATH`, signs in with its own GitHub account and
 gives the browser the whole machine, not just the shared folder.
 
-The iOS app is coming to the App Store. This repository holds the open-source side: the CLI,
+Get the iOS app on the
+[App Store](https://apps.apple.com/app/code-remote-ai-mobile-ide/id6827182814). This repository holds the open-source side: the CLI,
 the agent and the wire protocol, so you can audit what runs on your computer or build your own
 client.
 Commands, requirements and FAQ are in the
