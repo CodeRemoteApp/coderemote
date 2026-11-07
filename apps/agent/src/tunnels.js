@@ -93,14 +93,36 @@ export function findTunnel(tunnels, id) {
 	return tunnels.find((t) => t.tunnelId === id || base(t.tunnelId) === base(id)) ?? null;
 }
 
+/** "online · this computer's agent on port 31581 · coderemote mac": what a tunnel is for. */
+function describe(t, cfg) {
+	const use = ownUse(cfg, t.tunnelId);
+	const about = t.description || t.labels?.join(', ') || '(no description)';
+	return [t.hostConnections > 0 ? 'online' : null, use && `this computer's ${use}`, about].filter(Boolean).join(' · ');
+}
+
+/**
+ * Whether deleting the tunnel costs something: an agent serves it now, or this computer's agent
+ * or previews use it. Either way its URL changes and its phones pair again.
+ */
+export const inUse = (t, cfg) => t.hostConnections > 0 || Boolean(ownUse(cfg, t.tunnelId));
+
 /** One line per tunnel: id, whether a host serves it now, this computer's use, description. */
 export function formatTunnels(tunnels, cfg) {
 	const width = Math.max(...tunnels.map((t) => t.tunnelId.length));
-	return tunnels.map((t) => {
-		const notes = [t.hostConnections > 0 ? 'online' : null, ownUse(cfg, t.tunnelId) && `this computer's ${ownUse(cfg, t.tunnelId)}`];
-		const about = t.description || t.labels?.join(', ') || '(no description)';
-		return `  ${t.tunnelId.padEnd(width)}  ${[...notes.filter(Boolean), about].join(' · ')}`;
-	});
+	return tunnels.map((t) => `  ${t.tunnelId.padEnd(width)}  ${describe(t, cfg)}`);
+}
+
+/**
+ * The account's tunnels as the delete picker lists them: ones nothing uses first, then the
+ * ones in use, marked. Returns the tunnels in that order with an item each.
+ */
+export function pickerItems(tunnels, cfg) {
+	const width = Math.max(...tunnels.map((t) => t.tunnelId.length));
+	const sorted = [...tunnels.filter((t) => !inUse(t, cfg)), ...tunnels.filter((t) => inUse(t, cfg))];
+	return {
+		tunnels: sorted,
+		items: sorted.map((t) => ({ label: t.tunnelId.padEnd(width), note: describe(t, cfg), warn: inUse(t, cfg) })),
+	};
 }
 
 /** The account's tunnels and how to delete the ones nothing uses. */
@@ -110,7 +132,7 @@ export function tunnelLimitHelp(tunnels, cfg = {}) {
 		...formatTunnels(tunnels, cfg),
 		'Delete the ones nothing uses any more, then try again. Deleting a tunnel an agent still uses',
 		'changes its URL and unpairs its phones.',
-		'  coderemote tunnels delete <tunnel id>...',
+		'  coderemote tunnels delete',
 	].join('\n');
 }
 

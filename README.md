@@ -13,7 +13,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/coderemote"><img src="https://img.shields.io/npm/v/coderemote?label=npm%20coderemote" alt="npm"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue" alt="license"></a>
-  <img src="https://img.shields.io/badge/iOS-26%2B-black" alt="iOS 26+">
+  <img src="https://img.shields.io/badge/iOS-18%2B-black" alt="iOS 18+">
 </p>
 
 <p align="center">

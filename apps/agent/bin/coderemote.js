@@ -15,7 +15,8 @@ import { PreviewTunnel } from '../src/preview.js';
 import { pushStore } from '../src/push-store.js';
 import { sessionStore } from '../src/session-store.js';
 import { AgentRegistry } from '../src/registry.js';
-import { ensureAgentId, findTunnel, forgetTunnel, formatTunnels, rememberTunnelUrl, listTunnels, makeRoom, ownUse, signedInUser, tunnelLimitHelp } from '../src/tunnels.js';
+import { ensureAgentId, findTunnel, forgetTunnel, formatTunnels, inUse, rememberTunnelUrl, listTunnels, makeRoom, ownUse, pickerItems, signedInUser, TUNNEL_LIMIT, tunnelLimitHelp } from '../src/tunnels.js';
+import { confirm, pick } from '../src/picker.js';
 import { MACHINE_LABEL, tunnelDelete, tunnelStatus } from '../src/tunnel-status.js';
 import { NotSignedIn, relayReachable, retryTunnel } from '../src/tunnel-retry.js';
 import { availableUpdate, fetchLatest, installCommand, isNewer } from '../src/update.js';
@@ -265,6 +266,48 @@ function applyAccess(tunnelId, anonymous) {
 		: devtunnel('access', 'reset', tunnelId);
 }
 
+/** Deletes the account's `chosen` tunnels and forgets this computer's ones; whether all went. */
+async function deleteTunnels(chosen) {
+	let ok = true;
+	for (const tunnel of chosen) {
+		const use = ownUse(cfg, tunnel.tunnelId);
+		const res = await devtunnel('delete', tunnel.tunnelId, '-f');
+		if (!res.ok) {
+			console.error(`${tunnel.tunnelId}: ${res.out.trim()}`);
+			ok = false;
+			continue;
+		}
+		if (forgetTunnel(cfg, tunnel.tunnelId)) saveConfig(cfg);
+		console.log(`deleted ${tunnel.tunnelId}${use ? ` (this computer's ${use}: the next \`coderemote up\` makes a new one)` : ''}`);
+	}
+	return ok;
+}
+
+/**
+ * Lists the account's tunnels to tick the ones to delete, asks once more when any is in use, and
+ * deletes them. True when some were deleted, null when the user backed out, false on a failure.
+ * Needs a terminal.
+ */
+async function chooseTunnelsToDelete(tunnels) {
+	const { tunnels: listed, items } = pickerItems(tunnels, cfg);
+	const picked = await pick({ title: `Delete tunnels on your dev tunnels account (${tunnels.length} of ${TUNNEL_LIMIT}):`, items });
+	if (!picked) {
+		console.error('Nothing deleted.');
+		return null;
+	}
+	const chosen = picked.map((i) => listed[i]);
+	const busy = chosen.filter((t) => inUse(t, cfg));
+	if (busy.length) {
+		console.error(`\n${busy.length === 1 ? 'This one is' : 'These are'} in use: deleting changes the URL and unpairs its phones.`);
+		for (const t of busy) console.error(`  ${t.tunnelId}  ${t.hostConnections > 0 ? 'online' : `this computer's ${ownUse(cfg, t.tunnelId)}`}`);
+		if (!(await confirm('Delete anyway?'))) {
+			console.error('Nothing deleted.');
+			return null;
+		}
+	}
+	return deleteTunnels(chosen);
+}
+
 // One tunnel per local port, so agents for different folders each keep their own URL and pairings.
 async function ensureTunnel(cfg, port, anonymous) {
 	const known = cfg.tunnels?.[port];
@@ -296,7 +339,7 @@ async function ensureTunnel(cfg, port, anonymous) {
 	if (!created.ok) {
 		const room = await makeRoom(devtunnel);
 		// Thrown, not exited: an agent bringing its tunnel up later keeps serving the LAN.
-		if (room?.full) throw Object.assign(new Error(tunnelLimitHelp(room.full, cfg)), { code: 'ETUNNELLIMIT' });
+		if (room?.full) throw Object.assign(new Error(tunnelLimitHelp(room.full, cfg)), { code: 'ETUNNELLIMIT', tunnels: room.full });
 		if (room?.freed) {
 			spinner.update(`(deleted ${room.freed.length} idle preview tunnel${room.freed.length > 1 ? 's' : ''} to make room)`);
 			if (room.freed.filter((id) => forgetTunnel(cfg, id)).length) saveConfig(cfg);
@@ -427,8 +470,9 @@ const USAGE = `Usage: coderemote <command> [options]
                        one Face ID check lasts
   rotate-token         revoke every paired device and stop running agents
   tunnels              list your dev tunnels account's tunnels (it may keep 10)
-  tunnels delete <id>...  delete tunnels nothing uses; one that is online or is this
-                       computer's needs --force (its URL changes, its phones unpair)
+  tunnels delete       choose tunnels to delete from a list (↑/↓, space, enter)
+  tunnels delete <id>...  delete these; one that is online or is this computer's
+                       needs --force (its URL changes, its phones unpair)
   update               install the latest coderemote (up says when there's one)
   requests [PORT]      list the requests that reached a previewed port, oldest first;
                        --grep TEXT, --failed (errors, 4xx and 5xx), --limit N (default 50)
@@ -656,8 +700,15 @@ async function start({ tunnel }) {
 			} catch (e) {
 				spinner.fail();
 				if (e.code !== 'ETUNNELLIMIT') throw e;
-				console.error(`\n${e.message}`);
-				process.exit(1);
+				// In a terminal, choose what to delete right here and carry on.
+				if (!process.stdin.isTTY || !process.stderr.isTTY || !e.tunnels) {
+					console.error(`\n${e.message}`);
+					process.exit(1);
+				}
+				console.error(`\nYour dev tunnels account already has ${e.tunnels.length} tunnels, the most it may keep. Choose ones nothing uses any more:\n`);
+				if (!(await chooseTunnelsToDelete(e.tunnels))) process.exit(1);
+				spinner.start('Connecting to the relay');
+				await connectTunnel({ interactive: false });
 			}
 		} else {
 			spinner.fail();
@@ -1093,10 +1144,20 @@ switch (cmd) {
 		}
 		const ids = rest.slice(1).filter((a) => !a.startsWith('--'));
 		if (!ids.length) {
-			console.error('Usage: coderemote tunnels delete <tunnel id>... [--force]');
-			process.exit(1);
+			if (!process.stdin.isTTY || !process.stderr.isTTY) {
+				console.error('Usage: coderemote tunnels delete <tunnel id>... [--force]  (run it in a terminal to choose from a list)');
+				process.exit(1);
+			}
+			if (!tunnels.length) {
+				console.log('No tunnels on this account.');
+				break;
+			}
+			const result = await chooseTunnelsToDelete(tunnels);
+			if (result === false) process.exit(1);
+			break;
 		}
 		let failed = false;
+		const chosen = [];
 		for (const id of ids) {
 			const tunnel = findTunnel(tunnels, id);
 			if (!tunnel) {
@@ -1106,22 +1167,15 @@ switch (cmd) {
 			}
 			// Deleting a tunnel in use changes its URL and unpairs every phone, here or on another computer.
 			const use = ownUse(cfg, tunnel.tunnelId);
-			if (!rest.includes('--force') && (tunnel.hostConnections > 0 || use)) {
+			if (!rest.includes('--force') && inUse(tunnel, cfg)) {
 				const why = tunnel.hostConnections > 0 ? 'an agent is serving it right now' : `it is this computer's ${use}`;
 				console.error(`${tunnel.tunnelId}: kept, ${why}. Deleting it unpairs its phones; add --force to delete it anyway.`);
 				failed = true;
 				continue;
 			}
-			const res = await devtunnel('delete', tunnel.tunnelId, '-f');
-			if (!res.ok) {
-				console.error(`${tunnel.tunnelId}: ${res.out.trim()}`);
-				failed = true;
-				continue;
-			}
-			if (forgetTunnel(cfg, tunnel.tunnelId)) saveConfig(cfg);
-			console.log(`deleted ${tunnel.tunnelId}${use ? ` (this computer's ${use}: the next \`coderemote up\` makes a new one)` : ''}`);
+			chosen.push(tunnel);
 		}
-		if (failed) process.exit(1);
+		if (!(await deleteTunnels(chosen)) || failed) process.exit(1);
 		break;
 	}
 	case 'login': {

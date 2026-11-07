@@ -8,9 +8,11 @@ import {
 	findTunnel,
 	forgetTunnel,
 	formatTunnels,
+	inUse,
 	listTunnels,
 	makeRoom,
 	ownUse,
+	pickerItems,
 	tunnelLimitHelp,
 	tunnelsAtLimit,
 } from '../src/tunnels.js';
@@ -83,7 +85,7 @@ test('lists the tunnels with what each is for, and how to delete one', async () 
 	]);
 	const help = tunnelLimitHelp(many(TUNNEL_LIMIT));
 	assert.match(help, /already has 10 tunnels/);
-	assert.match(help, /coderemote tunnels delete <tunnel id>/);
+	assert.match(help, /coderemote tunnels delete$/m);
 });
 
 test('an agent id is made once per port and kept, whatever else changes', () => {
@@ -107,4 +109,16 @@ test('a tunnel URL is remembered per port and forgotten with its tunnel, not the
 	assert.equal(forgetTunnel(cfg, 'joyful-plane-9g8wnjj'), true);
 	assert.equal(cfg.tunnelUrls[31580], undefined);
 	assert.equal(cfg.agentIds[31580], id);
+});
+
+test('lists tunnels for the picker with the ones in use last, marked', () => {
+	const cfg = { tunnels: { 31580: 'tunnel-1' } };
+	const account = [tunnel(0, { hostConnections: 1 }), tunnel(1), tunnel(2, { description: 'coderemote old' })];
+	const { tunnels, items } = pickerItems(account, cfg);
+	assert.deepEqual(tunnels.map((t) => t.tunnelId), ['tunnel-2.asse', 'tunnel-0.asse', 'tunnel-1.asse']);
+	assert.deepEqual(items.map((i) => i.warn), [false, true, true]);
+	assert.equal(items[0].note, 'coderemote old');
+	assert.match(items[1].note, /^online/);
+	assert.match(items[2].note, /this computer's agent on port 31580/);
+	assert.equal(inUse(tunnel(3), cfg), false);
 });
