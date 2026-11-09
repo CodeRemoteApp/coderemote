@@ -447,7 +447,7 @@ out of time. 400 for a missing query or an invalid regular expression.
 Repositories are found by scanning the shared folder up to 4 levels deep (hidden folders,
 `node_modules` and build output are skipped; repositories inside another one are found too). `repo` is a repository's
 absolute path; file paths are relative to it and must stay inside it. Git never prompts:
-pull/push use the machine's existing credentials or fail. Git failures return 409 with git's message.
+pull/push use the machine's existing credentials or fail. Pushing a branch with no upstream pushes it to the remote git would use (else `origin`, else the only remote) and sets that as its upstream. Git failures return 409 with git's message.
 
 | Route | Request | Response |
 | --- | --- | --- |

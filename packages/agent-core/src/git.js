@@ -186,8 +186,37 @@ export async function pull(repo) {
 }
 
 export async function push(repo) {
-	const { stdout, stderr } = await git(repo, ['push'], { timeout: 120_000 });
+	const { stdout, stderr } = await git(repo, await pushArgs(repo), { timeout: 120_000 });
 	return (stdout + stderr).trim();
+}
+
+/**
+ * `git push`, or, for a branch that tracks nothing yet (a remote added after the branch was made),
+ * `git push -u <remote> <branch>` so it starts tracking what it pushed, as `push.autoSetupRemote`
+ * would. The remote is the one git would push to, else `origin`, else the only one there is.
+ */
+async function pushArgs(repo) {
+	const { stdout: name } = await git(repo, ['symbolic-ref', '--short', '-q', 'HEAD'], { okCodes: [0, 1] });
+	const branch = name.trim();
+	if (!branch) return ['push'];
+	const { stdout: up } = await git(repo, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], {
+		okCodes: [0, 128],
+	});
+	if (up.trim()) return ['push'];
+	const config = async (key) =>
+		(await git(repo, ['config', '--get', key], { okCodes: [0, 1] })).stdout.trim();
+	const remotes = (await git(repo, ['remote'])).stdout.split('\n').map((r) => r.trim()).filter(Boolean);
+	const configured = [
+		await config(`branch.${branch}.pushRemote`),
+		await config('remote.pushDefault'),
+		await config(`branch.${branch}.remote`),
+	].find((r) => remotes.includes(r));
+	const remote = configured || (remotes.includes('origin') ? 'origin' : remotes.length === 1 ? remotes[0] : null);
+	if (!remote) {
+		if (remotes.length) throw new HttpError(409, `${branch} has no upstream and there are several remotes; set one with git push -u <remote> ${branch}`);
+		return ['push']; // no remote at all: git's own message says so
+	}
+	return ['push', '-u', remote, `refs/heads/${branch}:refs/heads/${branch}`];
 }
 
 export async function fetch(repo) {

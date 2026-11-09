@@ -366,6 +366,9 @@ test('git: branches, checkout, stash and fetch', async () => {
 	assert.equal(st.upstream, 'origin/feature');
 	st = await post('/api/git/checkout', { repo, branch: 'topic', create: true });
 	assert.equal(st.branch, 'topic');
+	await post('/api/git/push', { repo });
+	st = (await api('GET', '/api/git/status', { query: { repo } }));
+	assert.equal(st.upstream, 'origin/topic', 'pushing a branch without an upstream sets one');
 	st = await post('/api/git/checkout', { repo, branch: 'main' });
 	assert.equal(st.branch, 'main');
 	await assert.rejects(post('/api/git/checkout', { repo, branch: '--orphan' }), { status: 400 });
