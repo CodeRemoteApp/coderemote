@@ -1,6 +1,7 @@
 // The tunnel providers an agent can expose itself through. `up` picks one per run; everything
 // provider-specific (its CLI, sign-in, tunnels, previews) lives behind this interface, and
 // src/tunnel-session.js drives any of them the same way.
+import * as cloud from './cloud/index.js';
 import * as devtunnels from './devtunnels/index.js';
 
 /**
@@ -36,6 +37,9 @@ import * as devtunnels from './devtunnels/index.js';
  *   { preview: object | null, status: object | null, remover: object | null }} services
  *   what createAgentServer gets for previews, `GET /api/tunnel` and `DELETE /api/tunnel`; null
  *   for a feature the provider lacks
+ * @property {(hosted: { id: string, port: number }) => () => void} [keepAlive]
+ *   started once the tunnel is first hosted, for whatever the provider must renew while the agent
+ *   runs (Cloud reports its hostname as in use); returns the function that stops it
  * @property {(error: Error) => Promise<boolean>} [resolveLimit]
  *   after `ensure` threw ETUNNELLIMIT in a terminal: lets the user free room; true to try again
  * @property {{ connecting: string, checkingSignIn: string, signedOut: string, access: (account: string) => string }} text
@@ -45,6 +49,6 @@ import * as devtunnels from './devtunnels/index.js';
  */
 
 /** name -> module with `create(opts): TunnelProvider` */
-export const providers = { devtunnels };
+export const providers = { devtunnels, cloud };
 
 export const DEFAULT_PROVIDER = 'devtunnels';

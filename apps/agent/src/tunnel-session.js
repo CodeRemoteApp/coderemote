@@ -30,6 +30,7 @@ export function createTunnelSession({
 	let account;
 	let child = null;
 	let watcher = null;
+	let stopKeepAlive = null;
 	let later = null;
 	let hostedUrl = null;
 	let stopped = false;
@@ -93,6 +94,7 @@ export function createTunnelSession({
 			log,
 			...watchOptions,
 		});
+		stopKeepAlive = provider.keepAlive?.({ id, port }) ?? null;
 		services.status?.invalidate?.();
 		onUrl(hostedUrl);
 		const access = anonymous ? 'anyone with the link (no sign-in, --allow-anonymous)' : provider.text.access(user);
@@ -126,6 +128,7 @@ export function createTunnelSession({
 			stopped = true;
 			later?.stop();
 			watcher?.stop();
+			stopKeepAlive?.();
 			child?.kill();
 		},
 	};

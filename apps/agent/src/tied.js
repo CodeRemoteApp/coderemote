@@ -20,12 +20,13 @@ export const WATCHDOG = [
 
 /**
  * Spawns `command` tied to this process. `stdout` and `stderr` are as for `spawn` ('pipe' or
- * 'ignore'). The result is the watchdog's ChildProcess: its output is the command's, `kill()` ends the
+ * 'ignore'); `env` is the command's environment, the place for a secret it reads (never `args`).
+ * The result is the watchdog's ChildProcess: its output is the command's, `kill()` ends the
  * command and `exit` reports the command's code. On Windows, which has no `sh`, a plain spawn.
  */
-export function spawnTied(command, args, { stdout = 'ignore', stderr = 'ignore', platform = process.platform, spawnFn = spawn } = {}) {
-	if (platform === 'win32') return spawnFn(command, args, { stdio: ['ignore', stdout, stderr] });
-	const child = spawnFn('/bin/sh', ['-c', WATCHDOG, 'sh', command, ...args], { stdio: ['pipe', stdout, stderr] });
+export function spawnTied(command, args, { stdout = 'ignore', stderr = 'ignore', env = process.env, platform = process.platform, spawnFn = spawn } = {}) {
+	if (platform === 'win32') return spawnFn(command, args, { stdio: ['ignore', stdout, stderr], env });
+	const child = spawnFn('/bin/sh', ['-c', WATCHDOG, 'sh', command, ...args], { stdio: ['pipe', stdout, stderr], env });
 	child.stdin.on('error', () => {});
 	return child;
 }
