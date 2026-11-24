@@ -153,13 +153,13 @@ const AGENT_CSP = "default-src 'none'; style-src 'unsafe-inline'; script-src 'un
 
 /**
  * Whether the agent answers at `url` through the relay. With no host the relay holds the request
- * open, so a timeout means no. `connectToken` is null for an anonymous tunnel.
+ * open, so a timeout means no. `headers` are the provider's (a connect token for Dev Tunnels).
  */
-export async function probeAgent(url, connectToken, { timeoutMs = 20_000, fetchFn = fetch } = {}) {
+export async function probeAgent(url, headers = {}, { timeoutMs = 20_000, fetchFn = fetch } = {}) {
 	try {
 		const res = await fetchFn(`${url}/`, {
 			redirect: 'manual',
-			headers: connectToken ? { 'x-tunnel-authorization': `tunnel ${connectToken}` } : {},
+			headers,
 			signal: AbortSignal.timeout(timeoutMs),
 		});
 		await res.body?.cancel?.();

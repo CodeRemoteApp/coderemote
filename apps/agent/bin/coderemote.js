@@ -1,26 +1,20 @@
 #!/usr/bin/env node
-import { execFile, execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import qrcode from 'qrcode-terminal';
 import { createAgentServer, execCommand, isWindows, lanAddresses, DeviceRegistry, PRESENCE_WINDOWS, lanCertificate, loadIdentity, loadLocalSecret, qrAddresses, spawnCommand } from '@vsremote/agent-core';
-import { ensureDevtunnel } from '../src/providers/devtunnels/cli.js';
 import { ensureHookSecret, readHookSecret, runHook, writeHookLauncher } from '../src/hook.js';
-import { PreviewTunnel } from '../src/providers/devtunnels/preview.js';
 import { pushStore } from '../src/push-store.js';
 import { sessionStore } from '../src/session-store.js';
 import { AgentRegistry } from '../src/registry.js';
 import { ensureAgentId, rememberTunnelUrl } from '../src/agent-identity.js';
-import { findTunnel, forgetTunnel, formatTunnels, inUse, listTunnels, makeRoom, ownUse, pickerItems, signedInUser, TUNNEL_LIMIT, tunnelLimitHelp } from '../src/providers/devtunnels/tunnels.js';
-import { confirm, pick } from '../src/picker.js';
-import { MACHINE_LABEL, tunnelDelete, tunnelStatus } from '../src/providers/devtunnels/status.js';
-import { NotSignedIn, relayReachable, retryTunnel } from '../src/tunnel-retry.js';
-import { probeAgent, watchTunnel } from '../src/tunnel-watch.js';
+import { DEFAULT_PROVIDER, providers } from '../src/providers/index.js';
+import { createTunnelSession } from '../src/tunnel-session.js';
 import { availableUpdate, fetchLatest, installCommand, isNewer } from '../src/update.js';
 import pkg from '../package.json' with { type: 'json' };
 import { Redactor, filterRequests, formatDetail, formatList, redactDetail } from '../src/requests.js';
@@ -32,7 +26,6 @@ import { codeTunnelLogin, codeTunnelSignedIn, findCode, hostCodeTunnel } from '.
 import { firewallAdvice, firewallReport, lanAdapters } from '../src/windows-firewall.js';
 import { LAN_SERVICE_TYPE, PROTOCOL_VERSION, pairingUrl, webUrl } from '@vsremote/protocol';
 
-const run = promisify(execFile);
 const CONFIG_DIR = path.join(os.homedir(), '.coderemote');
 // Releases before the rename kept their token and tunnel here; moving them keeps every pairing.
 const LEGACY_CONFIG_DIR = path.join(os.homedir(), '.vsremote');
@@ -192,213 +185,6 @@ async function advertiseLan(lanPort, fingerprint, agentPort) {
 	}
 }
 
-// The Dev Tunnels CLI: the one on PATH, or a copy downloaded into ~/.coderemote/bin on first use.
-let DEVTUNNEL = 'devtunnel';
-
-async function resolveDevtunnel() {
-	let installing = false;
-	DEVTUNNEL = await ensureDevtunnel({
-		dir: path.join(CONFIG_DIR, 'bin'),
-		progress: (detail) => {
-			if (!installing) {
-				installing = true;
-				spinner.start('Installing devtunnel (Microsoft Dev Tunnels CLI, one time)');
-			}
-			spinner.update(detail);
-		},
-	});
-	if (installing) spinner.succeed();
-}
-
-async function devtunnel(...args) {
-	try {
-		const { stdout } = await run(DEVTUNNEL, args);
-		return { ok: true, out: stdout };
-	} catch (e) {
-		return { ok: false, out: `${e.stdout || ''}${e.stderr || ''}` || e.message };
-	}
-}
-
-/** `devtunnel user login` arguments: GitHub by default, as `coderemote login` documents. */
-function loginArgs(opts = rest) {
-	const args = ['user', 'login'];
-	if (!opts.includes('--microsoft')) args.push('-g');
-	if (opts.includes('--device-code')) args.push('-d');
-	return args;
-}
-
-function interactiveLogin(args) {
-	return new Promise((resolve) => {
-		spawn(DEVTUNNEL, args, { stdio: 'inherit' }).on('exit', resolve);
-	});
-}
-
-/** Runs `devtunnel user login` in this terminal (it opens the browser), or explains how to. */
-async function login(reason) {
-	spinner.stop();
-	console.error(`Dev tunnels: ${reason.trim()}`);
-	if (!process.stdin.isTTY) {
-		console.error('Run `coderemote login` (--microsoft for a Microsoft account), then try again.');
-		process.exit(1);
-	}
-	console.error('Signing in with GitHub (use `coderemote login --microsoft` for a Microsoft account)...\n');
-	if ((await interactiveLogin(loginArgs([]))) !== 0) {
-		console.error('\nLogin failed. Run `coderemote login` (--microsoft, --device-code), then try again.');
-		process.exit(1);
-	}
-}
-
-/** The signed-in dev tunnels account, e.g. "thanh (GitHub)", logging in first when needed. */
-async function tunnelUser() {
-	let who = await devtunnel('user', 'show');
-	if (!signedInUser(who)) {
-		await login(who.out || 'not logged in');
-		who = await devtunnel('user', 'show');
-	}
-	return signedInUser(who) ?? who.out.trim();
-}
-
-/**
- * Makes the tunnel private (only the account that owns it, after signing in on the phone or
- * browser) or anonymous (the agent token alone). The tunnel id, and so its URL, never changes.
- */
-function applyAccess(tunnelId, anonymous) {
-	return anonymous
-		? devtunnel('access', 'create', tunnelId, '--anonymous')
-		: devtunnel('access', 'reset', tunnelId);
-}
-
-/** Deletes the account's `chosen` tunnels and forgets this computer's ones; whether all went. */
-async function deleteTunnels(chosen) {
-	let ok = true;
-	for (const tunnel of chosen) {
-		const use = ownUse(cfg, tunnel.tunnelId);
-		const res = await devtunnel('delete', tunnel.tunnelId, '-f');
-		if (!res.ok) {
-			console.error(`${tunnel.tunnelId}: ${res.out.trim()}`);
-			ok = false;
-			continue;
-		}
-		if (forgetTunnel(cfg, tunnel.tunnelId)) saveConfig(cfg);
-		console.log(`deleted ${tunnel.tunnelId}${use ? ` (this computer's ${use}: the next \`coderemote up\` makes a new one)` : ''}`);
-	}
-	return ok;
-}
-
-/**
- * Lists the account's tunnels to tick the ones to delete, asks once more when any is in use, and
- * deletes them. True when some were deleted, null when the user backed out, false on a failure.
- * Needs a terminal.
- */
-async function chooseTunnelsToDelete(tunnels) {
-	const { tunnels: listed, items } = pickerItems(tunnels, cfg);
-	const picked = await pick({ title: `Delete tunnels on your dev tunnels account (${tunnels.length} of ${TUNNEL_LIMIT}):`, items });
-	if (!picked) {
-		console.error('Nothing deleted.');
-		return null;
-	}
-	const chosen = picked.map((i) => listed[i]);
-	const busy = chosen.filter((t) => inUse(t, cfg));
-	if (busy.length) {
-		console.error(`\n${busy.length === 1 ? 'This one is' : 'These are'} in use: deleting changes the URL and unpairs its phones.`);
-		for (const t of busy) console.error(`  ${t.tunnelId}  ${t.hostConnections > 0 ? 'online' : `this computer's ${ownUse(cfg, t.tunnelId)}`}`);
-		if (!(await confirm('Delete anyway?'))) {
-			console.error('Nothing deleted.');
-			return null;
-		}
-	}
-	return deleteTunnels(chosen);
-}
-
-// One tunnel per local port, so agents for different folders each keep their own URL and pairings.
-async function ensureTunnel(cfg, port, anonymous) {
-	const known = cfg.tunnels?.[port];
-	if (known) {
-		// Each devtunnel call takes 1-2s, so run them together. Tunnels expire 30 days after the
-		// last update; pushing that back keeps the URL (and every pairing) for good. The label
-		// lets the account's other agents list this machine (tunnels from older releases lack it).
-		const update = () => devtunnel('update', known, '--expiration', '30d', '--add-labels', MACHINE_LABEL);
-		let [updated, access] = await Promise.all([update(), applyAccess(known, anonymous)]);
-		// Both calls write the same tunnel, so the service can reject the loser with "Conflicting
-		// request" (optimistic concurrency). The other one has finished by now: just redo the loser.
-		const conflict = (res) => !res.ok && /conflicting request/i.test(res.out);
-		if (conflict(updated)) updated = await update();
-		if (conflict(access)) access = await applyAccess(known, anonymous);
-		if (updated.ok) {
-			if (!access.ok) throw new Error(`devtunnel access failed:\n${access.out}`);
-			return known;
-		}
-		// Only a tunnel that's really gone is replaced: a new one changes the URL and unpairs every device.
-		if (!/not found/i.test(updated.out)) throw new Error(`devtunnel update failed:\n${updated.out}`);
-	}
-
-	// Every request needs the agent's bearer token either way; a private tunnel also needs a sign-in.
-	// Agents beyond the first on this machine say which port they are, to tell them apart in the app.
-	const name = port === DEFAULT_PORT ? os.hostname() : `${os.hostname()} :${port}`;
-	const createArgs = ['create', '--expiration', '30d', '-d', `coderemote ${name}`, '--labels', MACHINE_LABEL, '--json'];
-	if (anonymous) createArgs.push('--allow-anonymous');
-	let created = await devtunnel(...createArgs);
-	if (!created.ok) {
-		const room = await makeRoom(devtunnel);
-		// Thrown, not exited: an agent bringing its tunnel up later keeps serving the LAN.
-		if (room?.full) throw Object.assign(new Error(tunnelLimitHelp(room.full, cfg)), { code: 'ETUNNELLIMIT', tunnels: room.full });
-		if (room?.freed) {
-			spinner.update(`(deleted ${room.freed.length} idle preview tunnel${room.freed.length > 1 ? 's' : ''} to make room)`);
-			if (room.freed.filter((id) => forgetTunnel(cfg, id)).length) saveConfig(cfg);
-			created = await devtunnel(...createArgs);
-		}
-		if (!created.ok) throw new Error(`devtunnel create failed:\n${created.out}`);
-	}
-	const tunnelId = JSON.parse(created.out.slice(created.out.indexOf('{'))).tunnel?.tunnelId;
-	if (!tunnelId) throw new Error(`could not parse tunnel id from:\n${created.out}`);
-
-	const portRes = await devtunnel('port', 'create', tunnelId, '-p', String(port), '--protocol', 'http');
-	if (!portRes.ok) throw new Error(`devtunnel port create failed:\n${portRes.out}`);
-
-	cfg.tunnels = { ...cfg.tunnels, [port]: tunnelId };
-	// Still read by older releases, so going back to one keeps the default port's pairings.
-	if (port === DEFAULT_PORT) cfg.tunnelId = tunnelId;
-	saveConfig(cfg);
-	return tunnelId;
-}
-
-/** A dev tunnels connect token (24h) for the app's sign-in handoff and renewals. */
-async function connectToken(tunnelId) {
-	const res = await devtunnel('token', tunnelId, '--scopes', 'connect', '--json');
-	if (!res.ok) throw new Error(res.out.trim());
-	const body = JSON.parse(res.out.slice(res.out.indexOf('{')));
-	// "2026-10-27 01:52:06 UTC"
-	const expiresAt = Date.parse(body.expiration.replace(' UTC', 'Z').replace(' ', 'T'));
-	if (!body.token || !Number.isFinite(expiresAt)) throw new Error(`unexpected devtunnel token output:\n${res.out}`);
-	return { token: body.token, expiresAt };
-}
-
-/** `timeoutMs`: give up (and end the host) when it hasn't connected by then. */
-function hostTunnel(tunnelId, port, { timeoutMs = 0 } = {}) {
-	return new Promise((resolve, reject) => {
-		// Tied to the agent: a host outliving it would keep the tunnel and block the next `up`.
-		const child = spawnTied(DEVTUNNEL, ['host', tunnelId], { stdout: 'pipe', stderr: 'pipe' });
-		let log = '';
-		const timer = timeoutMs
-			? setTimeout(() => {
-					child.kill();
-					reject(new Error(`devtunnel host didn't connect within ${timeoutMs / 1000}s:\n${log}`));
-				}, timeoutMs)
-			: null;
-		const onData = (d) => {
-			log += d;
-			const m = log.match(new RegExp(`https://\\S*-${port}\\.\\S*devtunnels\\.ms\\S*`));
-			if (m) {
-				clearTimeout(timer);
-				resolve({ child, url: m[0].replace(/\/$/, '') });
-			}
-		};
-		child.stdout.on('data', onData);
-		child.stderr.on('data', onData);
-		child.on('exit', (code) => reject(new Error(`devtunnel host exited (${code}):\n${log}`)));
-	});
-}
-
 /**
  * `url`: the tunnel's address, or null for an agent that never had one and started offline.
  * `link`: `{ agentId, lan }` with a LAN listener; `lan` (what lets the app pin the agent and reach
@@ -534,6 +320,11 @@ const root = path.resolve(flag('--root') ?? process.cwd());
 const cfg = loadConfig();
 const registry = new AgentRegistry(path.join(CONFIG_DIR, 'agents'));
 
+/** The tunnel provider this run uses (Dev Tunnels, the only one so far). */
+function tunnelProvider() {
+	return providers[DEFAULT_PROVIDER].create({ configDir: CONFIG_DIR, spinner, cfg, saveConfig, loadConfig, defaultPort: DEFAULT_PORT });
+}
+
 async function start({ tunnel }) {
 	const agents = registry.list();
 	if (flag('--port')) {
@@ -565,41 +356,20 @@ async function start({ tunnel }) {
 		}
 	}
 	let server;
-	// Set once the tunnel exists; anonymous tunnels hand out nothing.
-	let tunnelId;
-	const tunnelToken = async () => (tunnel && !anonymous && tunnelId ? connectToken(tunnelId) : null);
-	// Created on the first preview; keyed by port so agents for different folders don't share one.
-	const preview = tunnel
-		? new PreviewTunnel({
-				devtunnel,
-				command: () => DEVTUNNEL,
-				description: `coderemote preview ${os.hostname()}`,
-				leftover: cfg.previewTunnels?.[port],
-				remember: (id) => {
-					cfg.previewTunnels = { ...cfg.previewTunnels, [port]: id };
-					if (!id) delete cfg.previewTunnels[port];
-					saveConfig(cfg);
-				},
-				mintToken: connectToken,
-			})
-		: null;
-	let account;
-	const status = tunnel
-		? tunnelStatus({ devtunnel, tunnelId: () => tunnelId, account: () => account, anonymous, preview })
-		: null;
-	// The app's Settings › Connections deletes tunnels the account no longer needs through here.
-	const remover = tunnel
-		? tunnelDelete({
-				devtunnel,
-				tunnelId: () => tunnelId,
-				deleted: (id) => {
-					status.invalidate();
-					// Another agent of this computer's: its next `coderemote up` makes a new one.
-					const saved = loadConfig();
-					if (forgetTunnel(saved, id)) saveConfig(saved);
+	// Reported in /api/info while hosted; an agent started offline sets it once it connects.
+	const session = tunnel
+		? createTunnelSession({
+				provider: tunnelProvider(),
+				port,
+				anonymous,
+				spinner,
+				// Offline later, the QR still names it (its URL can't be worked out from the tunnel id).
+				onUrl: (hosted) => {
+					if (rememberTunnelUrl(cfg, port, hosted)) saveConfig(cfg);
 				},
 			})
 		: null;
+	const { preview = null, status = null, remover = null } = session?.services ?? {};
 	// Devices on the same network connect directly, unless turned off (`up --no-lan`, `"lan": false`).
 	const lanWanted = tunnel && (rest.includes('--no-lan') ? false : rest.includes('--lan') || cfg.lan !== false);
 	let lanCert = null;
@@ -619,11 +389,9 @@ async function start({ tunnel }) {
 	const hadAgentId = cfg.agentIds?.[port];
 	const agentId = ensureAgentId(cfg, port);
 	if (agentId !== hadAgentId) saveConfig(cfg);
-	// Reported in /api/info while hosted; an agent started offline sets it once it connects.
-	let hostedUrl = null;
 	spinner.start('Starting agent');
 	try {
-		server = await listen(cfg.token, port, root, tunnelToken, preview, status, remover, lanCert, agentId, () => hostedUrl, e2eKey);
+		server = await listen(cfg.token, port, root, session?.tunnelToken ?? null, preview, status, remover, lanCert, agentId, () => session?.hostedUrl() ?? null, e2eKey);
 	} catch (e) {
 		spinner.fail();
 		if (e.code !== 'EADDRINUSE') throw e;
@@ -645,74 +413,12 @@ async function start({ tunnel }) {
 			firewall = firewallReport().then((report) => firewallAdvice(report, { lanPort, adapters: lanAdapters(os.networkInterfaces()) }));
 		}
 	}
-	let child;
-	let watcher = null;
 	let access;
 	let url = `http://127.0.0.1:${port}`;
-	let later = null;
-
-	/**
-	 * Signs in (only when `interactive`: in the background there's no one to open a browser for),
-	 * creates or updates the tunnel and hosts it. Sets the agent's tunnel state; returns the URL.
-	 */
-	async function connectTunnel({ interactive }) {
-		await resolveDevtunnel();
-		if (interactive) spinner.start('Checking dev tunnels sign-in');
-		let user;
-		if (interactive) user = await tunnelUser();
-		else {
-			user = signedInUser(await devtunnel('user', 'show'));
-			if (!user) throw new NotSignedIn();
-		}
-		account = user;
-		if (interactive) {
-			spinner.succeed();
-			// Connecting to the relay is the slow part; update the tunnel's settings meanwhile.
-			spinner.start('Connecting to the relay');
-		}
-		const known = cfg.tunnels?.[port];
-		let hosting = known ? hostTunnel(known, port) : null;
-		hosting?.catch(() => {});
-		let id;
-		try {
-			id = await ensureTunnel(cfg, port, anonymous);
-		} catch (e) {
-			hosting?.then((h) => h.child.kill(), () => {});
-			throw e;
-		}
-		if (id !== known) {
-			// The saved tunnel was gone and a new one was created.
-			hosting?.then((h) => h.child.kill(), () => {});
-			hosting = hostTunnel(id, port);
-		}
-		const hosted = await hosting;
-		tunnelId = id;
-		child = hosted.child;
-		url = hosted.url;
-		hostedUrl = url;
-		// Days later the host may have exited or lost the relay: host it again when it has.
-		let probeToken = null;
-		watcher = watchTunnel({
-			hosted,
-			host: () => hostTunnel(id, port, { timeoutMs: 90_000 }),
-			probe: async (at) => {
-				if (!anonymous && !(probeToken && probeToken.expiresAt - Date.now() > 3_600_000)) probeToken = await connectToken(id);
-				return probeAgent(at, anonymous ? null : probeToken.token);
-			},
-			reachable: () => relayReachable(),
-			onHosted: (next) => {
-				child = next.child;
-			},
-			log: (message) => console.log(`\n  ${message}`),
-		});
-		status?.invalidate?.();
-		// Offline later, the QR still names it (its URL can't be worked out from the tunnel id).
-		if (rememberTunnelUrl(cfg, port, url)) saveConfig(cfg);
-		access = anonymous
-			? 'anyone with the link (no sign-in, --allow-anonymous)'
-			: `sign-in required as ${user}`;
+	const connectTunnel = async (opts) => {
+		({ url, access } = await session.connect(opts));
 		return url;
-	}
+	};
 
 	let offline = false;
 	if (tunnel) {
@@ -720,7 +426,7 @@ async function start({ tunnel }) {
 		// Without internet the agent still serves the local network, and connects its tunnel later.
 		if (lan.port) {
 			spinner.start('Checking the internet');
-			offline = !(await relayReachable());
+			offline = !(await session.provider.reachable());
 		}
 		if (!offline) {
 			try {
@@ -728,26 +434,19 @@ async function start({ tunnel }) {
 			} catch (e) {
 				spinner.fail();
 				if (e.code !== 'ETUNNELLIMIT') throw e;
-				// In a terminal, choose what to delete right here and carry on.
-				if (!process.stdin.isTTY || !process.stderr.isTTY || !e.tunnels) {
+				const { provider } = session;
+				if (!process.stdin.isTTY || !process.stderr.isTTY || !e.tunnels || !provider.resolveLimit) {
 					console.error(`\n${e.message}`);
 					process.exit(1);
 				}
-				console.error(`\nYour dev tunnels account already has ${e.tunnels.length} tunnels, the most it may keep. Choose ones nothing uses any more:\n`);
-				if (!(await chooseTunnelsToDelete(e.tunnels))) process.exit(1);
-				spinner.start('Connecting to the relay');
+				if (!(await provider.resolveLimit(e))) process.exit(1);
+				spinner.start(provider.text.connecting);
 				await connectTunnel({ interactive: false });
 			}
 		} else {
 			spinner.fail();
 			url = cfg.tunnelUrls?.[port] ?? null;
-			later = retryTunnel({
-				reachable: () => relayReachable(),
-				connect: () => connectTunnel({ interactive: false }),
-				onSignedOut: () => console.log('\n  Internet is back, but no one is signed in to dev tunnels: run `coderemote login`.'),
-				onError: (e) => console.log(`\n  Couldn't connect the tunnel yet (${e.message.split('\n')[0]}); retrying.`),
-			});
-			later.done.then((connected) => {
+			session.connectLater().then((connected) => {
 				registry.register({ port, root, url: connected });
 				console.log(`\n  Tunnel connected: ${connected}`);
 				console.log(`  Web:  ${webUrl({ url: connected, token: cfg.token })}  (through the relay: prefer the QR code)`);
@@ -758,9 +457,7 @@ async function start({ tunnel }) {
 	spinner.succeed();
 	registry.register({ port, root, url: url ?? `http://127.0.0.1:${port}` });
 	const shutdown = async () => {
-		later?.stop();
-		watcher?.stop();
-		child?.kill();
+		session?.stop();
 		advertiser?.kill();
 		// Previews get a new tunnel every run, so this one would only take up a slot of the account's 10.
 		await preview?.close();
@@ -775,9 +472,7 @@ async function start({ tunnel }) {
 	process.on('SIGHUP', shutdown);
 	// Last resort for any other way out (an uncaught error): never leave the tunnel host behind.
 	process.on('exit', () => {
-		later?.stop();
-		watcher?.stop();
-		child?.kill();
+		session?.stop();
 		advertiser?.kill();
 		preview?.stop();
 	});
@@ -1161,56 +856,12 @@ switch (cmd) {
 		break;
 	}
 	case 'tunnels': {
-		await resolveDevtunnel();
-		const { tunnels, error } = await listTunnels(devtunnel);
-		if (error) {
-			console.error(error);
-			console.error('Signed in? Run `coderemote login`.');
-			process.exit(1);
-		}
-		if (rest[0] !== 'delete') {
-			console.log(tunnels.length ? formatTunnels(tunnels, cfg).join('\n') : 'No tunnels on this account.');
-			break;
-		}
-		const ids = rest.slice(1).filter((a) => !a.startsWith('--'));
-		if (!ids.length) {
-			if (!process.stdin.isTTY || !process.stderr.isTTY) {
-				console.error('Usage: coderemote tunnels delete <tunnel id>... [--force]  (run it in a terminal to choose from a list)');
-				process.exit(1);
-			}
-			if (!tunnels.length) {
-				console.log('No tunnels on this account.');
-				break;
-			}
-			const result = await chooseTunnelsToDelete(tunnels);
-			if (result === false) process.exit(1);
-			break;
-		}
-		let failed = false;
-		const chosen = [];
-		for (const id of ids) {
-			const tunnel = findTunnel(tunnels, id);
-			if (!tunnel) {
-				console.error(`${id}: no such tunnel on this account`);
-				failed = true;
-				continue;
-			}
-			// Deleting a tunnel in use changes its URL and unpairs every phone, here or on another computer.
-			const use = ownUse(cfg, tunnel.tunnelId);
-			if (!rest.includes('--force') && inUse(tunnel, cfg)) {
-				const why = tunnel.hostConnections > 0 ? 'an agent is serving it right now' : `it is this computer's ${use}`;
-				console.error(`${tunnel.tunnelId}: kept, ${why}. Deleting it unpairs its phones; add --force to delete it anyway.`);
-				failed = true;
-				continue;
-			}
-			chosen.push(tunnel);
-		}
-		if (!(await deleteTunnels(chosen)) || failed) process.exit(1);
+		await tunnelProvider().commands.tunnels(rest);
 		break;
 	}
 	case 'login': {
-		await resolveDevtunnel();
-		process.exit(await interactiveLogin(loginArgs()));
+		await tunnelProvider().commands.login(rest);
+		break;
 	}
 	case 'update': {
 		if (!PACKAGED) {
