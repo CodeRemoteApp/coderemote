@@ -106,7 +106,7 @@ function portFree(port) {
 	});
 }
 
-function listen(token, port, root, tunnelToken, preview, status, remover, lan, agentId, tunnelUrl, e2e) {
+function listen(token, port, root, tunnelToken, preview, status, remover, lan, agentId, tunnelUrl, e2e, tunnelProvider) {
 	const hookSecret = ensureHookSecret(CONFIG_DIR);
 	writeHookLauncher(CONFIG_DIR, { script: fs.realpathSync(process.argv[1]) });
 	const server = createAgentServer({
@@ -131,6 +131,7 @@ function listen(token, port, root, tunnelToken, preview, status, remover, lan, a
 		onDeviceEnrolled: (d) => console.log(`\n  Device enrolled: ${d.name} (${d.id}). Revoke it with \`coderemote devices revoke ${d.id}\`.`),
 		agentId,
 		tunnelUrl,
+		tunnelProvider,
 	});
 	return new Promise((resolve, reject) => {
 		server.once('error', reject);
@@ -391,7 +392,7 @@ async function start({ tunnel }) {
 	if (agentId !== hadAgentId) saveConfig(cfg);
 	spinner.start('Starting agent');
 	try {
-		server = await listen(cfg.token, port, root, session?.tunnelToken ?? null, preview, status, remover, lanCert, agentId, () => session?.hostedUrl() ?? null, e2eKey);
+		server = await listen(cfg.token, port, root, session?.tunnelToken ?? undefined, preview, status, remover, lanCert, agentId, () => session?.hostedUrl() ?? null, e2eKey, session?.provider.name ?? null);
 	} catch (e) {
 		spinner.fail();
 		if (e.code !== 'EADDRINUSE') throw e;

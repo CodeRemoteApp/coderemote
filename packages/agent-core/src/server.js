@@ -210,6 +210,7 @@ async function readJson(req) {
  * @param {object} [opts.deviceOptions]  limits of the device sessions (tests shorten them)
  * @param {string | null} [opts.agentId]  this agent's lasting identity, reported in `/api/info`
  * @param {() => string | null} [opts.tunnelUrl]  the tunnel's public URL while it is hosted
+ * @param {string | null} [opts.tunnelProvider]  the tunnel provider's name, reported with that URL
  * @param {{ checkMs?: number, graceMs?: number, killedMs?: number }} [opts.previewSweep]  how often
  *        previews are checked for a dev server that stopped, and how long one may stay silent
  *        (after a stop from the Ports tab: how long until it is checked)
@@ -247,8 +248,10 @@ export function createAgentServer({
 	deviceOptions = {},
 	agentId = null,
 	tunnelUrl = () => null,
+	tunnelProvider = null,
 }) {
-	const handoff = new TunnelHandoff({ token, mint: tunnelToken });
+	// Without one (no tunnel, or a provider without sign-in) there is nothing to hand out.
+	const handoff = new TunnelHandoff({ token, mint: tunnelToken ?? (async () => null) });
 	const sandbox = new Sandbox(root);
 	const sessions = new SessionManager({
 		onExit: (id) => agents.terminalExited(id),
@@ -535,7 +538,7 @@ export function createAgentServer({
 	}
 
 	function previewPort(value, ownPort) {
-		if (!preview) throw new HttpError(404, 'previews need a tunnel');
+		if (!preview) throw new HttpError(404, 'previews need a tunnel that supports them');
 		const port = Number(value);
 		if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(400, 'port must be 1-65535');
 		if (port === ownPort) throw new HttpError(400, "the agent's own port is already on its tunnel");
@@ -673,7 +676,7 @@ export function createAgentServer({
 			shell: isWindows ? interactiveShell().file : process.env.SHELL || null,
 			agentId,
 			// Null until the tunnel is hosted (an agent started offline connects it later).
-			tunnel: tunnelUrl() ? { url: tunnelUrl() } : null,
+			tunnel: tunnelUrl() ? { url: tunnelUrl(), provider: tunnelProvider } : null,
 		}),
 
 		[Routes.e2eTicket]: async (url, req) => {
@@ -988,7 +991,7 @@ export function createAgentServer({
 		},
 
 		[Routes.previewList]: async () => {
-			if (!preview) throw new HttpError(404, 'previews need a tunnel');
+			if (!preview) throw new HttpError(404, 'previews need a tunnel that supports them');
 			return previews();
 		},
 

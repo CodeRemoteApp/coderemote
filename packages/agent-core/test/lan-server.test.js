@@ -32,6 +32,7 @@ before(async () => {
 		lanAddresses: () => ['192.168.1.5'],
 		agentId: 'c'.repeat(32),
 		tunnelUrl: () => hostedUrl,
+		tunnelProvider: 'devtunnels',
 		tunnelToken: async () => ({ token: 'tunnel-1', expiresAt: Date.now() + 3_600_000 }),
 	});
 	await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -130,7 +131,7 @@ test('/api/info reports the agent id, and the tunnel once it is hosted', async (
 	assert.equal(before.tunnel, null);
 	hostedUrl = 'https://x-31580.asse.devtunnels.ms';
 	const after = JSON.parse((await lanRequest(infoPath, { headers: auth })).text);
-	assert.deepEqual(after.tunnel, { url: hostedUrl });
+	assert.deepEqual(after.tunnel, { url: hostedUrl, provider: 'devtunnels' });
 	assert.equal(after.agentId, before.agentId);
 	hostedUrl = null;
 });

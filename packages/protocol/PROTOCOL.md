@@ -186,11 +186,14 @@ record never carries the token or the shared folder.
 
 `agentId` is the agent's identity: 32 hex characters, made once per agent port and kept across
 restarts and token rotations, so a client that pairs again recognizes the machine. `tunnel` is
-`{ url }` while the agent hosts its tunnel, else `null`: an agent started without internet runs on
-the local network only and connects its tunnel once it can, without restarting.
+`{ url, provider }` while the agent hosts its tunnel, else `null`: an agent started without
+internet runs on the local network only and connects its tunnel once it can, without restarting.
+`provider` names the tunnel service the agent uses, so a client can tell how to sign in to it.
+Its only value so far is `"devtunnels"` (Microsoft Dev Tunnels), as in `GET /api/tunnel`. Agents
+before it sent `{ url }` alone: read a missing `provider` as `"devtunnels"`.
 
-Adding `lan`, `agentId` and `tunnel` didn't change the protocol version: clients that don't know
-them ignore them.
+Adding `lan`, `agentId`, `tunnel` and `tunnel.provider` didn't change the protocol version:
+clients that don't know them ignore them.
 
 ## End-to-end encryption
 

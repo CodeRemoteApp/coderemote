@@ -71,6 +71,10 @@ function fakeProvider({ known = null, ensureId = known ?? 'new-id', ensureError 
 	return provider;
 }
 
+// The real code unrefs its timers so they never keep the agent alive; here they must keep the
+// test's event loop running until the awaited step happens.
+const keptTimers = { setTimer: (fn, ms) => ({ id: setTimeout(fn, ms) }), clearTimer: (t) => clearTimeout(t.id) };
+
 function session(provider, opts = {}) {
 	const logs = [];
 	const urls = [];
@@ -81,8 +85,8 @@ function session(provider, opts = {}) {
 		spinner: quiet,
 		log: (m) => logs.push(m),
 		onUrl: (u) => urls.push(u),
-		watchOptions: { intervalMs: 1e9, exitGraceMs: 1, firstRetryMs: 1 },
-		retryOptions: { firstMs: 1, maxMs: 1 },
+		watchOptions: { intervalMs: 1e9, exitGraceMs: 1, firstRetryMs: 1, ...keptTimers },
+		retryOptions: { firstMs: 1, maxMs: 1, ...keptTimers },
 		...opts,
 	});
 	return { s, logs, urls };
@@ -167,4 +171,60 @@ test('stop leaves no host running, even one still connecting', async () => {
 test('a provider without sign-in hands out no tokens', () => {
 	const { s } = session(fakeProvider({ features: { signIn: false } }));
 	assert.equal(s.tunnelToken, null);
+});
+
+test('a provider without the optional features gets their routes answering 404, the rest working', async () => {
+	const { createAgentServer } = await import('@vsremote/agent-core');
+	const { TUNNEL_HANDOFF_PATH } = await import('@vsremote/protocol');
+	const { createHmac } = await import('node:crypto');
+	const fs = await import('node:fs');
+	const os = await import('node:os');
+	const path = await import('node:path');
+	const off = { preview: false, share: false, machines: false, deleteTunnels: false, signIn: false };
+	const provider = fakeProvider({ features: off });
+	// Even when a provider builds them anyway, what it says it lacks stays off.
+	const status = async () => ({ provider: 'fake' });
+	provider.services = () => ({ preview: { list: () => [] }, status, remover: async () => ({}) });
+	const { s } = session(provider);
+	await s.connect({ interactive: false });
+	assert.deepEqual(s.services, { preview: null, status: null, remover: null });
+
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cr-session-'));
+	const token = 'pair-token';
+	const server = createAgentServer({
+		token,
+		root,
+		tunnelToken: s.tunnelToken ?? undefined,
+		preview: s.services.preview,
+		tunnelStatus: s.services.status,
+		tunnelDelete: s.services.remover,
+		tunnelUrl: () => s.hostedUrl(),
+		tunnelProvider: provider.name,
+	});
+	await new Promise((r) => server.listen(0, '127.0.0.1', r));
+	const base = `http://127.0.0.1:${server.address().port}`;
+	const call = (method, route) => fetch(new URL(route, base), { method, headers: { authorization: `Bearer ${token}` }, redirect: 'manual' });
+	try {
+		const preview = await call('GET', '/api/preview');
+		assert.equal(preview.status, 404);
+		assert.match((await preview.json()).error, /tunnel that supports them/);
+		assert.equal((await call('GET', '/api/tunnel')).status, 404);
+		assert.equal((await call('DELETE', '/api/tunnel')).status, 404);
+		assert.equal((await call('POST', '/api/tunnel/token')).status, 404);
+		const nonce = `${Math.floor(Date.now() / 1000)}.abc`;
+		const handoff = new URL(TUNNEL_HANDOFF_PATH, base);
+		handoff.searchParams.set('nonce', nonce);
+		handoff.searchParams.set('sig', createHmac('sha256', token).update(nonce).digest('base64url'));
+		handoff.searchParams.set('state', 'state-12345');
+		assert.equal((await fetch(handoff, { redirect: 'manual' })).status, 404);
+
+		const info = await call('GET', '/api/info');
+		assert.equal(info.status, 200);
+		assert.deepEqual((await info.json()).tunnel, { url: 'https://new-id-31590.example', provider: 'fake' });
+		assert.equal((await call('GET', '/api/term')).status, 200);
+	} finally {
+		server.close();
+		s.stop();
+		fs.rmSync(root, { recursive: true, force: true });
+	}
 });

@@ -34,7 +34,14 @@ export function createTunnelSession({
 	let hostedUrl = null;
 	let stopped = false;
 
-	const services = provider.services({ port, tunnelId: () => tunnelId, account: () => account, anonymous });
+	// What the agent's routes get; null for a feature the provider lacks, so those answer 404.
+	const offered = provider.services({ port, tunnelId: () => tunnelId, account: () => account, anonymous });
+	const { features } = provider;
+	const services = {
+		preview: features.preview ? offered.preview : null,
+		status: features.machines ? offered.status : null,
+		remover: features.deleteTunnels ? offered.remover : null,
+	};
 	const kill = (hosting) => hosting?.then((h) => h.child.kill(), () => {});
 
 	/**
