@@ -53,14 +53,28 @@ test('a signed handoff redirects to the app with a tunnel token', async () => {
 	assert.equal(res.headers.get('cache-control'), 'no-store');
 });
 
-test('links signed without the pairing token, stale or replayed are refused', async () => {
-	assert.equal((await fetch(link(base, { key: 'wrong' }), { redirect: 'manual' })).status, 403);
+test('links signed without the pairing token, stale or replayed under another state are refused', async () => {
+	const refused = async (url) => {
+		const res = await fetch(url, { redirect: 'manual' });
+		assert.equal(res.status, 403);
+		return (await res.json()).code;
+	};
+	assert.equal(await refused(link(base, { key: 'wrong' })), 'EHANDOFF');
 	const stale = `${Math.floor(Date.now() / 1000) - 3600}.x`;
-	assert.equal((await fetch(link(base, { nonce: stale }), { redirect: 'manual' })).status, 403);
-	assert.equal((await fetch(link(base, { state: 'bad state!' }), { redirect: 'manual' })).status, 403);
+	assert.equal(await refused(link(base, { nonce: stale })), 'EHANDOFFEXPIRED');
+	assert.equal(await refused(link(base, { state: 'bad state!' })), 'EHANDOFF');
+	const nonce = `${Math.floor(Date.now() / 1000)}.replayed`;
+	assert.equal((await fetch(link(base, { nonce }), { redirect: 'manual' })).status, 302);
+	assert.equal(await refused(link(base, { nonce, state: 'other-state-1' })), 'EHANDOFF');
+});
+
+test('the same link sent again (a reload, the relay retrying) gets the same answer', async () => {
 	const once = link(base);
-	assert.equal((await fetch(once, { redirect: 'manual' })).status, 302);
-	assert.equal((await fetch(once, { redirect: 'manual' })).status, 403);
+	const first = await fetch(once, { redirect: 'manual' });
+	const again = await fetch(once, { redirect: 'manual' });
+	assert.equal(first.status, 302);
+	assert.equal(again.status, 302);
+	assert.equal(again.headers.get('location'), first.headers.get('location'));
 });
 
 test('token renewal needs the bearer token and reuses a fresh token', async () => {

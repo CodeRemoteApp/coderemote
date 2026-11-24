@@ -84,9 +84,13 @@ The agent itself never redirects and never sends that header, so clients treat e
    This route takes no bearer token; the HMAC proves the caller holds it.
 2. The relay makes the user sign in as the tunnel's owner, then forwards the request
    (query intact) to the agent.
-3. The agent checks the signature, the nonce (five-minute window, single use) and the state,
+3. The agent checks the signature, the nonce (five-minute window, one state) and the state,
    mints a dev tunnels connect token and redirects to
    `vsremote://tunnel-auth?token=<connect token>&expires=<ms since 1970>&state=<state>`.
+   The same link sent again within the window (the relay's "connecting" page and browser
+   reloads resend it) gets the same answer; a used nonce with another `state` is refused.
+   Refusals are `403` with `code` `EHANDOFFEXPIRED` (outside the window: the phone should make a
+   new link) or `EHANDOFF` (anything else).
 4. The client sends `X-Tunnel-Authorization: tunnel <connect token>` on every request and
    terminal socket. The relay checks and strips it; the agent never sees it.
 

@@ -19,6 +19,7 @@ import { ensureAgentId, findTunnel, forgetTunnel, formatTunnels, inUse, remember
 import { confirm, pick } from '../src/picker.js';
 import { MACHINE_LABEL, tunnelDelete, tunnelStatus } from '../src/tunnel-status.js';
 import { NotSignedIn, relayReachable, retryTunnel } from '../src/tunnel-retry.js';
+import { probeAgent, watchTunnel } from '../src/tunnel-watch.js';
 import { availableUpdate, fetchLatest, installCommand, isNewer } from '../src/update.js';
 import pkg from '../package.json' with { type: 'json' };
 import { Redactor, filterRequests, formatDetail, formatList, redactDetail } from '../src/requests.js';
@@ -371,15 +372,25 @@ async function connectToken(tunnelId) {
 	return { token: body.token, expiresAt };
 }
 
-function hostTunnel(tunnelId, port) {
+/** `timeoutMs`: give up (and end the host) when it hasn't connected by then. */
+function hostTunnel(tunnelId, port, { timeoutMs = 0 } = {}) {
 	return new Promise((resolve, reject) => {
 		// Tied to the agent: a host outliving it would keep the tunnel and block the next `up`.
 		const child = spawnTied(DEVTUNNEL, ['host', tunnelId], { stdout: 'pipe', stderr: 'pipe' });
 		let log = '';
+		const timer = timeoutMs
+			? setTimeout(() => {
+					child.kill();
+					reject(new Error(`devtunnel host didn't connect within ${timeoutMs / 1000}s:\n${log}`));
+				}, timeoutMs)
+			: null;
 		const onData = (d) => {
 			log += d;
 			const m = log.match(new RegExp(`https://\\S*-${port}\\.\\S*devtunnels\\.ms\\S*`));
-			if (m) resolve({ child, url: m[0].replace(/\/$/, '') });
+			if (m) {
+				clearTimeout(timer);
+				resolve({ child, url: m[0].replace(/\/$/, '') });
+			}
 		};
 		child.stdout.on('data', onData);
 		child.stderr.on('data', onData);
@@ -634,6 +645,7 @@ async function start({ tunnel }) {
 		}
 	}
 	let child;
+	let watcher = null;
 	let access;
 	let url = `http://127.0.0.1:${port}`;
 	let later = null;
@@ -677,6 +689,21 @@ async function start({ tunnel }) {
 		child = hosted.child;
 		url = hosted.url;
 		hostedUrl = url;
+		// Days later the host may have exited or lost the relay: host it again when it has.
+		let probeToken = null;
+		watcher = watchTunnel({
+			hosted,
+			host: () => hostTunnel(id, port, { timeoutMs: 90_000 }),
+			probe: async (at) => {
+				if (!anonymous && !(probeToken && probeToken.expiresAt - Date.now() > 3_600_000)) probeToken = await connectToken(id);
+				return probeAgent(at, anonymous ? null : probeToken.token);
+			},
+			reachable: () => relayReachable(),
+			onHosted: (next) => {
+				child = next.child;
+			},
+			log: (message) => console.log(`\n  ${message}`),
+		});
 		status?.invalidate?.();
 		// Offline later, the QR still names it (its URL can't be worked out from the tunnel id).
 		if (rememberTunnelUrl(cfg, port, url)) saveConfig(cfg);
@@ -731,6 +758,7 @@ async function start({ tunnel }) {
 	registry.register({ port, root, url: url ?? `http://127.0.0.1:${port}` });
 	const shutdown = async () => {
 		later?.stop();
+		watcher?.stop();
 		child?.kill();
 		advertiser?.kill();
 		// Previews get a new tunnel every run, so this one would only take up a slot of the account's 10.
@@ -747,6 +775,7 @@ async function start({ tunnel }) {
 	// Last resort for any other way out (an uncaught error): never leave the tunnel host behind.
 	process.on('exit', () => {
 		later?.stop();
+		watcher?.stop();
 		child?.kill();
 		advertiser?.kill();
 		preview?.stop();

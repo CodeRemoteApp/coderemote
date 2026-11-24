@@ -1322,6 +1322,7 @@ export function createAgentServer({
 			res.writeHead(200, {
 				'content-type': 'text/html; charset=utf-8',
 				'cache-control': 'no-store',
+				// The CLI's tunnel watch tells this page from the relay's by this exact policy (tunnel-watch.js).
 				'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'",
 			});
 			return res.end(LANDING_HTML);
@@ -1396,8 +1397,15 @@ export function createAgentServer({
 	/** Reached only after the relay's sign-in; the HMAC proves the caller also has the pairing token. */
 	async function handoffRedirect(url, res) {
 		const state = url.searchParams.get('state') || '';
-		if (!/^[A-Za-z0-9_-]{8,128}$/.test(state) || !handoff.verify(url.searchParams.get('nonce'), url.searchParams.get('sig'))) {
-			return sendJson(res, 403, { error: 'invalid or expired sign-in link' });
+		const checked = /^[A-Za-z0-9_-]{8,128}$/.test(state)
+			? handoff.check(url.searchParams.get('nonce'), url.searchParams.get('sig'), state)
+			: { ok: false, reason: 'invalid' };
+		if (!checked.ok) {
+			const error =
+				checked.reason === 'expired'
+					? 'This sign-in link is more than 5 minutes old (or the phone and computer clocks disagree). Close this page and sign in again from the app.'
+					: 'Invalid sign-in link. Close this page and sign in again from the app.';
+			return sendJson(res, 403, { error, code: checked.reason === 'expired' ? 'EHANDOFFEXPIRED' : 'EHANDOFF' });
 		}
 		let issued;
 		try {
