@@ -52,3 +52,26 @@ import * as devtunnels from './devtunnels/index.js';
 export const providers = { devtunnels, cloud };
 
 export const DEFAULT_PROVIDER = 'devtunnels';
+
+/**
+ * The provider a folder's agent uses: `--tunnel <name>`, else the one remembered for its port, else
+ * the default. Throws, naming the valid ones, for an unknown `--tunnel`.
+ */
+export function chooseProvider({ flag, remembered } = {}) {
+	if (flag !== undefined) {
+		if (!Object.hasOwn(providers, flag)) {
+			throw Object.assign(new Error(`Unknown --tunnel ${flag || '(empty)'}: use one of ${Object.keys(providers).join(', ')}.`), { code: 'EBADPROVIDER' });
+		}
+		return flag;
+	}
+	return Object.hasOwn(providers, remembered ?? '') ? remembered : DEFAULT_PROVIDER;
+}
+
+/** Remembers `name` for `port` once its tunnel is up; true when the config changed. */
+export function rememberProvider(cfg, port, name) {
+	const current = cfg.tunnelProviders?.[port];
+	// A folder that never chose keeps no entry for the default: Dev Tunnels configs stay as they were.
+	if (current === name || (!current && name === DEFAULT_PROVIDER)) return false;
+	cfg.tunnelProviders = { ...cfg.tunnelProviders, [port]: name };
+	return true;
+}

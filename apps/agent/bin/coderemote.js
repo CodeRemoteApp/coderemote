@@ -13,7 +13,8 @@ import { pushStore } from '../src/push-store.js';
 import { sessionStore } from '../src/session-store.js';
 import { AgentRegistry } from '../src/registry.js';
 import { ensureAgentId, rememberTunnelUrl } from '../src/agent-identity.js';
-import { DEFAULT_PROVIDER, providers } from '../src/providers/index.js';
+import { CloudError } from '../src/providers/cloud/api.js';
+import { chooseProvider, providers, rememberProvider } from '../src/providers/index.js';
 import { createTunnelSession } from '../src/tunnel-session.js';
 import { availableUpdate, fetchLatest, installCommand, isNewer } from '../src/update.js';
 import pkg from '../package.json' with { type: 'json' };
@@ -321,9 +322,19 @@ const root = path.resolve(flag('--root') ?? process.cwd());
 const cfg = loadConfig();
 const registry = new AgentRegistry(path.join(CONFIG_DIR, 'agents'));
 
-/** The tunnel provider this run uses (Dev Tunnels, the only one so far). */
-function tunnelProvider() {
-	return providers[DEFAULT_PROVIDER].create({ configDir: CONFIG_DIR, spinner, cfg, saveConfig, loadConfig, defaultPort: DEFAULT_PORT });
+/** A tunnel provider (src/providers) for this run. */
+function tunnelProvider(name) {
+	return providers[name].create({ configDir: CONFIG_DIR, spinner, cfg, saveConfig, loadConfig, defaultPort: DEFAULT_PORT });
+}
+
+/** `--tunnel <name>`, checked against the providers; exits on an unknown one. */
+function providerFor(p) {
+	try {
+		return chooseProvider({ flag: flag('--tunnel') ?? (rest.includes('--tunnel') ? '' : undefined), remembered: cfg.tunnelProviders?.[p] });
+	} catch (e) {
+		console.error(e.message);
+		process.exit(1);
+	}
 }
 
 async function start({ tunnel }) {
@@ -357,16 +368,23 @@ async function start({ tunnel }) {
 		}
 	}
 	let server;
+	const providerName = tunnel ? providerFor(port) : null;
+	if (providerName === 'cloud' && anonymous) {
+		console.error('--allow-anonymous: a Code Remote Cloud tunnel always admits only its owner. Drop the flag, or use --tunnel devtunnels.');
+		process.exit(1);
+	}
 	// Reported in /api/info while hosted; an agent started offline sets it once it connects.
 	const session = tunnel
 		? createTunnelSession({
-				provider: tunnelProvider(),
+				provider: tunnelProvider(providerName),
 				port,
 				anonymous,
 				spinner,
 				// Offline later, the QR still names it (its URL can't be worked out from the tunnel id).
 				onUrl: (hosted) => {
-					if (rememberTunnelUrl(cfg, port, hosted)) saveConfig(cfg);
+					// Remembered only once it's up, so a failed first try doesn't switch the folder.
+					const urlChanged = rememberTunnelUrl(cfg, port, hosted);
+					if (rememberProvider(cfg, port, providerName) || urlChanged) saveConfig(cfg);
 				},
 			})
 		: null;
@@ -422,6 +440,8 @@ async function start({ tunnel }) {
 	};
 
 	let offline = false;
+	// A provider's own refusal (signed out, no access, full): said once; the LAN keeps working.
+	let tunnelError = null;
 	if (tunnel) {
 		spinner.succeed();
 		// Without internet the agent still serves the local network, and connects its tunnel later.
@@ -434,15 +454,23 @@ async function start({ tunnel }) {
 				await connectTunnel({ interactive: true });
 			} catch (e) {
 				spinner.fail();
-				if (e.code !== 'ETUNNELLIMIT') throw e;
-				const { provider } = session;
-				if (!process.stdin.isTTY || !process.stderr.isTTY || !e.tunnels || !provider.resolveLimit) {
+				if (e instanceof CloudError || e.code === 'ENOTSIGNEDIN') {
+					// Never another provider by itself: say what to do, and keep serving the LAN.
 					console.error(`\n${e.message}`);
-					process.exit(1);
+					if (!lan.port) process.exit(1);
+					tunnelError = e;
+					url = null;
+				} else {
+					if (e.code !== 'ETUNNELLIMIT') throw e;
+					const { provider } = session;
+					if (!process.stdin.isTTY || !process.stderr.isTTY || !e.tunnels || !provider.resolveLimit) {
+						console.error(`\n${e.message}`);
+						process.exit(1);
+					}
+					if (!(await provider.resolveLimit(e))) process.exit(1);
+					spinner.start(provider.text.connecting);
+					await connectTunnel({ interactive: false });
 				}
-				if (!(await provider.resolveLimit(e))) process.exit(1);
-				spinner.start(provider.text.connecting);
-				await connectTunnel({ interactive: false });
 			}
 		} else {
 			spinner.fail();
@@ -482,10 +510,10 @@ async function start({ tunnel }) {
 	const lanLink = lan.port
 		? {
 				agentId,
-				lan: offline ? { port: lan.port, addresses: qrAddresses(lanAddresses()), fingerprint: lanCert.fingerprint } : null,
+				lan: offline || tunnelError ? { port: lan.port, addresses: qrAddresses(lanAddresses()), fingerprint: lanCert.fingerprint } : null,
 			}
 		: null;
-	return { url, access, lan, offline, lanLink, firewall, publicKey: e2eKey?.publicKey ?? null };
+	return { url, access, lan, offline, tunnelError, providerName, lanLink, firewall, publicKey: e2eKey?.publicKey ?? null };
 }
 
 // The plugin's marketplace is this repository; --marketplace points at a checkout to try changes.
@@ -698,10 +726,11 @@ switch (cmd) {
 			spinner.fail();
 			throw e;
 		}
-		const { url, access, lan, offline, lanLink, firewall, publicKey } = started;
+		const { url, access, lan, offline, tunnelError, providerName, lanLink, firewall, publicKey } = started;
 		const vscodeUrl = rest.includes('--web') && !offline ? await startVSCodeTunnel() : null;
 		console.log(`\n  Sharing: ${root}`);
 		if (offline) console.log('  Tunnel:  not connected (no internet); phones on this network can pair and connect. It connects on its own once the internet is back.');
+		if (tunnelError) console.log('  Tunnel:  not connected (see above); phones on this network can pair and connect.');
 		if (lan.port) {
 			console.log(`  LAN:     on (port ${lan.port}); phones on this network connect directly`);
 			if (process.platform === 'darwin') console.log('           If macOS asks whether node may accept incoming connections, choose Allow.');
@@ -717,6 +746,9 @@ switch (cmd) {
 		if (firewallLines) showFirewall(firewallLines);
 		else firewall?.then(showFirewall);
 		printPairing(url, cfg.token, access, vscodeUrl, lanLink, publicKey);
+		if (providerName === 'cloud' && url) {
+			console.log('  Cloud tunnels need Code Remote for iOS with Code Remote Cloud sign-in; on this Wi-Fi you can also pair over the LAN.\n');
+		}
 		const newer = await update;
 		if (newer) {
 			const c = (code, s) => (process.stdout.isTTY ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -857,11 +889,22 @@ switch (cmd) {
 		break;
 	}
 	case 'tunnels': {
-		await tunnelProvider().commands.tunnels(rest);
+		// The folder's own provider, unless asked: `--cloud`, or Cloud's `--delete <host>`.
+		const folderPort = cfg.folderPorts?.[root] ?? DEFAULT_PORT;
+		const name = rest.includes('--cloud') || rest.includes('--delete') ? 'cloud' : providerFor(folderPort);
+		await tunnelProvider(name).commands.tunnels(rest.filter((a) => a !== '--cloud'));
 		break;
 	}
 	case 'login': {
-		await tunnelProvider().commands.login(rest);
+		await tunnelProvider(rest.includes('--cloud') ? 'cloud' : 'devtunnels').commands.login(rest.filter((a) => a !== '--cloud'));
+		break;
+	}
+	case 'logout': {
+		if (!rest.includes('--cloud')) {
+			console.error('Usage: coderemote logout --cloud  (dev tunnels: `devtunnel user logout`)');
+			process.exit(1);
+		}
+		await tunnelProvider('cloud').commands.logout();
 		break;
 	}
 	case 'update': {

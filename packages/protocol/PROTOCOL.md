@@ -98,6 +98,25 @@ Connect tokens last 24 hours. While one still works, `POST /api/tunnel/token` (b
 required) returns `{ token, expiresAt }`, a fresh one; clients renew when less than 12 hours
 remain. Anonymous tunnels answer both routes with 404.
 
+## Cloud tunnel sign-in
+
+A Code Remote Cloud tunnel (`tunnel.provider` `"cloud"`, URL `https://cr<id>.commitplus.app`) has a
+gate in front of the agent that admits only the hostname's owner, signed in to Code Remote Cloud:
+
+- Send `X-CodeRemote-Auth: Bearer <ID token>` (the account's Firebase ID token) on every request
+  and terminal socket, next to the agent's own `Authorization: Bearer <pairing token>`. The gate
+  checks and strips it; the agent never sees it.
+- Web views, whose page loads can't carry a header: first `POST /__cr/session` with that header.
+  The answer, `204`, sets a host-only cookie (`__Host-cr_gate`, 12 hours) that admits the web view's
+  loads; `DELETE /__cr/session` clears it. Paths under `/__cr/` are the gate's, never the agent's.
+- Without either: `401` with `WWW-Authenticate: CodeRemote-Cloud` and `code` `ECLOUDSIGNIN`, meaning
+  "sign in to Code Remote Cloud". Signed in as someone else: `403` `ENOTOWNER`. The computer is
+  unreachable (agent stopped, computer asleep or offline): `502` `EAGENTOFFLINE`. Unknown hostname:
+  `404` `EUNKNOWNHOST`. The account has no access: `403` `ENOACCESS`.
+
+The gate's answers are JSON `{ error, code }`, like the agent's. None of this changes the protocol
+version: an older client sees a `401` it can't act on, and pairs over the local network instead.
+
 ### Tunnel status
 
 `GET /api/tunnel` (bearer token required) describes the agent's tunnel and the other machines on
@@ -189,8 +208,10 @@ restarts and token rotations, so a client that pairs again recognizes the machin
 `{ url, provider }` while the agent hosts its tunnel, else `null`: an agent started without
 internet runs on the local network only and connects its tunnel once it can, without restarting.
 `provider` names the tunnel service the agent uses, so a client can tell how to sign in to it.
-Its only value so far is `"devtunnels"` (Microsoft Dev Tunnels), as in `GET /api/tunnel`. Agents
-before it sent `{ url }` alone: read a missing `provider` as `"devtunnels"`.
+Its values are `"devtunnels"` (Microsoft Dev Tunnels, as in `GET /api/tunnel`) and `"cloud"`
+(Code Remote Cloud, see "Cloud tunnel sign-in"). Agents before it sent `{ url }` alone: read a
+missing `provider` as `"devtunnels"`. On `"cloud"` the agent answers 404 for previews,
+`GET`/`DELETE /api/tunnel`, `POST /api/tunnel/token` and the handoff.
 
 Adding `lan`, `agentId`, `tunnel` and `tunnel.provider` didn't change the protocol version:
 clients that don't know them ignore them.

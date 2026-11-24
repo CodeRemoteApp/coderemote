@@ -15,8 +15,9 @@ export const PROBE_HEADER = 'x-coderemote-probe';
 const SEEN_INTERVAL_MS = 12 * 3_600_000;
 const PROBE_MARGIN_S = 3600;
 
-/** Opens `url` in the default browser, if there is one; never throws. */
-export function openBrowser(url, { platform = process.platform, run = execFile } = {}) {
+/** Opens `url` in the default browser, if there is one (not with $CODEREMOTE_NO_BROWSER); never throws. */
+export function openBrowser(url, { platform = process.platform, run = execFile, env = process.env } = {}) {
+	if (env.CODEREMOTE_NO_BROWSER) return;
 	const [command, args] = platform === 'darwin' ? ['open', [url]] : platform === 'win32' ? ['cmd', ['/c', 'start', '""', url]] : ['xdg-open', [url]];
 	try {
 		run(command, args, () => {}).on?.('error', () => {});
