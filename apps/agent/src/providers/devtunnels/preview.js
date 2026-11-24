@@ -3,7 +3,7 @@
 // tunnel over from the old one, dropping every connection through it. Keeping previews on their
 // own tunnel means a restart only blips other previews, never the main tunnel's terminals.
 // The preview tunnel is private; the app opens it with a connect token the agent hands out.
-import { spawnTied } from './tied.js';
+import { spawnTied } from '../../tied.js';
 import { PREVIEW_LABEL, TUNNEL_LIMIT, makeRoom } from './tunnels.js';
 
 const HOST_READY_TIMEOUT_MS = 30_000;
