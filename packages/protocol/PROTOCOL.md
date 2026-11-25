@@ -171,6 +171,56 @@ Deleting a tunnel an agent uses changes its address, so every phone paired with 
 that agent's next `coderemote up` makes a new one. On the computer the same is
 `coderemote tunnels` and `coderemote tunnels delete <id>`.
 
+## Cloud pairing
+
+On a Code Remote Cloud tunnel, a phone signed in to the computer's account can pair without the QR
+code. Added within v4: older agents answer 404, and the phone falls back to scanning.
+
+- **What the phone learns from the account.** The account's machine list (Code Remote Cloud's
+  `GET /v1/machines`) gives, for each folder's hostname:
+  - `agentId`;
+  - `publicKey`, the agent's identity key, 43 characters, or null;
+  - `label`, the folder's name, or null.
+- **What the agent sends.** The agent sends `publicKey` and `label` when it asks for its hostname,
+  unless pairing is turned off (`up --no-cloud-pair`, `"cloudPair": false`).
+- **The gate's owner assertion.** The gate adds `X-CodeRemote-Owner` to every request from the
+  signed-in owner, after removing any copy the client sent. Its value is
+  `v1.<kid>.<b64url(json)>.<b64url(sig)>`:
+  - the JSON is `{ uid, host, iat, exp }`, where `host` is the hostname's first label;
+  - `sig` is an Ed25519 signature over `v1.<kid>.<b64url(json)>`;
+  - the public keys are at `GET https://cloud.commitplus.app/v1/keys`, as
+    `{ keys: [{ kid, publicKey }] }`.
+- **`POST /api/cloud/pair`.** The body is `{ name }`, the phone's name, at most 64 characters.
+  - The request must be [sealed](#sealed-requests) and carry no `Authorization`. The phone has no
+    token yet.
+  - The phone sends `X-CodeRemote-Auth` outside the envelope, as for any Cloud request. The gate
+    then puts its assertion on the outer request.
+  - An assertion inside the sealed headers is ignored.
+  - The agent accepts the assertion when:
+    - a listed key signed it;
+    - `host` is the agent's own;
+    - `uid` owns the computer;
+    - `iat` is at most 60 s ahead, `exp` at most 30 s past, and `exp - iat` at most 60.
+  - On success it answers `{ token, agentId }` and prints that the phone paired.
+- **Errors:**
+  - `403` `ESEALED`: the request isn't sealed;
+  - `403` `ENOTOWNER`: no valid assertion;
+  - `403` `ECLOUDPAIROFF`: pairing is off;
+  - `429` `ERATELIMIT`: more than 10 tries a minute;
+  - `404`: not on a Cloud tunnel, or over the LAN listener.
+- **The phone's side.**
+  1. It pins the listed `publicKey` and completes the [handshake](#handshake) with it. That
+     proves the agent holds the key.
+  2. Only then does it send the pair request.
+  3. It checks that `agentId` matches the listing, and from then on uses the pairing as if it came
+     from a QR code. Devices still enroll as usual.
+  4. A phone that already pinned a key for that machine never replaces it with a listed one. A
+     different listed key (after `rotate-token`) means scanning the QR code again.
+
+The token never travels outside the seal, so the relay doesn't see it. Pairing through the
+account means the account alone, without seeing the computer's screen, can pair a phone. The agent
+prints each pairing, and `--no-cloud-pair` leaves only the QR code.
+
 ## Local network
 
 Unless started with `--no-lan` (or `"lan": false` in its config), `coderemote up` also accepts

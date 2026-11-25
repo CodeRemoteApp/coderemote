@@ -38,19 +38,19 @@ export class Session {
 		return { counter, wire };
 	}
 
-	async postWire(wire, extra = {}) {
+	async postWire(wire, extra = {}, outer = {}) {
 		return fetch(this.base + E2E_REQUEST_PATH, {
 			method: 'POST',
-			headers: { [E2E_SESSION_HEADER]: this.sid, 'content-type': 'application/octet-stream' },
+			headers: { ...outer, [E2E_SESSION_HEADER]: this.sid, 'content-type': 'application/octet-stream' },
 			body: wire,
 			...extra,
 		});
 	}
 
-	/** `{ status, headers, body, json() }` of the answer to a sealed request. */
+	/** `{ status, headers, body, json() }` of the answer to a sealed request; `opts.outer`: headers outside the seal. */
 	async request(method, path, opts = {}) {
 		const { counter, wire } = this.sealRequest(method, path, opts);
-		const res = await this.postWire(wire);
+		const res = await this.postWire(wire, {}, opts.outer);
 		if (res.status !== 200) throw Object.assign(new Error(`sealed request ${res.status}`), { status: res.status, body: await res.text() });
 		const plain = e2e.open(this.keys.s2c, e2e.responseAad(this.sid, counter), Buffer.from(await res.arrayBuffer()));
 		if (!plain) throw new Error('answer did not authenticate');

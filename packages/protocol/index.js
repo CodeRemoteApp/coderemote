@@ -98,7 +98,13 @@ export const Routes = Object.freeze({
 	devicePolicy: 'PUT /api/device/policy',
 	// Devices v2: a device renames itself.
 	deviceName: 'PUT /api/device/name',
+	// Added within v4 (PROTOCOL.md "Cloud pairing"): sealed only, on a Code Remote Cloud tunnel; hands
+	// the pairing token to the owner the gate vouches for. Older agents answer 404.
+	cloudPair: 'POST /api/cloud/pair',
 });
+
+/** The Cloud gate's owner assertion, which `cloudPair` checks (PROTOCOL.md "Cloud pairing"). */
+export const CLOUD_OWNER_HEADER = 'X-CodeRemote-Owner';
 
 // Opened in the system browser (no bearer token); answers with a redirect to
 // `vsremote://tunnel-auth?token=&expires=&state=`. See PROTOCOL.md, "Tunnel sign-in".

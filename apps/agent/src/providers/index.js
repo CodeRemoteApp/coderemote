@@ -67,6 +67,23 @@ export function chooseProvider({ flag, remembered } = {}) {
 	return Object.hasOwn(providers, remembered ?? '') ? remembered : DEFAULT_PROVIDER;
 }
 
+/**
+ * Whether `up` should ask which tunnel the folder on `port` uses: nothing on the command line, and
+ * nothing chosen for that port before (a remembered provider, or a Dev Tunnels tunnel from before
+ * there was a choice).
+ */
+export function needsProviderChoice(cfg, port, { flag } = {}) {
+	if (flag !== undefined) return false;
+	if (Object.hasOwn(providers, cfg.tunnelProviders?.[port] ?? '')) return false;
+	return !cfg.tunnels?.[port];
+}
+
+/** What `up` offers when it asks, in order. */
+export const PROVIDER_CHOICES = [
+	{ name: 'cloud', label: 'Code Remote Cloud', note: 'sign in with Apple or Google; your phone pairs without a QR code' },
+	{ name: 'devtunnels', label: 'Microsoft Dev Tunnels', note: 'sign in with GitHub or Microsoft; free' },
+];
+
 /** Remembers `name` for `port` once its tunnel is up; true when the config changed. */
 export function rememberProvider(cfg, port, name) {
 	const current = cfg.tunnelProviders?.[port];

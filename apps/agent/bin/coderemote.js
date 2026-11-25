@@ -14,7 +14,8 @@ import { sessionStore } from '../src/session-store.js';
 import { AgentRegistry } from '../src/registry.js';
 import { ensureAgentId, rememberTunnelUrl } from '../src/agent-identity.js';
 import { CloudError } from '../src/providers/cloud/api.js';
-import { chooseProvider, providers, rememberProvider } from '../src/providers/index.js';
+import { choose } from '../src/picker.js';
+import { chooseProvider, needsProviderChoice, PROVIDER_CHOICES, providers, rememberProvider } from '../src/providers/index.js';
 import { createTunnelSession } from '../src/tunnel-session.js';
 import { availableUpdate, fetchLatest, installCommand, isNewer } from '../src/update.js';
 import pkg from '../package.json' with { type: 'json' };
@@ -145,7 +146,7 @@ function portFree(port) {
 	});
 }
 
-function listen(token, port, root, tunnelToken, preview, status, remover, lan, agentId, tunnelUrl, e2e, tunnelProvider) {
+function listen(token, port, root, tunnelToken, preview, status, remover, lan, agentId, tunnelUrl, e2e, tunnelProvider, cloudPair = null) {
 	const hookSecret = ensureHookSecret(CONFIG_DIR);
 	writeHookLauncher(CONFIG_DIR, { script: fs.realpathSync(process.argv[1]) });
 	const server = createAgentServer({
@@ -171,6 +172,7 @@ function listen(token, port, root, tunnelToken, preview, status, remover, lan, a
 		agentId,
 		tunnelUrl,
 		tunnelProvider,
+		cloudPair,
 	});
 	return new Promise((resolve, reject) => {
 		server.once('error', reject);
@@ -294,10 +296,11 @@ async function startVSCodeTunnel() {
 const USAGE = `Usage: coderemote <command> [options]
        coderemote <command> --help   (just that command and its subcommands)
 
-  up                   share this folder through a dev tunnel and print the pairing QR;
-                       the phone or browser must sign in with your dev tunnels account.
-                       Without internet it serves the local network only and connects
-                       the tunnel once it can
+  up                   share this folder with your phone. The first time in a folder it asks
+                       how: Code Remote Cloud (your Apple or Google account; the phone pairs
+                       from its Cloud tab) or Microsoft Dev Tunnels (GitHub or Microsoft;
+                       scan the QR code), and signs you in when needed. Without internet it
+                       serves the local network only and connects the tunnel once it can
   serve                share this folder on 127.0.0.1 only (no tunnel)
   status               list running agents and their terminal sessions
   kill <id>... | --all kill terminal sessions (an id prefix is enough)
@@ -337,6 +340,12 @@ Options:
   --allow-sleep        up: let the computer sleep when idle (by default it stays awake while
                        sharing, so phones can reach it; the display still sleeps).
                        "keepAwake": false in ~/.coderemote/config.json makes it the default
+  --tunnel NAME        up: cloud or devtunnels, without asking; the folder keeps it from then on
+  --qr                 up, Code Remote Cloud: print the pairing QR code too (with Cloud pairing
+                       on, phones signed in to your account don't need it, so it's left out)
+  --no-cloud-pair      up, Code Remote Cloud: phones pair only by scanning the QR code, not by
+                       signing in to your account in the app (the folder's name isn't sent
+                       either). "cloudPair": false in ~/.coderemote/config.json makes it the default
   --no-lan             up: don't let phones on the same network connect directly (over TLS,
                        still with the token); they use the tunnel. "lan": false in
                        ~/.coderemote/config.json makes it the default, --lan overrides that`;
@@ -365,19 +374,45 @@ const cfg = loadConfig();
 const registry = new AgentRegistry(path.join(CONFIG_DIR, 'agents'));
 
 /** A tunnel provider (src/providers) for this run. */
-function tunnelProvider(name) {
-	return providers[name].create({ configDir: CONFIG_DIR, spinner, cfg, saveConfig, loadConfig, defaultPort: DEFAULT_PORT });
+function tunnelProvider(name, extra = {}) {
+	return providers[name].create({ configDir: CONFIG_DIR, spinner, cfg, saveConfig, loadConfig, defaultPort: DEFAULT_PORT, ...extra });
 }
 
-/** `--tunnel <name>`, checked against the providers; exits on an unknown one. */
+/**
+ * `--tunnel <name>`, checked against the providers (exits on an unknown one); else what this
+ * folder's port used before; else, in a terminal, the user's choice, remembered for next time.
+ */
+async function askedProviderFor(p) {
+	const given = tunnelFlag();
+	if (needsProviderChoice(cfg, p, { flag: given }) && process.stdin.isTTY && process.stderr.isTTY) {
+		const picked = await choose({
+			title: 'How should your phone reach this folder?',
+			items: PROVIDER_CHOICES,
+		});
+		if (picked === null) process.exit(130);
+		const name = PROVIDER_CHOICES[picked].name;
+		updateConfig(cfg, (c) => {
+			c.tunnelProviders = { ...c.tunnelProviders, [p]: name };
+		});
+		console.error(dimmed(`  Remembered for this folder; \`coderemote up --tunnel ${name === 'cloud' ? 'devtunnels' : 'cloud'}\` switches.\n`));
+		return name;
+	}
+	return providerFor(p);
+}
+
+const tunnelFlag = () => flag('--tunnel') ?? (rest.includes('--tunnel') ? '' : undefined);
+
+/** `--tunnel <name>`, else what this folder's port used before, else the default; never asks. */
 function providerFor(p) {
 	try {
-		return chooseProvider({ flag: flag('--tunnel') ?? (rest.includes('--tunnel') ? '' : undefined), remembered: cfg.tunnelProviders?.[p] });
+		return chooseProvider({ flag: tunnelFlag(), remembered: cfg.tunnelProviders?.[p] });
 	} catch (e) {
 		console.error(e.message);
 		process.exit(1);
 	}
 }
+
+const dimmed = (s) => (process.stderr.isTTY ? `\x1b[2m${s}\x1b[22m` : s);
 
 async function start({ tunnel }) {
 	const agents = registry.list();
@@ -411,15 +446,21 @@ async function start({ tunnel }) {
 		}
 	}
 	let server;
-	const providerName = tunnel ? providerFor(port) : null;
+	const providerName = tunnel ? await askedProviderFor(port) : null;
 	if (providerName === 'cloud' && anonymous) {
 		console.error('--allow-anonymous: a Code Remote Cloud tunnel always admits only its owner. Drop the flag, or use --tunnel devtunnels.');
 		process.exit(1);
 	}
+	// Cloud pairing: the owner's phone, signed in to the same account, pairs without the QR code
+	// (`up --no-cloud-pair` or `"cloudPair": false` turn it off; the folder's name then stays here).
+	const cloudPairing = providerName === 'cloud' && !rest.includes('--no-cloud-pair') && cfg.cloudPair !== false;
 	// Reported in /api/info while hosted; an agent started offline sets it once it connects.
 	const session = tunnel
 		? createTunnelSession({
-				provider: tunnelProvider(providerName),
+				provider: tunnelProvider(providerName, {
+					// Read when the hostname is ensured, after the identity key below is loaded.
+					pairing: () => (cloudPairing && e2eKey ? { publicKey: Buffer.from(e2eKey.publicKey).toString('base64url'), label: path.basename(root).slice(0, 64) || null } : {}),
+				}),
 				port,
 				anonymous,
 				spinner,
@@ -461,7 +502,15 @@ async function start({ tunnel }) {
 	}
 	spinner.start('Starting agent');
 	try {
-		server = await listen(cfg.token, port, root, session?.tunnelToken ?? undefined, preview, status, remover, lanCert, agentId, () => session?.hostedUrl() ?? null, e2eKey, session?.provider.name ?? null);
+		const cloudPair =
+			providerName === 'cloud' && session
+				? {
+						enabled: cloudPairing,
+						check: (assertion) => session.provider.checkOwner(assertion, session.hostedUrl()),
+						onPaired: (name) => console.log(`\n  ${name} paired through Code Remote Cloud.`),
+					}
+				: null;
+		server = await listen(cfg.token, port, root, session?.tunnelToken ?? undefined, preview, status, remover, lanCert, agentId, () => session?.hostedUrl() ?? null, e2eKey, session?.provider.name ?? null, cloudPair);
 	} catch (e) {
 		spinner.fail();
 		if (e.code !== 'EADDRINUSE') throw e;
@@ -564,7 +613,7 @@ async function start({ tunnel }) {
 				lan: offline || tunnelError ? { port: lan.port, addresses: qrAddresses(lanAddresses()), fingerprint: lanCert.fingerprint } : null,
 			}
 		: null;
-	return { url, access, lan, offline, tunnelError, providerName, lanLink, firewall, publicKey: e2eKey?.publicKey ?? null };
+	return { url, access, lan, offline, tunnelError, providerName, lanLink, firewall, publicKey: e2eKey?.publicKey ?? null, cloudPairing: providerName === 'cloud' ? cloudPairing && Boolean(e2eKey) : null };
 }
 
 // The plugin's marketplace is this repository; --marketplace points at a checkout to try changes.
@@ -777,7 +826,7 @@ switch (cmd) {
 			spinner.fail();
 			throw e;
 		}
-		const { url, access, lan, offline, tunnelError, providerName, lanLink, firewall, publicKey } = started;
+		const { url, access, lan, offline, tunnelError, providerName, lanLink, firewall, publicKey, cloudPairing } = started;
 		// Asleep, the computer drops off the network: phones lose it until someone wakes it.
 		const awake = rest.includes('--allow-sleep') || cfg.keepAwake === false ? null : keepAwake();
 		if (awake) process.on('exit', () => awake.stop());
@@ -790,6 +839,11 @@ switch (cmd) {
 			if (process.platform === 'darwin') console.log('           If macOS asks whether node may accept incoming connections, choose Allow.');
 			if (isWindows) console.log('           If Windows asks whether node may accept incoming connections, choose Allow (Private networks).');
 		} else if (lan.error) console.log(`  LAN:     off (${lan.error}); phones connect through the tunnel`);
+		// With Cloud pairing the account is the way in: the QR (and its token) only on request.
+		const quietPairing = cloudPairing === true && Boolean(url) && !offline && !tunnelError && !rest.includes('--qr');
+		// Only through a connected Cloud tunnel can the account lead a phone here.
+		if (cloudPairing === true && url && !offline && !tunnelError) console.log('  Cloud:   your phone, signed in to the same account, pairs without scanning; --no-cloud-pair to require the QR code');
+		if (cloudPairing === false) console.log('  Cloud:   pairing only by QR code');
 		if (awake) console.log('  Sleep:   kept awake while sharing (the display can still sleep); --allow-sleep to turn off');
 		// Shown with the rest when it's in by now, else as soon as it is.
 		const showFirewall = (lines) => {
@@ -800,8 +854,14 @@ switch (cmd) {
 		await new Promise((r) => setImmediate(r));
 		if (firewallLines) showFirewall(firewallLines);
 		else firewall?.then(showFirewall);
-		printPairing(url, cfg.token, access, vscodeUrl, lanLink, publicKey);
-		if (providerName === 'cloud' && url) {
+		if (quietPairing) {
+			if (access) console.log(`  Access:  ${access}`);
+			if (vscodeUrl) console.log(`  VS Code: ${vscodeUrl}`);
+			console.log('\n  Open Code Remote on your iPhone, signed in to the same Code Remote Cloud account:');
+			console.log('  this folder is in the Cloud tab. Tap it to pair, no QR code needed.');
+			console.log('  To scan instead (another account, or to verify its key): coderemote up --qr\n');
+		} else printPairing(url, cfg.token, access, vscodeUrl, lanLink, publicKey);
+		if (providerName === 'cloud' && url && !quietPairing) {
 			console.log('  Cloud tunnels need Code Remote for iOS with Code Remote Cloud sign-in; on this Wi-Fi you can also pair over the LAN.\n');
 		}
 		const newer = await update;

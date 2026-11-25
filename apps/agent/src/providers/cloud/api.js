@@ -137,8 +137,13 @@ export function createCloudApi({ base = DEFAULT_API, credential = () => undefine
 		me: () => call('GET', '/v1/me'),
 		/** `{ tunnelId, connectorToken }` */
 		tunnel: () => call('POST', '/v1/tunnel'),
-		/** `{ host, url, created, probeToken, probeExpiresAt }` */
-		putHostname: (agentId, port) => call('PUT', agent(agentId), { body: { port } }),
+		/**
+		 * `{ host, url, created, probeToken, probeExpiresAt }`. `pairing`: `{ publicKey, label }`, listed
+		 * to the owner's phone for Cloud pairing; left out, the backend forgets them.
+		 */
+		putHostname: (agentId, port, pairing = {}) => call('PUT', agent(agentId), { body: { port, ...pairing } }),
+		/** `{ keys: [{ kid, publicKey }] }`: what checks the gate's owner assertions. */
+		keys: () => call('GET', '/v1/keys', { auth: false }),
 		/** `{ host, probeToken, probeExpiresAt }`; NotFound once the hostname was cleaned up. */
 		seen: (agentId) => call('POST', `${agent(agentId)}/seen`),
 		/** `{ machineId, name, hostnames: [{ host, agentId, port, lastSeen }] }` */

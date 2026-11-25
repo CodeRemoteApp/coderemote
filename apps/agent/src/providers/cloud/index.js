@@ -9,6 +9,7 @@ import path from 'node:path';
 import { NotSignedIn, relayReachable } from '../../tunnel-retry.js';
 import { CloudError, createCloudApi, DEFAULT_API, Expired, SignedOut } from './api.js';
 import { ensureCloudflared, runConnector } from './cloudflared.js';
+import { createOwnerCheck } from './owner.js';
 
 export const name = 'cloud';
 export const PROBE_HEADER = 'x-coderemote-probe';
@@ -51,6 +52,8 @@ export async function deviceLogin(api, { machineName = os.hostname(), print = (s
  * @param {object} opts.cfg  the agent's config, read and changed in place
  * @param {(cfg: object) => void} opts.saveConfig
  * @param {() => object} opts.loadConfig  a fresh copy, for writes another agent may race
+ * @param {() => { publicKey?: string, label?: string }} [opts.pairing]  what the owner's phone is
+ *        shown of this folder for Cloud pairing (the E2E key, the folder's name); {} when it's off
  * @returns {import('../index.js').TunnelProvider}
  */
 export function create({
@@ -69,10 +72,20 @@ export function create({
 	nowS = () => Math.floor(Date.now() / 1000),
 	setTimer = setTimeout,
 	clearTimer = clearTimeout,
+	pairing = () => ({}),
 }) {
 	const base = env.CODEREMOTE_CLOUD_API || DEFAULT_API;
 	const api = createCloudApi({ base, credential: () => cfg.cloud?.credential, fetchFn });
 	let command = 'cloudflared';
+	// The account that owns this computer, from /v1/me: the only one Cloud pairing hands the token to.
+	let ownerUid = null;
+	const checkOwner = createOwnerCheck({
+		api,
+		ownerUid: async () => {
+			ownerUid ??= (await api.me()).uid ?? null;
+			return ownerUid;
+		},
+	});
 
 	/** Changes `cloud` in a fresh copy of the config (another agent may have written its own port), then saves. */
 	function updateCloud(change) {
@@ -118,6 +131,7 @@ export function create({
 
 	async function signIn() {
 		spinner.stop();
+		ownerUid = null;
 		const got = await login(api);
 		updateCloud((c) => {
 			c.machineId = got.machineId;
@@ -171,10 +185,12 @@ export function create({
 			if (!cfg.cloud?.credential) {
 				if (!interactive) throw new NotSignedIn();
 				if (!isTTY()) throw new CloudError('This computer isn\'t signed in to Code Remote Cloud. Run `coderemote login --cloud`, then try again.', 'ENOTSIGNEDIN');
+				console.log('\nSign in to Code Remote Cloud to share this folder through it.');
 				return signIn();
 			}
 			try {
 				const me = await api.me();
+				ownerUid = me.uid ?? ownerUid;
 				return me.email ?? cfg.cloud.account;
 			} catch (e) {
 				if (!(e instanceof SignedOut)) throw e;
@@ -184,7 +200,10 @@ export function create({
 					c.hostnames = {};
 				});
 				if (!interactive) throw new NotSignedIn();
-				throw e;
+				if (!isTTY()) throw e;
+				// Removed from the account, or signed out elsewhere: sign in again right here.
+				console.log(`\n${e.message.split('. ')[0]}. Sign in again to share this folder.`);
+				return signIn();
 			}
 		},
 
@@ -197,7 +216,7 @@ export function create({
 			// The connector token, asked for alongside: `host` for a known hostname waits on it too.
 			const token = connectorToken();
 			token.catch(() => {}); // awaited below; a failure while PUT is out mustn't go unhandled
-			const r = await api.putHostname(agentId, port);
+			const r = await api.putHostname(agentId, port, pairing());
 			await token;
 			mine.set(r.host, { port, agentId });
 			updateCloud((c) => {
@@ -219,6 +238,15 @@ export function create({
 		},
 
 		connectToken: async () => null,
+
+		/** True when `assertion` is the gate's word that the caller is this computer's owner, for `host`'s URL. */
+		async checkOwner(assertion, url) {
+			let host = null;
+			try {
+				host = new URL(url).hostname.split('.')[0];
+			} catch {}
+			return checkOwner(assertion, host);
+		},
 
 		async probeHeaders(host) {
 			return { [PROBE_HEADER]: await renewProbe(host) };

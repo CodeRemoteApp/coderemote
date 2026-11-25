@@ -46,3 +46,19 @@ test('draws ticks, the cursor and the count, cut to the terminal', () => {
 	assert.ok(lines[2].length <= 40 && lines[2].endsWith('…'));
 	assert.match(lines[3], /enter delete \(1\)/);
 });
+
+test('choose: arrows wrap, enter picks the item under the cursor, esc cancels', async () => {
+	const { stepOne, renderOne } = await import('../src/picker.js');
+	let state = { cursor: 0, count: 2 };
+	state = stepOne(state, 'up');
+	assert.equal(state.cursor, 1);
+	state = stepOne(state, 'down');
+	assert.equal(state.cursor, 0);
+	assert.equal(stepOne(state, 'toggle'), state, 'space does nothing here');
+	assert.equal(stepOne(state, 'enter').done, 'confirm');
+	assert.equal(stepOne(state, 'cancel').done, 'cancel');
+	const lines = renderOne({ title: 'How?', items: [{ label: 'Cloud', note: 'n' }, { label: 'Dev' }], state });
+	assert.equal(lines.length, 4);
+	assert.match(lines[1], /❯/);
+	assert.doesNotMatch(lines[2], /❯/);
+});

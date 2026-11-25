@@ -23,6 +23,7 @@ export async function fakeBackend() {
 		probeTtl: 86_400,
 		now: () => Math.floor(Date.now() / 1000),
 		offline: false,
+		keys: [], // GET /v1/keys
 	};
 	const error = (res, status, code, extra = {}) => {
 		res.writeHead(status, { 'content-type': 'application/json' });
@@ -61,6 +62,7 @@ export async function fakeBackend() {
 				if (state.login !== 'approved') return error(res, state.login === 'EEXPIRED' ? 410 : 403, state.login);
 				return ok(res, { status: 'approved', machineId: 'm1', credential: state.credential, account: 'owner@example.com' });
 			}
+			if (route === 'GET /v1/keys') return ok(res, { keys: state.keys });
 			if (!machineAuth()) return;
 			if (route === 'GET /v1/me') return ok(res, { uid: 'u1', email: 'owner@example.com', plan: 'beta', machineId: 'm1', machineName: 'Mac' });
 			if (route === 'POST /v1/tunnel') return ok(res, { tunnelId: 't1', connectorToken: 'CONNECTOR-TOKEN' });

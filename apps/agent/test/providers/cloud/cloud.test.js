@@ -80,6 +80,20 @@ test('a 401 on /v1/me clears the credential: SignedOut in a terminal, NotSignedI
 	await assert.rejects(provider.account({ interactive: false }), { code: 'ENOTSIGNEDIN' });
 });
 
+test('in a terminal, up signs in on the spot: never signed in, or removed from the account', async () => {
+	const logins = [];
+	const login = async () => (logins.push(1), { machineId: 'm2', credential: 'crm_new', account: 'owner@example.com' });
+	const fresh = await setup({ cloud: null, isTTY: () => true, login });
+	assert.equal(await fresh.provider.account({ interactive: true }), 'owner@example.com');
+	assert.equal(fresh.conf.saved().cloud.credential, 'crm_new');
+
+	const removed = await setup({ isTTY: () => true, login });
+	removed.backend.state.revoked = true;
+	assert.equal(await removed.provider.account({ interactive: true }), 'owner@example.com');
+	assert.equal(removed.conf.saved().cloud.credential, 'crm_new');
+	assert.equal(logins.length, 2);
+});
+
 test('not signed in: the background waits, a terminal without a TTY says what to run', async () => {
 	const { provider } = await setup({ cloud: null });
 	await assert.rejects(provider.account({ interactive: false }), { code: 'ENOTSIGNEDIN' });
