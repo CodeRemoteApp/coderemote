@@ -37,7 +37,7 @@ test('each error code maps to its CloudError', async () => {
 	const cases = [
 		[401, errorBody('EAUTH'), SignedOut, /signed out of Code Remote Cloud.*login --cloud/],
 		[401, {}, SignedOut, /signed out/],
-		[403, errorBody('ENOACCESS'), NoAccess, /doesn't have Code Remote Cloud access/],
+		[403, errorBody('ENOACCESS'), NoAccess, /comes with Code Remote Pro/],
 		[503, errorBody('ECAPACITY'), Capacity, /full right now.*--tunnel devtunnels/],
 		[410, errorBody('EEXPIRED'), Expired, /expired/],
 		[403, errorBody('EDENIED'), Denied, /denied/],

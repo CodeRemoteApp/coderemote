@@ -171,7 +171,7 @@ test('device login: prints the code, opens the link, polls until approved', asyn
 	assert.match(printed.join(''), /https:\/\/cloud\.test\/link\?code=ABCD-EFGH[\s\S]*ABCD-EFGH/);
 	assert.deepEqual(opened, ['https://cloud.test/link?code=ABCD-EFGH']);
 	assert.deepEqual(sleeps, [1000, 1000]);
-	for (const [code, pattern] of [['EDENIED', /denied/], ['EEXPIRED', /expired/], ['ENOACCESS', /doesn't have Code Remote Cloud access/]]) {
+	for (const [code, pattern] of [['EDENIED', /denied/], ['EEXPIRED', /expired/], ['ENOACCESS', /comes with Code Remote Pro/]]) {
 		Object.assign(backend.state, { login: code, polls: 0 });
 		await assert.rejects(deviceLogin(api, { print() {}, open() {}, sleep: async () => {} }), pattern, code);
 	}

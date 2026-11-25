@@ -111,7 +111,7 @@ test('login --cloud saves the credential and says which account; denied, expired
 	assert.match(ok.out, /Signed this computer in to Code Remote Cloud as owner@example\.com/);
 	assert.equal(h.config().cloud.credential, 'crm_test');
 	assert.equal(fs.statSync(path.join(h.dir, '.coderemote', 'config.json')).mode & 0o777, 0o600);
-	for (const [code, pattern] of [['EDENIED', /denied/], ['EEXPIRED', /expired/], ['ENOACCESS', /doesn't have Code Remote Cloud access/]]) {
+	for (const [code, pattern] of [['EDENIED', /denied/], ['EEXPIRED', /expired/], ['ENOACCESS', /comes with Code Remote Pro/]]) {
 		Object.assign(backend.state, { login: code, polls: 0 });
 		const fresh = home();
 		const r = await cli(fresh, ['login', '--cloud'], { api: backend.url });
@@ -121,11 +121,11 @@ test('login --cloud saves the credential and says which account; denied, expired
 	}
 });
 
-test('logout --cloud while offline deletes the credential and mentions the 30-day cleanup', async () => {
+test('logout --cloud while offline deletes the credential and mentions the 7-day cleanup', async () => {
 	const h = home({ token: 'x'.repeat(43), cloud: { credential: 'crm_test', account: 'owner@example.com', hostnames: { 31580: { host: 'crabcdefghij.commitplus.app' } } } });
 	const r = await cli(h, ['logout', '--cloud']);
 	assert.equal(r.code, 0, r.out);
-	assert.match(r.out, /after 30 days unused/);
+	assert.match(r.out, /after 7 days unused/);
 	assert.equal(h.config().cloud.credential, undefined);
 	assert.equal(h.config().cloud.hostnames, undefined);
 });

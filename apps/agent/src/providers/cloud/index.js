@@ -256,7 +256,7 @@ export function create({
 
 		services: () => ({ preview: null, status: null, remover: null }),
 
-		/** Marks the hostname as used at start and every 12 hours (unused ones are removed after 30 days). */
+		/** Marks the hostname as used at start and every 12 hours (unused ones are removed after 7 days). */
 		keepAlive({ id }) {
 			let timer = null;
 			let stopped = false;
@@ -302,7 +302,7 @@ export function create({
 				else if (remote === 'removed' || remote === 'gone') console.log('Signed this computer out of Code Remote Cloud; its tunnel and hostnames are removed.');
 				else {
 					console.log(`Signed this computer out (${remote.message}).`);
-					console.log('Code Remote Cloud removes the computer by itself after 30 days unused.');
+					console.log("Code Remote Cloud removes this computer's folders and tunnel by itself after 7 days unused; to sign it out now, remove it in the Code Remote iPhone app's Cloud tab.");
 				}
 			},
 

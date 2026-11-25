@@ -21,7 +21,7 @@ export class SignedOut extends CloudError {
 
 export class NoAccess extends CloudError {
 	constructor() {
-		super("This account doesn't have Code Remote Cloud access.", 'ENOACCESS');
+		super('Code Remote Cloud comes with Code Remote Pro. Buy or restore Pro in the Code Remote iPhone app, signed in to this account, then try again.', 'ENOACCESS');
 	}
 }
 
@@ -63,7 +63,7 @@ export class Denied extends CloudError {
 	}
 }
 
-/** The hostname was cleaned up after 30 days unused; `PUT` again for a new one. */
+/** The hostname was cleaned up after 7 days unused; `PUT` again for a new one. */
 export class NotFound extends CloudError {
 	constructor(message) {
 		super(message || 'not found', 'ENOTFOUND');
