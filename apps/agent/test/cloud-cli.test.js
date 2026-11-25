@@ -161,3 +161,22 @@ test('tunnels on a Cloud folder lists its hostnames; --delete removes one', asyn
 	assert.equal(backend.state.hostnames.size, 0);
 	assert.deepEqual(h.config().cloud.hostnames, {});
 });
+
+test('a config that is not valid JSON stops the CLI instead of starting over with a new token', async () => {
+	const h = home();
+	fs.mkdirSync(path.join(h.dir, '.coderemote'), { recursive: true });
+	const file = path.join(h.dir, '.coderemote', 'config.json');
+	fs.writeFileSync(file, '{"token": "keep-me"}\n}garbage');
+	const r = await cli(h, ['tunnels']);
+	assert.equal(r.code, 1);
+	assert.match(r.out, /isn't valid JSON/);
+	assert.equal(fs.readFileSync(file, 'utf8'), '{"token": "keep-me"}\n}garbage');
+});
+
+test('a Cloud command that cannot reach the backend says so, without a stack trace', async () => {
+	const h = home({ token: 'x'.repeat(43), cloud: { credential: 'crm_test' } });
+	const r = await cli(h, ['tunnels', '--cloud']);
+	assert.equal(r.code, 1);
+	assert.match(r.out, /Couldn't reach Code Remote Cloud/);
+	assert.doesNotMatch(r.out, /\n\s+at /);
+});

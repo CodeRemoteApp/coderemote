@@ -196,6 +196,7 @@ export function create({
 			const agentId = agentIdOf(port);
 			// The connector token, asked for alongside: `host` for a known hostname waits on it too.
 			const token = connectorToken();
+			token.catch(() => {}); // awaited below; a failure while PUT is out mustn't go unhandled
 			const r = await api.putHostname(agentId, port);
 			await token;
 			mine.set(r.host, { port, agentId });

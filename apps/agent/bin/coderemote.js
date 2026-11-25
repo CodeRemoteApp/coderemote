@@ -58,9 +58,19 @@ const spinner = new Spinner();
 
 function loadConfig() {
 	let cfg = {};
+	let text = null;
 	try {
-		cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+		text = fs.readFileSync(CONFIG_FILE, 'utf8');
 	} catch {}
+	if (text !== null) {
+		try {
+			cfg = JSON.parse(text);
+		} catch (e) {
+			// Never start over (a new token unpairs every device) because of a file we can't read.
+			console.error(`${CONFIG_FILE} isn't valid JSON (${e.message}). Fix or remove it, then try again.`);
+			process.exit(1);
+		}
+	}
 	if (!cfg.token) {
 		cfg.token = randomBytes(32).toString('base64url');
 		saveConfig(cfg);
@@ -93,9 +103,36 @@ function stopAgent(pid) {
 	} catch {}
 }
 
+/**
+ * Applies `change` to a fresh read of the config, saves it, and applies it to `cfg` too. For writes
+ * from a running agent: agents of other folders change the same file, and saving the copy read at
+ * start would undo what they wrote since. `change` returns false to save nothing.
+ */
+function updateConfig(cfg, change) {
+	const fresh = loadConfig();
+	if (change(fresh) === false) return;
+	saveConfig(fresh);
+	change(cfg);
+}
+
+/** Runs a provider command; a Code Remote Cloud error is reported as its message, without a stack. */
+async function cloudCommand(run) {
+	try {
+		await run();
+	} catch (e) {
+		if (!(e instanceof CloudError)) throw e;
+		console.error(e.message);
+		process.exit(1);
+	}
+}
+
 function saveConfig(cfg) {
 	fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
-	fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+	// Written whole, then renamed over: agents of other folders read and write it too, and a reader
+	// that saw a half-written file would start over with a new token.
+	const tmp = `${CONFIG_FILE}.${process.pid}.tmp`;
+	fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+	fs.renameSync(tmp, CONFIG_FILE);
 }
 
 /** Whether nothing listens on 127.0.0.1:port. */
@@ -156,8 +193,9 @@ async function openLan(server, agentPort) {
 		try {
 			const lanPort = (await server.listenLan(candidate)).address().port;
 			if (lanPort !== remembered) {
-				cfg.lanPorts = { ...cfg.lanPorts, [root]: lanPort };
-				saveConfig(cfg);
+				updateConfig(cfg, (c) => {
+					c.lanPorts = { ...c.lanPorts, [root]: lanPort };
+				});
 			}
 			return { port: lanPort };
 		} catch (e) {
@@ -363,8 +401,9 @@ async function start({ tunnel }) {
 			while (claimed.has(port) || (await taken(port))) port++;
 		}
 		if (port !== remembered) {
-			cfg.folderPorts = { ...cfg.folderPorts, [root]: port };
-			saveConfig(cfg);
+			updateConfig(cfg, (c) => {
+				c.folderPorts = { ...c.folderPorts, [root]: port };
+			});
 		}
 	}
 	let server;
@@ -383,8 +422,10 @@ async function start({ tunnel }) {
 				// Offline later, the QR still names it (its URL can't be worked out from the tunnel id).
 				onUrl: (hosted) => {
 					// Remembered only once it's up, so a failed first try doesn't switch the folder.
-					const urlChanged = rememberTunnelUrl(cfg, port, hosted);
-					if (rememberProvider(cfg, port, providerName) || urlChanged) saveConfig(cfg);
+					updateConfig(cfg, (c) => {
+						const urlChanged = rememberTunnelUrl(c, port, hosted);
+						return rememberProvider(c, port, providerName) || urlChanged;
+					});
 				},
 			})
 		: null;
@@ -406,8 +447,14 @@ async function start({ tunnel }) {
 		else e2eKey = got;
 	}
 	const hadAgentId = cfg.agentIds?.[port];
-	const agentId = ensureAgentId(cfg, port);
-	if (agentId !== hadAgentId) saveConfig(cfg);
+	let agentId = ensureAgentId(cfg, port);
+	if (agentId !== hadAgentId) {
+		// Another agent may have given this port an ID meanwhile: keep the one saved.
+		agentId = loadConfig().agentIds?.[port] ?? agentId;
+		updateConfig(cfg, (c) => {
+			c.agentIds = { ...c.agentIds, [port]: agentId };
+		});
+	}
 	spinner.start('Starting agent');
 	try {
 		server = await listen(cfg.token, port, root, session?.tunnelToken ?? undefined, preview, status, remover, lanCert, agentId, () => session?.hostedUrl() ?? null, e2eKey, session?.provider.name ?? null);
@@ -892,11 +939,11 @@ switch (cmd) {
 		// The folder's own provider, unless asked: `--cloud`, or Cloud's `--delete <host>`.
 		const folderPort = cfg.folderPorts?.[root] ?? DEFAULT_PORT;
 		const name = rest.includes('--cloud') || rest.includes('--delete') ? 'cloud' : providerFor(folderPort);
-		await tunnelProvider(name).commands.tunnels(rest.filter((a) => a !== '--cloud'));
+		await cloudCommand(() => tunnelProvider(name).commands.tunnels(rest.filter((a) => a !== '--cloud')));
 		break;
 	}
 	case 'login': {
-		await tunnelProvider(rest.includes('--cloud') ? 'cloud' : 'devtunnels').commands.login(rest.filter((a) => a !== '--cloud'));
+		await cloudCommand(() => tunnelProvider(rest.includes('--cloud') ? 'cloud' : 'devtunnels').commands.login(rest.filter((a) => a !== '--cloud')));
 		break;
 	}
 	case 'logout': {
@@ -904,7 +951,7 @@ switch (cmd) {
 			console.error('Usage: coderemote logout --cloud  (dev tunnels: `devtunnel user logout`)');
 			process.exit(1);
 		}
-		await tunnelProvider('cloud').commands.logout();
+		await cloudCommand(() => tunnelProvider('cloud').commands.logout());
 		break;
 	}
 	case 'update': {
