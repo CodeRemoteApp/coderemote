@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PreviewTunnel } from '../../../src/providers/devtunnels/preview.js';
+import { PreviewTunnel } from '../src/preview.js';
 
 function preview({ leftover, devtunnel }) {
 	const remembered = [];

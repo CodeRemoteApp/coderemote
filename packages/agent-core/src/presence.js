@@ -86,8 +86,6 @@ const CLASSES = {
 	[Routes.deviceName]: FREE,
 	[Routes.deviceChallenge]: FREE,
 	[Routes.deviceSession]: FREE,
-	// Before any credential: the gate's owner assertion is what it checks (server.js cloudPairing).
-	[Routes.cloudPair]: FREE,
 	[Routes.presenceChallenge]: FREE,
 	[Routes.presenceGrant]: FREE,
 	// Relaxing the policy checks for a grant itself.

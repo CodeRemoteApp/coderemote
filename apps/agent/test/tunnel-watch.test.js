@@ -136,11 +136,11 @@ test('probeAgent: only the agent page counts; errors and timeouts are no', async
 		sent = { url, init };
 		return new Response('', { status, headers });
 	};
-	assert.equal(await probeAgent('https://a', { 'x-tunnel-authorization': 'tunnel tok' }, { fetchFn: respond(200, { 'content-security-policy': csp }) }), true);
+	assert.equal(await probeAgent('https://a', 'tok', { fetchFn: respond(200, { 'content-security-policy': csp }) }), true);
 	assert.equal(sent.url, 'https://a/');
 	assert.equal(sent.init.headers['x-tunnel-authorization'], 'tunnel tok');
-	assert.equal(await probeAgent('https://a', {}, { fetchFn: respond(200, {}) }), false);
+	assert.equal(await probeAgent('https://a', null, { fetchFn: respond(200, {}) }), false);
 	assert.deepEqual(sent.init.headers, {});
-	assert.equal(await probeAgent('https://a', {}, { fetchFn: respond(302, {}) }), false);
-	assert.equal(await probeAgent('https://a', {}, { fetchFn: async () => { throw new Error('timeout'); } }), false);
+	assert.equal(await probeAgent('https://a', null, { fetchFn: respond(302, {}) }), false);
+	assert.equal(await probeAgent('https://a', null, { fetchFn: async () => { throw new Error('timeout'); } }), false);
 });

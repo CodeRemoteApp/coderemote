@@ -1,6 +1,5 @@
-// Small lists for the terminal: ↑/↓ move, space ticks, enter confirms. `pick` (several) is used by
-// `coderemote tunnels delete` with no ids, so nobody has to copy tunnel ids around; `choose` (one)
-// by `up` to ask which tunnel a folder uses.
+// A small multi-select list for the terminal: ↑/↓ move, space ticks, enter confirms. Used by
+// `coderemote tunnels delete` with no ids, so nobody has to copy tunnel ids around.
 
 const dim = (s) => `\x1b[2m${s}\x1b[22m`;
 const cyan = (s) => `\x1b[36m${s}\x1b[39m`;
@@ -95,67 +94,6 @@ export function pick({ title, items, input = process.stdin, output = process.std
 			state = step(state, key);
 			draw();
 			if (state.done === 'confirm') finish([...state.selected].sort((a, b) => a - b));
-			else if (state.done === 'cancel') finish(null);
-		};
-		output.write('\x1b[?25l');
-		input.setRawMode(true);
-		input.resume();
-		input.on('data', onData);
-		draw();
-	});
-}
-
-/** `choose`'s next state after `key`: enter picks the item under the cursor. */
-export function stepOne(state, key) {
-	const { cursor, count } = state;
-	switch (key) {
-		case 'up': return { ...state, cursor: (cursor - 1 + count) % count };
-		case 'down': return { ...state, cursor: (cursor + 1) % count };
-		case 'enter': return { ...state, done: 'confirm' };
-		case 'cancel': return { ...state, done: 'cancel' };
-		default: return state;
-	}
-}
-
-/** `choose` as lines: each item is `{ label, note? }`, the note dimmed after it. */
-export function renderOne({ title, items, state, columns = 80 }) {
-	const lines = [title];
-	items.forEach((item, i) => {
-		const text = fit(item.label, columns - 4);
-		const note = item.note ? `  ${dim(fit(item.note, Math.max(0, columns - 6 - text.length)))}` : '';
-		lines.push(i === state.cursor ? `${cyan('❯')} ${cyan(text)}${note}` : `  ${text}${note}`);
-	});
-	lines.push(dim('↑/↓ move · enter choose · esc cancel'));
-	return lines;
-}
-
-/**
- * Lets the user pick one item; resolves with its index, or null when they cancelled. Needs a
- * terminal on both ends (check `isTTY` first).
- */
-export function choose({ title, items, input = process.stdin, output = process.stderr }) {
-	return new Promise((resolve) => {
-		let state = { cursor: 0, count: items.length };
-		let drawn = 0;
-		const draw = () => {
-			const lines = renderOne({ title, items, state, columns: output.columns || 80 });
-			if (drawn) output.write(`\x1b[${drawn}A\r\x1b[0J`);
-			output.write(`${lines.join('\n')}\n`);
-			drawn = lines.length;
-		};
-		const finish = (result) => {
-			input.off('data', onData);
-			input.setRawMode(false);
-			input.pause();
-			output.write('\x1b[?25h');
-			resolve(result);
-		};
-		const onData = (buf) => {
-			const key = keyOf(buf.toString());
-			if (!key) return;
-			state = stepOne(state, key);
-			draw();
-			if (state.done === 'confirm') finish(state.cursor);
 			else if (state.done === 'cancel') finish(null);
 		};
 		output.write('\x1b[?25l');

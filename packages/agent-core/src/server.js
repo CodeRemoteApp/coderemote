@@ -210,10 +210,6 @@ async function readJson(req) {
  * @param {object} [opts.deviceOptions]  limits of the device sessions (tests shorten them)
  * @param {string | null} [opts.agentId]  this agent's lasting identity, reported in `/api/info`
  * @param {() => string | null} [opts.tunnelUrl]  the tunnel's public URL while it is hosted
- * @param {string | null} [opts.tunnelProvider]  the tunnel provider's name, reported with that URL
- * @param {{ enabled: boolean, check: (assertion: string | undefined) => Promise<boolean>, onPaired?: (name: string) => void } | null} [opts.cloudPair]
- *        on a Code Remote Cloud tunnel: whether a signed-in owner's phone may take the pairing
- *        (`POST /api/cloud/pair`), and the check of the gate's owner assertion; null elsewhere (404)
  * @param {{ checkMs?: number, graceMs?: number, killedMs?: number }} [opts.previewSweep]  how often
  *        previews are checked for a dev server that stopped, and how long one may stay silent
  *        (after a stop from the Ports tab: how long until it is checked)
@@ -251,12 +247,8 @@ export function createAgentServer({
 	deviceOptions = {},
 	agentId = null,
 	tunnelUrl = () => null,
-	tunnelProvider = null,
-	cloudPair = null,
-	cloudPairsPerMinute = 10,
 }) {
-	// Without one (no tunnel, or a provider without sign-in) there is nothing to hand out.
-	const handoff = new TunnelHandoff({ token, mint: tunnelToken ?? (async () => null) });
+	const handoff = new TunnelHandoff({ token, mint: tunnelToken });
 	const sandbox = new Sandbox(root);
 	const sessions = new SessionManager({
 		onExit: (id) => agents.terminalExited(id),
@@ -543,7 +535,7 @@ export function createAgentServer({
 	}
 
 	function previewPort(value, ownPort) {
-		if (!preview) throw new HttpError(404, 'previews need a tunnel that supports them');
+		if (!preview) throw new HttpError(404, 'previews need a tunnel');
 		const port = Number(value);
 		if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(400, 'port must be 1-65535');
 		if (port === ownPort) throw new HttpError(400, "the agent's own port is already on its tunnel");
@@ -681,7 +673,7 @@ export function createAgentServer({
 			shell: isWindows ? interactiveShell().file : process.env.SHELL || null,
 			agentId,
 			// Null until the tunnel is hosted (an agent started offline connects it later).
-			tunnel: tunnelUrl() ? { url: tunnelUrl(), provider: tunnelProvider } : null,
+			tunnel: tunnelUrl() ? { url: tunnelUrl() } : null,
 		}),
 
 		[Routes.e2eTicket]: async (url, req) => {
@@ -996,7 +988,7 @@ export function createAgentServer({
 		},
 
 		[Routes.previewList]: async () => {
-			if (!preview) throw new HttpError(404, 'previews need a tunnel that supports them');
+			if (!preview) throw new HttpError(404, 'previews need a tunnel');
 			return previews();
 		},
 
@@ -1345,7 +1337,6 @@ export function createAgentServer({
 			return (url.pathname === E2E_HANDSHAKE_PATH ? sealed.handshake : sealed.request)(req, res).catch(() => res.destroy());
 		}
 		if (req.method === 'GET' && url.pathname === TUNNEL_HANDOFF_PATH) return handoffRedirect(url, res);
-		if (`${req.method} ${url.pathname}` === Routes.cloudPair) return cloudPairing(req, res);
 		if (`${req.method} ${url.pathname}` === Routes.agentsHook) return hookDelivery(url, req, res);
 		const routeKey = `${req.method} ${url.pathname}`;
 		// Challenges and sessions prove themselves with a signature, not with a credential.
@@ -1376,36 +1367,6 @@ export function createAgentServer({
 			else res.destroy(e);
 		}
 	});
-
-	let pairWindow = { start: 0, used: 0 };
-	/**
-	 * The pairing for the owner's phone, without a QR code (PROTOCOL.md "Cloud pairing"): only
-	 * sealed, so the relay never sees the token, and only with the gate's signed word that the
-	 * caller is this computer's owner.
-	 */
-	async function cloudPairing(req, res) {
-		if (!cloudPair || req.socket[OVER_LAN] === true) return sendJson(res, 404, { error: 'not found' });
-		if (!cloudPair.enabled) return sendJson(res, 403, { error: 'pairing through Code Remote Cloud is off on this computer; scan its QR code', code: 'ECLOUDPAIROFF' });
-		if (!sealed?.channelOf(req)) return sendJson(res, 403, { error: 'only over an end-to-end encrypted session', code: 'ESEALED' });
-		const now = Date.now();
-		if (now - pairWindow.start >= 60_000) pairWindow = { start: now, used: 0 };
-		if (++pairWindow.used > cloudPairsPerMinute) return sendJson(res, 429, { error: 'too many tries', code: 'ERATELIMIT' });
-		let body;
-		try {
-			body = await readJson(req);
-		} catch {
-			return sendJson(res, 400, { error: 'invalid json' });
-		}
-		// eslint-disable-next-line no-control-regex
-		const name = typeof body?.name === 'string' ? body.name.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64) : '';
-		let owner = false;
-		try {
-			owner = await cloudPair.check(req.headers['x-coderemote-owner']);
-		} catch {}
-		if (!owner) return sendJson(res, 403, { error: 'not signed in as the owner of this computer', code: 'ENOTOWNER' });
-		cloudPair.onPaired?.(name || 'A phone');
-		return sendJson(res, 200, { token, agentId });
-	}
 
 	/** A hook event from `coderemote hook`; a PermissionRequest is held open until it resolves. */
 	async function hookDelivery(url, req, res) {

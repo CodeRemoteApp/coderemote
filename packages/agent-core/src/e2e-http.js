@@ -26,9 +26,7 @@ const HANDSHAKES_PER_MINUTE = 120;
 const DROPPED_RESPONSE_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encoding', 'date']);
 const INNER_HEADER = 'x-coderemote-inner';
 const INNER_SID_HEADER = 'x-coderemote-sid';
-// The Cloud gate's owner assertion is only believed from the outer request (the gate sets it there).
-const OWNER_HEADER = 'x-coderemote-owner';
-const DROPPED_REQUEST_HEADERS = new Set(['host', 'connection', 'content-length', 'transfer-encoding', SESSION_HEADER, INNER_HEADER, INNER_SID_HEADER, OWNER_HEADER]);
+const DROPPED_REQUEST_HEADERS = new Set(['host', 'connection', 'content-length', 'transfer-encoding', SESSION_HEADER, INNER_HEADER, INNER_SID_HEADER]);
 
 /**
  * What a ticket of each scope opens: one route, and on it one target (the query parameter that must
@@ -114,7 +112,7 @@ export function createSealedGateway({ identity, port, options = {} }) {
 	}
 
 	/** Runs the unsealed request against this agent; resolves `{ status, headers, body }` or `{ tooLarge }`. */
-	function dispatch(header, body, res, sid, owner) {
+	function dispatch(header, body, res, sid) {
 		return new Promise((resolve, reject) => {
 			const headers = {};
 			for (const [k, v] of Object.entries(header.headers ?? {})) {
@@ -123,7 +121,6 @@ export function createSealedGateway({ identity, port, options = {} }) {
 			if (body.length) headers['content-length'] = String(body.length);
 			headers[INNER_HEADER] = innerSecret;
 			headers[INNER_SID_HEADER] = sid;
-			if (typeof owner === 'string' && owner) headers[OWNER_HEADER] = owner;
 			const inner = http.request(
 				{ host: '127.0.0.1', port: port(), method: header.method, path: header.path, headers },
 				(answer) => {
@@ -185,7 +182,7 @@ export function createSealedGateway({ identity, port, options = {} }) {
 			result = answer(404, { error: 'not found' });
 		} else {
 			try {
-				result = await dispatch({ ...header, method }, msg.body, res, session.id, req.headers[OWNER_HEADER]);
+				result = await dispatch({ ...header, method }, msg.body, res, session.id);
 			} catch {
 				result = answer(502, { error: 'agent unreachable' });
 			}

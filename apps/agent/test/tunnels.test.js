@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
 	PREVIEW_LABEL,
+	ensureAgentId,
+	rememberTunnelUrl,
 	TUNNEL_LIMIT,
 	findTunnel,
 	forgetTunnel,
@@ -13,8 +15,7 @@ import {
 	pickerItems,
 	tunnelLimitHelp,
 	tunnelsAtLimit,
-} from '../../../src/providers/devtunnels/tunnels.js';
-import { ensureAgentId, rememberTunnelUrl } from '../../../src/agent-identity.js';
+} from '../src/tunnels.js';
 
 const tunnel = (i, fields = {}) => ({ tunnelId: `tunnel-${i}.asse`, hostConnections: 0, labels: [], description: '', ...fields });
 const listing = (tunnels) => ({ ok: true, out: `Welcome to dev tunnels\n${JSON.stringify({ tunnels })}` });

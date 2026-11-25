@@ -71,5 +71,5 @@ test('the command ends when its owner is killed outright', { skip }, async () =>
 test('on Windows it is a plain spawn', () => {
 	const calls = [];
 	spawnTied('devtunnel', ['host', 'x'], { stdout: 'pipe', platform: 'win32', spawnFn: (...a) => calls.push(a) });
-	assert.deepEqual(calls, [['devtunnel', ['host', 'x'], { stdio: ['ignore', 'pipe', 'ignore'], env: process.env }]]);
+	assert.deepEqual(calls, [['devtunnel', ['host', 'x'], { stdio: ['ignore', 'pipe', 'ignore'] }]]);
 });

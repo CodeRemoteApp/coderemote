@@ -98,25 +98,6 @@ Connect tokens last 24 hours. While one still works, `POST /api/tunnel/token` (b
 required) returns `{ token, expiresAt }`, a fresh one; clients renew when less than 12 hours
 remain. Anonymous tunnels answer both routes with 404.
 
-## Cloud tunnel sign-in
-
-A Code Remote Cloud tunnel (`tunnel.provider` `"cloud"`, URL `https://cr<id>.commitplus.app`) has a
-gate in front of the agent that admits only the hostname's owner, signed in to Code Remote Cloud:
-
-- Send `X-CodeRemote-Auth: Bearer <ID token>` (the account's Firebase ID token) on every request
-  and terminal socket, next to the agent's own `Authorization: Bearer <pairing token>`. The gate
-  checks and strips it; the agent never sees it.
-- Web views, whose page loads can't carry a header: first `POST /__cr/session` with that header.
-  The answer, `204`, sets a host-only cookie (`__Host-cr_gate`, 12 hours) that admits the web view's
-  loads; `DELETE /__cr/session` clears it. Paths under `/__cr/` are the gate's, never the agent's.
-- Without either: `401` with `WWW-Authenticate: CodeRemote-Cloud` and `code` `ECLOUDSIGNIN`, meaning
-  "sign in to Code Remote Cloud". Signed in as someone else: `403` `ENOTOWNER`. The computer is
-  unreachable (agent stopped, computer asleep or offline): `502` `EAGENTOFFLINE`. Unknown hostname:
-  `404` `EUNKNOWNHOST`. The account has no access: `403` `ENOACCESS`.
-
-The gate's answers are JSON `{ error, code }`, like the agent's. None of this changes the protocol
-version: an older client sees a `401` it can't act on, and pairs over the local network instead.
-
 ### Tunnel status
 
 `GET /api/tunnel` (bearer token required) describes the agent's tunnel and the other machines on
@@ -171,56 +152,6 @@ Deleting a tunnel an agent uses changes its address, so every phone paired with 
 that agent's next `coderemote up` makes a new one. On the computer the same is
 `coderemote tunnels` and `coderemote tunnels delete <id>`.
 
-## Cloud pairing
-
-On a Code Remote Cloud tunnel, a phone signed in to the computer's account can pair without the QR
-code. Added within v4: older agents answer 404, and the phone falls back to scanning.
-
-- **What the phone learns from the account.** The account's machine list (Code Remote Cloud's
-  `GET /v1/machines`) gives, for each folder's hostname:
-  - `agentId`;
-  - `publicKey`, the agent's identity key, 43 characters, or null;
-  - `label`, the folder's name, or null.
-- **What the agent sends.** The agent sends `publicKey` and `label` when it asks for its hostname,
-  unless pairing is turned off (`up --no-cloud-pair`, `"cloudPair": false`).
-- **The gate's owner assertion.** The gate adds `X-CodeRemote-Owner` to every request from the
-  signed-in owner, after removing any copy the client sent. Its value is
-  `v1.<kid>.<b64url(json)>.<b64url(sig)>`:
-  - the JSON is `{ uid, host, iat, exp }`, where `host` is the hostname's first label;
-  - `sig` is an Ed25519 signature over `v1.<kid>.<b64url(json)>`;
-  - the public keys are at `GET https://cloud.commitplus.app/v1/keys`, as
-    `{ keys: [{ kid, publicKey }] }`.
-- **`POST /api/cloud/pair`.** The body is `{ name }`, the phone's name, at most 64 characters.
-  - The request must be [sealed](#sealed-requests) and carry no `Authorization`. The phone has no
-    token yet.
-  - The phone sends `X-CodeRemote-Auth` outside the envelope, as for any Cloud request. The gate
-    then puts its assertion on the outer request.
-  - An assertion inside the sealed headers is ignored.
-  - The agent accepts the assertion when:
-    - a listed key signed it;
-    - `host` is the agent's own;
-    - `uid` owns the computer;
-    - `iat` is at most 60 s ahead, `exp` at most 30 s past, and `exp - iat` at most 60.
-  - On success it answers `{ token, agentId }` and prints that the phone paired.
-- **Errors:**
-  - `403` `ESEALED`: the request isn't sealed;
-  - `403` `ENOTOWNER`: no valid assertion;
-  - `403` `ECLOUDPAIROFF`: pairing is off;
-  - `429` `ERATELIMIT`: more than 10 tries a minute;
-  - `404`: not on a Cloud tunnel, or over the LAN listener.
-- **The phone's side.**
-  1. It pins the listed `publicKey` and completes the [handshake](#handshake) with it. That
-     proves the agent holds the key.
-  2. Only then does it send the pair request.
-  3. It checks that `agentId` matches the listing, and from then on uses the pairing as if it came
-     from a QR code. Devices still enroll as usual.
-  4. A phone that already pinned a key for that machine never replaces it with a listed one. A
-     different listed key (after `rotate-token`) means scanning the QR code again.
-
-The token never travels outside the seal, so the relay doesn't see it. Pairing through the
-account means the account alone, without seeing the computer's screen, can pair a phone. The agent
-prints each pairing, and `--no-cloud-pair` leaves only the QR code.
-
 ## Local network
 
 Unless started with `--no-lan` (or `"lan": false` in its config), `coderemote up` also accepts
@@ -255,16 +186,11 @@ record never carries the token or the shared folder.
 
 `agentId` is the agent's identity: 32 hex characters, made once per agent port and kept across
 restarts and token rotations, so a client that pairs again recognizes the machine. `tunnel` is
-`{ url, provider }` while the agent hosts its tunnel, else `null`: an agent started without
-internet runs on the local network only and connects its tunnel once it can, without restarting.
-`provider` names the tunnel service the agent uses, so a client can tell how to sign in to it.
-Its values are `"devtunnels"` (Microsoft Dev Tunnels, as in `GET /api/tunnel`) and `"cloud"`
-(Code Remote Cloud, see "Cloud tunnel sign-in"). Agents before it sent `{ url }` alone: read a
-missing `provider` as `"devtunnels"`. On `"cloud"` the agent answers 404 for previews,
-`GET`/`DELETE /api/tunnel`, `POST /api/tunnel/token` and the handoff.
+`{ url }` while the agent hosts its tunnel, else `null`: an agent started without internet runs on
+the local network only and connects its tunnel once it can, without restarting.
 
-Adding `lan`, `agentId`, `tunnel` and `tunnel.provider` didn't change the protocol version:
-clients that don't know them ignore them.
+Adding `lan`, `agentId` and `tunnel` didn't change the protocol version: clients that don't know
+them ignore them.
 
 ## End-to-end encryption
 

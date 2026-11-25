@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { tunnelDelete, tunnelStatus } from '../../../src/providers/devtunnels/status.js';
+import { tunnelDelete, tunnelStatus } from '../src/tunnel-status.js';
 
 const tunnels = {
 	'own.usw2': {
