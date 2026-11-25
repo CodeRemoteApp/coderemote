@@ -23,6 +23,7 @@ import { Spinner } from '../src/spinner.js';
 import { commandHelp } from '../src/help.js';
 import { sweepStrayAdvertisers } from '../src/bonjour.js';
 import { spawnTied } from '../src/tied.js';
+import { keepAwake } from '../src/keep-awake.js';
 import { codeTunnelLogin, codeTunnelSignedIn, findCode, hostCodeTunnel } from '../src/vscode-tunnel.js';
 import { firewallAdvice, firewallReport, lanAdapters } from '../src/windows-firewall.js';
 import { LAN_SERVICE_TYPE, PROTOCOL_VERSION, pairingUrl, webUrl } from '@vsremote/protocol';
@@ -333,6 +334,9 @@ Options:
                        (alias --no-auth)
   --web                up: also run \`code tunnel\` and print a vscode.dev link that opens
                        this folder in VS Code in the browser (needs VS Code's \`code\`)
+  --allow-sleep        up: let the computer sleep when idle (by default it stays awake while
+                       sharing, so phones can reach it; the display still sleeps).
+                       "keepAwake": false in ~/.coderemote/config.json makes it the default
   --no-lan             up: don't let phones on the same network connect directly (over TLS,
                        still with the token); they use the tunnel. "lan": false in
                        ~/.coderemote/config.json makes it the default, --lan overrides that`;
@@ -774,6 +778,9 @@ switch (cmd) {
 			throw e;
 		}
 		const { url, access, lan, offline, tunnelError, providerName, lanLink, firewall, publicKey } = started;
+		// Asleep, the computer drops off the network: phones lose it until someone wakes it.
+		const awake = rest.includes('--allow-sleep') || cfg.keepAwake === false ? null : keepAwake();
+		if (awake) process.on('exit', () => awake.stop());
 		const vscodeUrl = rest.includes('--web') && !offline ? await startVSCodeTunnel() : null;
 		console.log(`\n  Sharing: ${root}`);
 		if (offline) console.log('  Tunnel:  not connected (no internet); phones on this network can pair and connect. It connects on its own once the internet is back.');
@@ -783,6 +790,7 @@ switch (cmd) {
 			if (process.platform === 'darwin') console.log('           If macOS asks whether node may accept incoming connections, choose Allow.');
 			if (isWindows) console.log('           If Windows asks whether node may accept incoming connections, choose Allow (Private networks).');
 		} else if (lan.error) console.log(`  LAN:     off (${lan.error}); phones connect through the tunnel`);
+		if (awake) console.log('  Sleep:   kept awake while sharing (the display can still sleep); --allow-sleep to turn off');
 		// Shown with the rest when it's in by now, else as soon as it is.
 		const showFirewall = (lines) => {
 			if (lines.length) console.log(`\n${lines.map((l) => `  ${l}`).join('\n')}\n`);
